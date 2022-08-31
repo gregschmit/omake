@@ -6,11 +6,32 @@ description = "A Rust implementation of make."
 authors = ["Gregory N. Schmit <schmitgreg@gmail.com>"]
 license = "MIT"
 repository = "https://github.com/gregschmit/make"
+default-run = "make"
 
 [dependencies]
 clap = { version = ">= 3.2.17", features = ["derive"] }
 const_format = { version = ">= 0.2.26" }
 
+[features]
+default = ["make"]
+make = []
+omake = []
+
+[lib]
+name = "make"
+path = "src/lib.rs"
+
+[[bin]]
+name = "make"
+path = "src/main.rs"
+required-features = ["make"]
+
+[[bin]]
+name = "omake"
+path = "src/main.rs"
+required-features = ["omake"]
+
+# Optimize for a small binary.
 [profile.release]
 opt-level = "z"
 lto = true

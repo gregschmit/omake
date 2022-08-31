@@ -2,8 +2,6 @@
 //!
 //! This is an implementation of `make`, written in Rust.
 
-mod makefile;
-
 use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
@@ -11,7 +9,7 @@ use std::path::Path;
 use clap::Parser;
 use const_format::formatcp;
 
-use makefile::Makefile;
+use make::makefile::Makefile;
 
 const MAKEFILE_SEARCH: [&str; 6] = [
     "Makefile",
