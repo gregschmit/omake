@@ -9,7 +9,8 @@ use std::path::Path;
 use clap::Parser;
 use const_format::formatcp;
 
-use make::makefile::Makefile;
+/// Only interface via the `make` library (libmake.rs).
+use make::Makefile;
 
 const MAKEFILE_SEARCH: [&str; 6] = [
     "Makefile",
@@ -74,14 +75,13 @@ fn main() {
         None => find_makefile().unwrap_or_else(|| exit_with("No makefile found.")),
     };
 
-    // Read the makefile.
+    // Parse the makefile.
     let file = File::open(makefile_fn)
         .unwrap_or_else(|e| exit_with(format!("Error reading makefile ({}).", e)));
     let stream = BufReader::new(file);
-
-    dbg!(args.clone());
-
-    // Test out building a `Makefile` struct.
-    let result = Makefile::new(stream);
-    dbg!(result);
+    let makefile = match Makefile::new(stream) {
+        Err(e) => exit_with(e.to_string()),
+        Ok(m) => m,
+    };
+    dbg!(makefile);
 }

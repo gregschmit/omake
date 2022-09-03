@@ -24,3 +24,18 @@ impl Makefile {
         Ok(makefile)
     }
 }
+
+/// Represents parsing/execution context. This is just the line number for now, but will include
+/// the makefile path (important when implementing `include`) and the row number.
+#[derive(Clone, Debug)]
+pub struct Context {
+    pub line_number: usize,
+    // pub row_number: Option(usize),
+    // pub path: String,
+}
+
+impl Context {
+    pub fn new() -> Self {
+        Context { line_number: 0 }
+    }
+}

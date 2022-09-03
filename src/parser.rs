@@ -6,8 +6,7 @@ use std::io::BufRead;
 use expand::expand;
 use var::VarMap;
 
-use super::MakeError;
-use super::Rule;
+use super::{Context, MakeError, Rule};
 
 const COMMENT_INDICATOR: char = '#';
 
@@ -22,7 +21,7 @@ pub struct Parser {
 
     vars: VarMap,
     current_rule: Option<Rule>,
-    current_line_number: usize,
+    current_context: Context,
     // current_filename: String, // TODO: needed when doing include directives
 }
 
@@ -33,7 +32,7 @@ impl Parser {
             rules: vec![],
             vars: VarMap::new([]),
             current_rule: None,
-            current_line_number: 0,
+            current_context: Context { line_number: 0 },
         };
         parser.parse(makefile_stream)?;
         Ok(parser)
@@ -50,9 +49,10 @@ impl Parser {
         self.current_rule = None;
 
         for (i, result) in makefile_stream.lines().enumerate() {
-            // Set the line number state and extract the line.
-            self.current_line_number = i;
-            let line = result.map_err(|e| MakeError::new(e.to_string(), i))?;
+            // Set the context line number and extract the line.
+            self.current_context.line_number = i;
+            let line =
+                result.map_err(|e| MakeError::new(e.to_string(), self.current_context.clone()))?;
 
             // Parse the line.
             self.parse_line(line)?;
@@ -74,7 +74,7 @@ impl Parser {
                 None => {
                     return Err(MakeError::new(
                         "recipe without rule",
-                        self.current_line_number,
+                        self.current_context.clone(),
                     ))
                 }
                 Some(r) => {
@@ -86,7 +86,8 @@ impl Parser {
                         .to_string();
 
                     if !cmd.is_empty() {
-                        r.recipe.push(expand(cmd, &self.vars)?);
+                        r.recipe
+                            .push(expand(cmd.as_str(), &self.vars, &self.current_context)?);
                     }
                 }
             }
@@ -113,16 +114,16 @@ impl Parser {
             });
 
             self.current_rule = Some(Rule {
-                targets: expand(targets, &self.vars)?
+                targets: expand(targets, &self.vars, &self.current_context)?
                     .split_whitespace()
                     .map(|s| s.to_string())
                     .collect(),
-                dependencies: expand(deps, &self.vars)?
+                dependencies: expand(deps, &self.vars, &self.current_context)?
                     .split_whitespace()
                     .map(|s| s.to_string())
                     .collect(),
                 recipe: vec![],
-                line: self.current_line_number,
+                context: self.current_context.clone(),
             });
 
             // Add rule line if we found one.
@@ -142,7 +143,7 @@ impl Parser {
         // Otherwise, throw error if line is not recognizable.
         return Err(MakeError::new(
             "Invalid line type.",
-            self.current_line_number,
+            self.current_context.clone(),
         ));
     }
 }

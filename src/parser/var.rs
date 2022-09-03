@@ -2,6 +2,20 @@ use std::collections::HashMap;
 
 const DEFAULT_RECIPE_PREFIX: char = '\t';
 
+pub struct Var {
+    pub value: String,
+    pub recursive: bool,
+}
+
+impl Var {
+    pub fn new<S: Into<String>>(value: S, recursive: bool) -> Self {
+        Self {
+            value: value.into(),
+            recursive: recursive,
+        }
+    }
+}
+
 /// This wraps a `HashMap` and a default value, providing an easy way to get variables, handling
 /// special and automatic variables properly.
 pub struct VarMap {
@@ -58,19 +72,6 @@ impl VarMap {
     /// Public interface for setting variables.
     pub fn set<S: Into<String>>(&mut self, k: S, v: S, recursive: bool) {
         self.map.insert(k.into(), Var::new(v.into(), recursive));
-    }
-}
-
-pub struct Var {
-    pub value: String,
-    pub recursive: bool,
-}
-impl Var {
-    pub fn new<S: Into<String>>(value: S, recursive: bool) -> Self {
-        Self {
-            value: value.into(),
-            recursive: recursive,
-        }
     }
 }
 
