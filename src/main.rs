@@ -1,4 +1,4 @@
-//! # Make (oxidized)
+//! # omake (Oxidized Make)
 //!
 //! This is an implementation of `make`, written in Rust.
 
@@ -9,7 +9,7 @@ use std::path::Path;
 use clap::Parser;
 use const_format::formatcp;
 
-/// Only interface via the `make` library (libmake.rs).
+/// Only interface via the `omake` library (lib.rs).
 use omake::Makefile;
 
 const MAKEFILE_SEARCH: [&str; 6] = [
