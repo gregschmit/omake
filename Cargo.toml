@@ -1,36 +1,16 @@
 [package]
-name = "oxidized_make"
+name = "omake"
 version = "0.1.0"
 edition = "2021"
 description = "A Rust implementation of make."
 authors = ["Gregory N. Schmit <schmitgreg@gmail.com>"]
 license = "MIT"
-repository = "https://github.com/gregschmit/make"
-default-run = "make"
+repository = "https://github.com/gregschmit/omake"
 categories = ["command-line-utilities", "development-tools", "development-tools::build-utils"]
 
 [dependencies]
 clap = { version = ">= 3.2.17", features = ["derive"] }
 const_format = { version = ">= 0.2.26" }
-
-[features]
-default = ["make"]
-make = []
-omake = []
-
-[lib]
-name = "make"
-path = "src/libmake.rs"
-
-[[bin]]
-name = "make"
-path = "src/main.rs"
-required-features = ["make"]
-
-[[bin]]
-name = "omake"
-path = "src/main.rs"
-required-features = ["omake"]
 
 # Optimize for a small binary.
 [profile.release]

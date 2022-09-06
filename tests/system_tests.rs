@@ -25,7 +25,7 @@ fn run_test<const N: usize>(name: &str, exp: Expectations, cleanup_files: [&str;
     set_current_dir(format!("./tests/system_tests/{}", name)).unwrap();
 
     // Run make.
-    let output = Command::new("make").output().unwrap();
+    let output = Command::new("omake").output().unwrap();
 
     // Assert expectations.
     // TODO: figure out way to see if test passed, maybe pass in expectations as arg?

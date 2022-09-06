@@ -10,7 +10,7 @@ use clap::Parser;
 use const_format::formatcp;
 
 /// Only interface via the `make` library (libmake.rs).
-use make::Makefile;
+use omake::Makefile;
 
 const MAKEFILE_SEARCH: [&str; 6] = [
     "Makefile",

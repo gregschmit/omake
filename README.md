@@ -1,9 +1,10 @@
-# Make (oxidized)
+# Oxidized Make (omake)
 
 This is a Rust implementation of `make`, striving to be simple, portable, and fast.
 
-If you want to avoid clashing with your system's `make`, feel free to name this program `omake`
-(following the convention of `bmake` and `gmake`).
+To avoid clashing with your system's `make`, this project is built as `omake` by default, but if
+this project is ever used as the default implementation of `make` in a system, then it should be
+named `make` (to follow the same convention as `gmake` and `bmake`).
 
 I decided to try to re-write `make` in Rust both as a way to learn Rust and also because I found the
 existing `make` implementations' source code very convoluted.
@@ -47,5 +48,5 @@ After that, I want to build a series of "system" tests where we use the compiled
 of makefiles and progammatically check the output (both stdout and filesystem output). I probably
 need to figure out how to check if other files are created by mistake and how to purge them.
 
-I should probably also copy over the GNU make test suite and try to make this project pass the
+I should probably also copy over the GNU make test suite and try to get this project to pass the
 entire test suite.
