@@ -1,40 +1,64 @@
 mod expand;
 mod var;
 
-use std::io::BufRead;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+use std::path::PathBuf;
 
 use expand::expand;
 use var::VarMap;
 
-use super::{Context, MakeError, Rule};
+use super::{log_warn, Context, MakeError, Rule, RuleMap};
 
 const COMMENT_INDICATOR: char = '#';
 
 /// This struct provides fields for the parser to keep internal state, and also provides a public
 /// field to retrieve the parsed `rules` of the makefile.
-///
-/// I tried writing this in functional style, but most of my helper functions needed to know the
-/// variable state, the current line number (for returning errors), and other stuff. Shared state
-/// just seemed the easiest way to go.
 pub struct Parser {
-    pub rules: Vec<Rule>,
+    pub ruleset: RuleMap,
 
     vars: VarMap,
     current_rule: Option<Rule>,
     current_context: Context,
-    // current_filename: String, // TODO: needed when doing include directives
 }
 
-/// The Parser is responsible for parsing makefiles (from a BufReader) intoa list of rules.
+/// The Parser is responsible for parsing makefiles into a map of rules.
 impl Parser {
-    pub fn new<R: BufRead>(makefile_stream: R) -> Result<Self, MakeError> {
+    /// Initialize and run parser from a file path.
+    pub fn from_file(makefile_fn: PathBuf) -> Result<Self, MakeError> {
+        // Open the makefile.
+        let file = File::open(&makefile_fn).map_err(|e| {
+            MakeError::new(format!("Could not read makefile ({}).", e), Context::new())
+        })?;
+
+        // Initialize the parser.
         let mut parser = Self {
-            rules: vec![],
+            ruleset: RuleMap::new(),
             vars: VarMap::new([]),
             current_rule: None,
-            current_context: Context { line_number: 0 },
+            current_context: Context::from_path(makefile_fn),
         };
-        parser.parse(makefile_stream)?;
+
+        // Parse the makefile.
+        parser.parse(BufReader::new(file))?;
+
+        Ok(parser)
+    }
+
+    /// Initialize and run parser from a stream.
+    #[allow(dead_code)]
+    pub fn from_stream<R: BufRead>(stream: R) -> Result<Self, MakeError> {
+        // Initialize the parser.
+        let mut parser = Self {
+            ruleset: RuleMap::new(),
+            vars: VarMap::new([]),
+            current_rule: None,
+            current_context: Context::new(),
+        };
+
+        // Parse the stream.
+        parser.parse(stream)?;
+
         Ok(parser)
     }
 
@@ -45,12 +69,12 @@ impl Parser {
     /// Escaped newlines outside of a recipe indicate a line continuation, whereas escaped newlines
     /// within a recipe are passed to the executing shell, as is. Semicolons after a rule definition
     /// should be interpreted as a newline plus a `.RECIPEPREFIX`.
-    fn parse<R: BufRead>(&mut self, makefile_stream: R) -> Result<(), MakeError> {
+    fn parse<R: BufRead>(&mut self, stream: R) -> Result<(), MakeError> {
         self.current_rule = None;
 
-        for (i, result) in makefile_stream.lines().enumerate() {
+        for (i, result) in stream.lines().enumerate() {
             // Set the context line number and extract the line.
-            self.current_context.line_number = i;
+            self.current_context.line_number = i + 1;
             let line =
                 result.map_err(|e| MakeError::new(e.to_string(), self.current_context.clone()))?;
 
@@ -94,9 +118,35 @@ impl Parser {
             return Ok(());
         }
 
-        // Anything other than recipe lines implicitly terminate a rule definition.
-        if let Some(r) = self.current_rule.take() {
-            self.rules.push(r);
+        // Anything other than recipe lines terminate a rule definition.
+        if let Some(rule) = self.current_rule.take() {
+            for target in rule.targets.iter() {
+                match self.ruleset.get_mut(target) {
+                    Some(existing_rules) => {
+                        // Catch user mixing single and double-colon rules.
+                        if let Some(first) = existing_rules.first() {
+                            if first.double_colon != rule.double_colon {
+                                return Err(MakeError::new(
+                                    "Cannot define rules using `:` and `::` on the same target.",
+                                    self.current_context.clone(),
+                                ));
+                            }
+                        }
+
+                        if rule.double_colon {
+                            existing_rules.push(rule.clone())
+                        } else {
+                            log_warn(
+                                "Ignoring duplicate definition.",
+                                Some(&self.current_context),
+                            );
+                        }
+                    }
+                    None => {
+                        self.ruleset.insert(target.to_owned(), vec![rule.clone()]);
+                    }
+                }
+            }
         }
 
         // Ignore comments and blank lines.
@@ -106,6 +156,16 @@ impl Parser {
 
         // Handle rule definitions.
         if let Some((targets, mut deps)) = line.split_once(':') {
+            // First, if deps start with another `:`, then this is a double-colon rule, so we should
+            // mark it as such.
+            let mut double_colon = false;
+            if let Some(ch) = deps.chars().next() {
+                if ch == ':' {
+                    deps = &deps[1..];
+                    double_colon = true;
+                }
+            }
+
             // There could be a semicolon after dependencies, in which case we should
             // parse everything after that as a rule line.
             let rule = deps.split_once(';').map(|(d, r)| {
@@ -124,6 +184,7 @@ impl Parser {
                     .collect(),
                 recipe: vec![],
                 context: self.current_context.clone(),
+                double_colon: double_colon,
             });
 
             // Add rule line if we found one.
@@ -136,7 +197,14 @@ impl Parser {
 
         // Handle variable assignments.
         if let Some((k, v)) = line.split_once('=') {
-            self.vars.set(k, v, false);
+            if let Err(e) = self.vars.set(
+                k,
+                &expand(v.trim_start(), &self.vars, &self.current_context)?,
+                false,
+            ) {
+                return Err(MakeError::new(e, self.current_context.clone()));
+            };
+            dbg!(&self.vars);
             return Ok(());
         }
 
@@ -156,15 +224,18 @@ mod tests {
     #[test]
     fn test_simple() {
         let input = BufReader::new("all: ;echo \"Hello, world!\"".as_bytes());
-        let parser = Parser::new(input).unwrap();
+        let parser = Parser::from_stream(input).unwrap();
 
-        // Ensure we get exactly 1 rule.
-        assert_eq!(parser.rules.len(), 1);
+        // Ensure we get exactly 1 target (all) in ruleset.
+        let ruleset = parser.ruleset;
+        assert_eq!(ruleset.len(), 1);
 
-        // Ensure that rule has 1 target (all), no deps, and 1 recipe line.
-        let rule = parser.rules.last().unwrap();
-        assert_eq!(rule.targets.len(), 1);
-        assert_eq!(rule.targets.first().unwrap(), "all");
+        // Ensure we have 1 rule for that target.
+        let rules = ruleset.values().next().unwrap();
+        assert_eq!(rules.len(), 1);
+
+        // Ensure that rule has no deps and 1 recipe line.
+        let rule = rules.first().unwrap();
         assert_eq!(rule.dependencies.len(), 0);
         assert_eq!(rule.recipe.len(), 1);
         assert_eq!(rule.recipe.first().unwrap(), "echo \"Hello, world!\"");

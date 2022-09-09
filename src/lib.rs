@@ -2,40 +2,56 @@ mod error;
 mod parser;
 mod rule;
 
-use std::fs::File;
-use std::io::BufReader;
+use std::path::PathBuf;
+
+pub use error::{log_err, log_warn};
 
 use error::MakeError;
 use parser::Parser;
-use rule::Rule;
+use rule::{Rule, RuleMap};
 
 /// The internal representation of a makefile.
 #[derive(Debug)]
 pub struct Makefile {
-    rules: Vec<Rule>,
+    ruleset: RuleMap,
 }
 
 impl Makefile {
-    pub fn new(makefile_stream: BufReader<File>) -> Result<Self, MakeError> {
-        let mut makefile = Self { rules: vec![] };
+    /// Principal interface for reading and parsing a makefile.
+    pub fn new(makefile_fn: PathBuf) -> Result<Self, MakeError> {
+        // Parse the makefile.
+        let parser = Parser::from_file(makefile_fn)?;
 
-        let parser = Parser::new(makefile_stream)?;
-        makefile.rules = parser.rules;
+        // Initialize and return the makefile.
+        let makefile = Self {
+            ruleset: parser.ruleset,
+        };
         Ok(makefile)
     }
+
+    // pub fn execute(&self) -> Result<(), MakeError> {}
 }
 
-/// Represents parsing/execution context. This is just the line number for now, but will include
-/// the makefile path (important when implementing `include`) and the row number.
+/// Represents parsing/execution context.
 #[derive(Clone, Debug)]
 pub struct Context {
+    pub path: Option<PathBuf>,
     pub line_number: usize,
     // pub row_number: Option(usize),
-    // pub path: String,
 }
 
 impl Context {
     pub fn new() -> Self {
-        Context { line_number: 0 }
+        Self {
+            path: None,
+            line_number: 0,
+        }
+    }
+
+    pub fn from_path(path: PathBuf) -> Self {
+        Self {
+            path: Some(path),
+            line_number: 0,
+        }
     }
 }

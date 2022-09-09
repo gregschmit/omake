@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 const DEFAULT_RECIPE_PREFIX: char = '\t';
 
+#[derive(Debug)]
 pub struct Var {
     pub value: String,
     pub recursive: bool,
@@ -18,8 +19,9 @@ impl Var {
 
 /// This wraps a `HashMap` and a default value, providing an easy way to get variables, handling
 /// special and automatic variables properly.
+#[derive(Debug)]
 pub struct VarMap {
-    pub map: HashMap<String, Var>,
+    map: HashMap<String, Var>,
 
     // Heap-allocated "constant" `Var` objects, setup during initialization, designed to reduce
     // multiple allocations and lifetime tracking.
@@ -69,9 +71,28 @@ impl VarMap {
         }
     }
 
-    /// Public interface for setting variables.
-    pub fn set<S: Into<String>>(&mut self, k: S, v: S, recursive: bool) {
-        self.map.insert(k.into(), Var::new(v.into(), recursive));
+    /// Public interface for setting variables. Return a `Result` of unity on success, or a str
+    /// containing the error message on failure.
+    pub fn set<S: Into<String>>(&mut self, k: S, v: S, recursive: bool) -> Result<(), String> {
+        let clean_key = k.into().trim().to_string();
+
+        for ch in clean_key.chars() {
+            if ch.is_whitespace() {
+                return Err("Variable contains whitespace.".to_string());
+            }
+
+            if let Some(bad_char) = match ch {
+                ':' => Some(':'),
+                '#' => Some('#'),
+                '=' => Some('='),
+                _ => None,
+            } {
+                return Err(format!("Variable contains bad character '{}'.", bad_char));
+            }
+        }
+
+        self.map.insert(clean_key, Var::new(v.into(), recursive));
+        Ok(())
     }
 }
 
@@ -90,9 +111,9 @@ mod tests {
     fn test_recipe_prefix() {
         let mut vars = VarMap::new([]);
         assert_eq!(vars.get(".RECIPEPREFIX").value, "\t");
-        vars.set(".RECIPEPREFIX", "B", false);
+        vars.set(".RECIPEPREFIX", "B", false).unwrap();
         assert_eq!(vars.get(".RECIPEPREFIX").value, "B");
-        vars.set(".RECIPEPREFIX", "", false);
+        vars.set(".RECIPEPREFIX", "", false).unwrap();
         assert_eq!(vars.get(".RECIPEPREFIX").value, "\t");
     }
 }

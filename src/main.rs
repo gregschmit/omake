@@ -2,15 +2,13 @@
 //!
 //! This is an implementation of `make`, written in Rust.
 
-use std::fs::File;
-use std::io::BufReader;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use clap::Parser;
 use const_format::formatcp;
 
 /// Only interface via the `omake` library (lib.rs).
-use omake::Makefile;
+use omake::{log_err, Context, Makefile};
 
 const MAKEFILE_SEARCH: [&str; 6] = [
     "Makefile",
@@ -44,10 +42,10 @@ struct Args {
 }
 
 /// Search for a makefile to execute.
-fn find_makefile() -> Option<String> {
+fn find_makefile() -> Option<PathBuf> {
     for file in MAKEFILE_SEARCH {
         if Path::new(file).is_file() {
-            return Some(file.to_string());
+            return Some(PathBuf::from(file));
         }
     }
 
@@ -55,8 +53,8 @@ fn find_makefile() -> Option<String> {
 }
 
 /// Helper to print an error message and exit with code 2.
-fn exit_with<S: Into<String>>(msg: S) -> ! {
-    println!("make: {}", msg.into());
+fn exit_with<S: Into<String>>(msg: S, context: Option<&Context>) -> ! {
+    log_err(msg, context);
     std::process::exit(2)
 }
 
@@ -71,16 +69,13 @@ fn main() {
 
     // Determine the makefile to read.
     let makefile_fn = match args.file {
-        Some(ref file) => file.clone(),
-        None => find_makefile().unwrap_or_else(|| exit_with("No makefile found.")),
+        Some(ref file) => PathBuf::from(file),
+        None => find_makefile().unwrap_or_else(|| exit_with("No makefile found.", None)),
     };
 
     // Parse the makefile.
-    let file = File::open(makefile_fn)
-        .unwrap_or_else(|e| exit_with(format!("Error reading makefile ({}).", e)));
-    let stream = BufReader::new(file);
-    let makefile = match Makefile::new(stream) {
-        Err(e) => exit_with(e.to_string()),
+    let makefile = match Makefile::new(makefile_fn) {
+        Err(e) => exit_with(e.msg, Some(&e.context)),
         Ok(m) => m,
     };
     dbg!(makefile);

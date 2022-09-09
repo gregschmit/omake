@@ -26,6 +26,8 @@ impossible to achieve. Regardless, in order of importance, here are the project 
    (https://xkcd.com/927/). As uninspired as it may seem, I just want an implementation of `make`
    that works on Linux and FreeBSD; that's it.
 
+1.0 release will probably happen when this project can build the Linux kernel.
+
 Note that due to implementation details (and especially during the initial development phase this
 project is in), it's possible certain features are inadvertently added. Users should probably not
 rely on those and they may even qualify as bugs. I hope to get everything ironed out before the 1.0
@@ -33,9 +35,9 @@ release to avoid (as stated in Goal #6) building an incompatible competing stand
 already other build systems, I don't actually want to make another one.
 
 Working list of things that I plan on leaving out of this implementation intentionally:
-1. (GNU) Remaking makefiles from RCS/SCCS. I see no need to support this.
-2. (GNU) Implicit rules. I'm on the fence, so I could be convinced to remove this from the list. The
-   Linux kernel's makefile explicitly disables implicit rules (ref:
+1. Remaking makefiles from RCS/SCCS. I see no need to support this.
+2. Implicit rules. I'm on the fence, so I could be convinced to remove this from the list. The Linux
+   kernel's makefile explicitly disables implicit rules (ref:
    https://github.com/torvalds/linux/blob/15b3f48a4339e3c16acf18624e2b7f60bc5e9a2c/Makefile#L202-L208).
    However, other projects might use these a lot, so if I find that's the case I might decide to
    implement implicit rules, especially if it's not too cumbersome.

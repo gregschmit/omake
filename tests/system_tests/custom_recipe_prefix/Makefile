@@ -1,9 +1,9 @@
-all: test1 test2 test3 test4 test5 test6 test7
+all: test1 test2 test3 test4 test5 test6
 
 test1:
 	echo "test1"
 
-.RECIPEPREFIX = '>'
+.RECIPEPREFIX = >
 test2:
 > echo test2
 
@@ -11,18 +11,14 @@ test2:
 test3:
 	echo "test3"
 
-.RECIPEPREFIX = ">"
+.RECIPEPREFIX =>
 test4:
 > echo "test4"
 
-.RECIPEPREFIX = "\t"
+.RECIPEPREFIX =	$(NULL) 
 test5:
-	echo "test5"
+ echo "test5"
 
-.RECIPEPREFIX = >
+.RECIPEPREFIX =  >
 test6:
 > echo "test6"
-
-.RECIPEPREFIX = ""
-test7:
-	echo "test7"

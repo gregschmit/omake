@@ -207,43 +207,39 @@ mod tests {
 
     #[test]
     fn test_recursive() {
-        let mut vars = VarMap::new([("A", "B"), ("C", "${A}")]);
+        let mut vars = VarMap::new([("A", "B")]);
+        vars.set("C", "${A}", true).unwrap();
         let context = Context::new();
-        let mut recursive_var = vars.map.get_mut("C").unwrap();
-        recursive_var.recursive = true;
         assert_eq!(expand("Test ${C}", &vars, &context).unwrap(), "Test B");
     }
 
     #[test]
     fn test_double_recursive() {
-        let mut vars = VarMap::new([("A", "B"), ("C", "${A}"), ("D", "$(C)")]);
-        let context = Context::new();
-        for ch in ["C", "D"] {
-            let mut var = vars.map.get_mut(ch).unwrap();
-            var.recursive = true;
+        let mut vars = VarMap::new([("A", "B")]);
+        for (k, v) in [("C", "${A}"), ("D", "$(C)")] {
+            vars.set(k, v, true).unwrap();
         }
+        let context = Context::new();
         assert_eq!(expand("Test ${D}", &vars, &context).unwrap(), "Test B");
     }
 
     #[test]
     fn test_intermediate_not_recursive() {
-        let mut vars = VarMap::new([("A", "B"), ("C", "${A}"), ("D", "$(C)")]);
-        let context = Context::new();
-        for ch in ["A", "D"] {
-            let mut var = vars.map.get_mut(ch).unwrap();
-            var.recursive = true;
+        let mut vars = VarMap::new([("C", "${A}")]);
+        for (k, v) in [("A", "B"), ("D", "$(C)")] {
+            vars.set(k, v, true).unwrap();
         }
+        let context = Context::new();
         assert_eq!(expand("Test ${D}", &vars, &context).unwrap(), "Test ${A}");
     }
 
     #[test]
     fn test_recursion_on_simple_value_works() {
-        let mut vars = VarMap::new([("A", "B"), ("C", "${A}"), ("D", "$(C)")]);
-        let context = Context::new();
-        for ch in ["A", "C", "D"] {
-            let mut var = vars.map.get_mut(ch).unwrap();
-            var.recursive = true;
+        let mut vars = VarMap::new([]);
+        for (k, v) in [("A", "B"), ("C", "${A}"), ("D", "$(C)")] {
+            vars.set(k, v, true).unwrap();
         }
+        let context = Context::new();
         assert_eq!(expand("Test ${D}", &vars, &context).unwrap(), "Test B");
     }
 
