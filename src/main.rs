@@ -30,15 +30,18 @@ const LICENSE: &str = include_str!("../LICENSE");
     ),
 )]
 struct Args {
-    #[clap(short, long, visible_alias("makefile"))]
     /// Read FILE as the makefile.
+    #[clap(short, long, visible_alias("makefile"))]
     file: Option<String>,
-    #[clap(short, long, value_name = "FILE", visible_alias("assume-old"))]
     /// Consider FILE to be very old and do not remake it.
+    #[clap(short, long, value_name = "FILE", visible_alias("assume-old"))]
     old_file: Vec<String>,
-    #[clap(long)]
     /// Show full software license.
+    #[clap(long)]
     license: bool,
+    /// Target(s) (by default, use first regular target).
+    #[clap()]
+    targets: Vec<String>,
 }
 
 /// Search for a makefile to execute.
@@ -61,7 +64,7 @@ fn exit_with<S: Into<String>>(msg: S, context: Option<&Context>) -> ! {
 fn main() {
     let args = Args::parse();
 
-    // Print LICENSE, is requested.
+    // Print LICENSE, if requested.
     if args.license {
         println!("{}", LICENSE);
         return;
@@ -78,5 +81,8 @@ fn main() {
         Err(e) => exit_with(e.msg, Some(&e.context)),
         Ok(m) => m,
     };
-    dbg!(makefile);
+    dbg!(&makefile);
+    if let Err(e) = makefile.execute(args.targets) {
+        exit_with(e.msg, Some(&e.context));
+    }
 }

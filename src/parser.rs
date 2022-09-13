@@ -13,9 +13,10 @@ use super::{log_warn, Context, MakeError, Rule, RuleMap};
 const COMMENT_INDICATOR: char = '#';
 
 /// This struct provides fields for the parser to keep internal state, and also provides a public
-/// field to retrieve the parsed `rules` of the makefile.
+/// field to retrieve the parsed `rulemap` of the makefile.
 pub struct Parser {
-    pub ruleset: RuleMap,
+    pub rulemap: RuleMap,
+    pub default_target: Option<String>,
 
     vars: VarMap,
     current_rule: Option<Rule>,
@@ -33,7 +34,8 @@ impl Parser {
 
         // Initialize the parser.
         let mut parser = Self {
-            ruleset: RuleMap::new(),
+            rulemap: RuleMap::new(),
+            default_target: None,
             vars: VarMap::new([]),
             current_rule: None,
             current_context: Context::from_path(makefile_fn),
@@ -50,7 +52,8 @@ impl Parser {
     pub fn from_stream<R: BufRead>(stream: R) -> Result<Self, MakeError> {
         // Initialize the parser.
         let mut parser = Self {
-            ruleset: RuleMap::new(),
+            rulemap: RuleMap::new(),
+            default_target: None,
             vars: VarMap::new([]),
             current_rule: None,
             current_context: Context::new(),
@@ -121,7 +124,16 @@ impl Parser {
         // Anything other than recipe lines terminate a rule definition.
         if let Some(rule) = self.current_rule.take() {
             for target in rule.targets.iter() {
-                match self.ruleset.get_mut(target) {
+                // Set default target if none is specified and this is a normal target. Note that
+                // `unwrap()` here is safe because the target is a result of splitting on
+                // whitespace, which would result in an empty array if there is only whitespace or
+                // no text.
+                if self.default_target.is_none() && target.chars().nth(0).unwrap() != '.' {
+                    self.default_target = Some(target.clone());
+                }
+
+                // Finihs terminating this rule definition (adding to rulemap).
+                match self.rulemap.get_mut(target) {
                     Some(existing_rules) => {
                         // Catch user mixing single and double-colon rules.
                         if let Some(first) = existing_rules.first() {
@@ -143,7 +155,7 @@ impl Parser {
                         }
                     }
                     None => {
-                        self.ruleset.insert(target.to_owned(), vec![rule.clone()]);
+                        self.rulemap.insert(target.to_owned(), vec![rule.clone()]);
                     }
                 }
             }
@@ -226,12 +238,12 @@ mod tests {
         let input = BufReader::new("all: ;echo \"Hello, world!\"".as_bytes());
         let parser = Parser::from_stream(input).unwrap();
 
-        // Ensure we get exactly 1 target (all) in ruleset.
-        let ruleset = parser.ruleset;
-        assert_eq!(ruleset.len(), 1);
+        // Ensure we get exactly 1 target (all) in rulemap.
+        let rulemap = parser.rulemap;
+        assert_eq!(rulemap.len(), 1);
 
         // Ensure we have 1 rule for that target.
-        let rules = ruleset.values().next().unwrap();
+        let rules = rulemap.values().next().unwrap();
         assert_eq!(rules.len(), 1);
 
         // Ensure that rule has no deps and 1 recipe line.
