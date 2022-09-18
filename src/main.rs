@@ -81,7 +81,6 @@ fn main() {
         Err(e) => exit_with(e.msg, Some(&e.context)),
         Ok(m) => m,
     };
-    dbg!(&makefile);
     if let Err(e) = makefile.execute(args.targets) {
         exit_with(e.msg, Some(&e.context));
     }

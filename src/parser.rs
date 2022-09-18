@@ -216,7 +216,6 @@ impl Parser {
             ) {
                 return Err(MakeError::new(e, self.current_context.clone()));
             };
-            dbg!(&self.vars);
             return Ok(());
         }
 

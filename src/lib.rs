@@ -3,12 +3,16 @@ mod parser;
 mod rule;
 
 use std::path::PathBuf;
+use std::process::Command;
 
 pub use error::{log_err, log_warn};
 
 use error::MakeError;
 use parser::Parser;
 use rule::{Rule, RuleMap};
+
+const SHELL: &str = "/bin/sh";
+const SHELL_ARGS: &str = "-c";
 
 /// The internal representation of a makefile.
 #[derive(Debug)]
@@ -52,7 +56,9 @@ impl Makefile {
                 Context::new(),
             ))?;
             for rule in rules {
-                println!("Would execute:\n{}\n---", rule.recipe.join("\n"));
+                for line in rule.recipe.iter() {
+                    let result = Command::new(SHELL).arg(SHELL_ARGS).arg(line).spawn();
+                }
             }
         }
 
