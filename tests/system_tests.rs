@@ -1,51 +1,70 @@
 use std::collections::HashMap;
-use std::env::{current_dir, set_current_dir};
 use std::fs;
 use std::process::Command;
 
-struct Expectations {
-    pub files: HashMap<String, String>,
+const SYSTEM_TESTS_DIR: &str = "./tests/system_tests";
+
+/// Wrapper for the test name (path) and properties expected of the test.
+struct SystemTest {
+    pub name: String,
+    pub created_files: HashMap<String, String>,
     pub stdout: String,
 }
 
-impl Expectations {
-    pub fn new<const N: usize, S: Into<String>>(files: [(S, S); N], stdout: S) -> Self {
-        Self {
-            files: HashMap::from(files.map(|(f, c)| (f.into(), c.into()))),
+impl SystemTest {
+    /// Construct a `SystemTest`, run it, and then return.
+    pub fn execute<const N: usize>(name: &str, created_files: [(&str, &str); N], stdout: &str) {
+        let system_test = Self {
+            name: name.into(),
+            created_files: HashMap::from(created_files.map(|(f, c)| (f.into(), c.into()))),
             stdout: stdout.into(),
+        };
+
+        system_test.run();
+    }
+
+    /// Run the subprocess and assert any expectations.
+    fn run(&self) {
+        // Run `omake` inside the system test directory. Note that the program path must be relative
+        // to the `current_dir` of the spawned process.
+        let output = Command::new("../../../target/debug/omake")
+            .current_dir(self.relative_path(&"".to_string()))
+            .output()
+            .unwrap();
+
+        // Assert expected `stdout`.
+        assert_eq!(self.stdout, String::from_utf8_lossy(&output.stdout));
+
+        // Assert `created_files` expectations.
+        for (filename, expected_content) in &self.created_files {
+            let content = fs::read_to_string(self.relative_path(filename)).unwrap();
+            assert_eq!(&content, expected_content);
+        }
+    }
+
+    /// Helper to get the relative path to a file for this system test.
+    fn relative_path(&self, path: &String) -> String {
+        format!("{}/{}/{}", SYSTEM_TESTS_DIR, self.name, path)
+    }
+}
+
+/// Ensure created files for system tests are cleaned up by overloading `Drop`. This works because
+/// the test harness ensures `panic = "unwind"` behavior.
+impl Drop for SystemTest {
+    fn drop(&mut self) {
+        for (filename, _) in &self.created_files {
+            let _ = fs::remove_file(self.relative_path(filename));
         }
     }
 }
 
-fn run_test<const N: usize>(name: &str, exp: Expectations, cleanup_files: [&str; N]) {
-    // Remember current dir.
-    let cwd = current_dir().unwrap().into_os_string();
-
-    // Chdir into test dir.
-    set_current_dir(format!("./tests/system_tests/{}", name)).unwrap();
-
-    // Run make.
-    let output = Command::new("omake").output().unwrap();
-
-    // Assert expectations.
-    // TODO: figure out way to see if test passed, maybe pass in expectations as arg?
-
-    // Cleanup expected files.
-    for file in cleanup_files {
-        fs::remove_dir_all(file);
-    }
-
-    // Chdir back into original directory.
-    set_current_dir(cwd).unwrap();
-}
-
-/// All system tests are in this single function. Since `std::env::set_current_dir` is not thread
-/// safe (affects the whole process), these cannot be parallelized. In the future we might consider
-/// breaking these apart to allow parallelization.
-///
-/// TODO: get this working.
-/// #[test]
+/// Principal interface for executing system tests.
+#[test]
 fn system_tests() {
-    let exp = Expectations::new([], "This is a test\n");
-    run_test("simple", exp, []);
+    SystemTest::execute("simple", [], "echo \"This is a test\"\nThis is a test\n");
+    SystemTest::execute(
+        "simple_dependency",
+        [("test", "This is a test\n")],
+        "echo \"This is a test\" > test\n",
+    );
 }

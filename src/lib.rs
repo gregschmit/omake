@@ -58,7 +58,7 @@ impl Makefile {
             for rule in rules {
                 for line in rule.recipe.iter() {
                     println!("{}", line);
-                    let result = Command::new(SHELL).arg(SHELL_ARGS).arg(line).spawn();
+                    let _ = Command::new(SHELL).arg(SHELL_ARGS).arg(line).spawn();
                 }
             }
         }
