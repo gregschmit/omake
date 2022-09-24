@@ -4,10 +4,6 @@ use std::collections::HashMap;
 use std::fs;
 use std::process::Command;
 
-/// The relative path to the `system_tests` directory from project root, with no leading or trailing
-/// slashes, and no leading `./`.
-const SYSTEM_TESTS_DIR: &str = "tests/cases";
-
 /// Represents a path to a test directory, arguments to pass to `omake`, and the expectations.
 struct SystemTestCase {
     /// Path to this system test directory (relative to project root).
