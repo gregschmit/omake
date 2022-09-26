@@ -8,15 +8,6 @@ pub struct Var {
     pub recursive: bool,
 }
 
-impl Var {
-    pub fn new<S: Into<String>>(value: S, recursive: bool) -> Self {
-        Self {
-            value: value.into(),
-            recursive: recursive,
-        }
-    }
-}
-
 /// This wraps a `HashMap` and a default value, providing an easy way to get variables, handling
 /// special and automatic variables properly.
 #[derive(Debug)]
@@ -45,8 +36,14 @@ impl VarMap {
 
         Self {
             map: map,
-            blank: Var::new("", false),
-            default_recipe_prefix: Var::new(DEFAULT_RECIPE_PREFIX, false),
+            blank: Var {
+                value: "".to_string(),
+                recursive: false,
+            },
+            default_recipe_prefix: Var {
+                value: DEFAULT_RECIPE_PREFIX.to_string(),
+                recursive: false,
+            },
         }
     }
 
@@ -91,7 +88,13 @@ impl VarMap {
             }
         }
 
-        self.map.insert(clean_key, Var::new(v.into(), recursive));
+        self.map.insert(
+            clean_key,
+            Var {
+                value: v.into(),
+                recursive: recursive,
+            },
+        );
         Ok(())
     }
 }

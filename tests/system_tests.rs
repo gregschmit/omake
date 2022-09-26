@@ -1,4 +1,4 @@
-mod cases;
+mod scenarios;
 
 use std::collections::HashMap;
 use std::fs;
@@ -58,11 +58,13 @@ impl SystemTestCase {
             .output()
             .unwrap();
 
-        // Assert expected `stdout`.
-        assert_eq!(
-            self.expected_stdout,
-            String::from_utf8_lossy(&output.stdout)
-        );
+        // Assert expected `stdout` (unless expected is blank).
+        if !self.expected_stdout.is_empty() {
+            assert_eq!(
+                self.expected_stdout,
+                String::from_utf8_lossy(&output.stdout)
+            );
+        }
 
         // Assert filesystem expectations.
         for (filename, expected_content) in &self.expected_files {

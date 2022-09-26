@@ -132,7 +132,7 @@ impl Parser {
                     self.default_target = Some(target.clone());
                 }
 
-                // Finihs terminating this rule definition (adding to rulemap).
+                // Finish terminating this rule definition (adding to rulemap).
                 match self.rulemap.get_mut(target) {
                     Some(existing_rules) => {
                         // Catch user mixing single and double-colon rules.

@@ -6,8 +6,8 @@ use super::{Context, MakeError, VarMap};
 /// cannot possibly have nested expressions.
 struct Frame {
     pub previous_buffer: String,
-    /// Track if the frame buffer ended with a brace (otherwise assume parenthesis).
-    pub brace: bool,
+    /// Track which character opened this stack frame (should be parenthesis or brace).
+    pub opening_delimiter: char,
 }
 
 /// The primary public interface for running variable expansion on an input string, given a hash
@@ -46,7 +46,7 @@ pub fn expand(s: &str, vars: &VarMap, context: &Context) -> Result<String, MakeE
                 // Otherwise, push a frame onto the stack to begin processing this expression.
                 stack.push(Frame {
                     previous_buffer: current_buffer,
-                    brace: c == '{',
+                    opening_delimiter: c,
                 });
                 current_buffer = "".to_string();
                 hit_variable = false;
@@ -55,7 +55,10 @@ pub fn expand(s: &str, vars: &VarMap, context: &Context) -> Result<String, MakeE
                 match stack.last() {
                     None => current_buffer.push(c),
                     Some(f) => {
-                        if f.brace == (c == '}') {
+                        // Test if this character matches the opening delimiter.
+                        if (c == '}' && f.opening_delimiter == '{')
+                            || (c == ')' && f.opening_delimiter == '(')
+                        {
                             // Expression terminated, so expand.
                             let var = vars.get(&current_buffer);
                             let recursive_result: String;
@@ -68,13 +71,15 @@ pub fn expand(s: &str, vars: &VarMap, context: &Context) -> Result<String, MakeE
                                 &var.value
                             };
 
+                            // This `unwrap()` is safe because we checked that the stack contains a
+                            // `last()` element, so it cannot be empty.
                             current_buffer = stack.pop().unwrap().previous_buffer;
                             current_buffer.push_str(result);
                             hit_variable = false;
                             continue;
                         }
 
-                        // Not the right trailing brace, so consider it just a char.
+                        // Not the right trailing delimiter, so consider it just a char.
                         current_buffer.push(c)
                     }
                 }
@@ -100,8 +105,7 @@ pub fn expand(s: &str, vars: &VarMap, context: &Context) -> Result<String, MakeE
         Some(frame) => Err(MakeError::new(
             format!(
                 "Unclosed variable: {}{}",
-                if frame.brace { "{" } else { "(" },
-                frame.previous_buffer
+                frame.opening_delimiter, frame.previous_buffer
             ),
             context.clone(),
         )),
@@ -162,10 +166,6 @@ mod tests {
         );
         assert_eq!(
             expand("This is ${$(A)}!", &vars, &context).unwrap(),
-            "This is VALUE1!",
-        );
-        assert_eq!(
-            expand("This is $(${A})!", &vars, &context).unwrap(),
             "This is VALUE1!",
         );
         assert_eq!(
