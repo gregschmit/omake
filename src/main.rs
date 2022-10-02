@@ -30,18 +30,18 @@ const LICENSE: &str = include_str!("../LICENSE");
     ),
 )]
 struct Args {
+    /// Target(s) (if none specifired, use first regular target).
+    #[arg()]
+    targets: Vec<String>,
     /// Read FILE as the makefile.
-    #[clap(short, long, visible_alias("makefile"))]
+    #[arg(short, long, visible_alias("makefile"))]
     file: Option<String>,
     /// Consider FILE to be very old and do not remake it.
-    #[clap(short, long, value_name = "FILE", visible_alias("assume-old"))]
+    #[arg(short, long, value_name = "FILE", visible_alias("assume-old"))]
     old_file: Vec<String>,
     /// Show full software license.
-    #[clap(long)]
+    #[arg(long)]
     license: bool,
-    /// Target(s) (by default, use first regular target).
-    #[clap()]
-    targets: Vec<String>,
 }
 
 /// Search for a makefile to execute.

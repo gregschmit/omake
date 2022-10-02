@@ -100,7 +100,7 @@ macro_rules! system_test_cases {
             let _ = path.pop();
             let path = path.into_os_string().into_string().unwrap();
 
-            // Run multiple inner calls.
+            // Run the specified test cases.
             $(
                 crate::SystemTestCase::execute(&path, $args, $expected_stdout, $expected_files);
             )*

@@ -9,8 +9,8 @@ repository = "https://github.com/gregschmit/omake"
 categories = ["command-line-utilities", "development-tools", "development-tools::build-utils"]
 
 [dependencies]
-clap = { version = ">= 3.2.17", features = ["derive"] }
-const_format = ">= 0.2.26"
+clap = { version = "4", features = ["derive"] }
+const_format = "0.2"
 
 # Optimize for a small binary.
 [profile.release]
