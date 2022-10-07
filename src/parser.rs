@@ -113,8 +113,10 @@ impl Parser {
                         .to_string();
 
                     if !cmd.is_empty() {
-                        r.recipe
-                            .push(expand(cmd.as_str(), &self.vars, &self.current_context)?);
+                        r.recipe.push(
+                            expand(cmd.as_str(), &self.vars)
+                                .map_err(|e| MakeError::new(e, self.current_context.clone()))?,
+                        );
                     }
                 }
             }
@@ -186,11 +188,13 @@ impl Parser {
             });
 
             self.current_rule = Some(Rule {
-                targets: expand(targets, &self.vars, &self.current_context)?
+                targets: expand(targets, &self.vars)
+                    .map_err(|e| MakeError::new(e, self.current_context.clone()))?
                     .split_whitespace()
                     .map(|s| s.to_string())
                     .collect(),
-                dependencies: expand(deps, &self.vars, &self.current_context)?
+                dependencies: expand(deps, &self.vars)
+                    .map_err(|e| MakeError::new(e, self.current_context.clone()))?
                     .split_whitespace()
                     .map(|s| s.to_string())
                     .collect(),
@@ -211,7 +215,8 @@ impl Parser {
         if let Some((k, v)) = line.split_once('=') {
             if let Err(e) = self.vars.set(
                 k,
-                &expand(v.trim_start(), &self.vars, &self.current_context)?,
+                &expand(v.trim_start(), &self.vars)
+                    .map_err(|e| MakeError::new(e, self.current_context.clone()))?,
                 false,
             ) {
                 return Err(MakeError::new(e, self.current_context.clone()));

@@ -1,4 +1,4 @@
-use super::{Context, MakeError, VarMap};
+use super::VarMap;
 
 /// Represents a frame on the stack inside the `expand` function. This is used for tracking the
 /// previous buffer when expanding potentially nested expressions (i.e., either `$()` or `${}`).
@@ -11,7 +11,7 @@ struct Frame {
 }
 
 /// The primary public interface for running variable expansion on an input string, given a hash
-/// of `vars`.
+/// of `vars`. If we
 ///
 /// The goal here is to be `O(n)`. This works by iterating over the input string and storing plain
 /// characters into a buffer until we hit either:
@@ -21,7 +21,7 @@ struct Frame {
 ///     expressions, where we push the current buffer onto a stack, and then continue parsing. When
 ///     we hit a matching closing delimiter (tracked on the stack frame), we evaluate the buffer,
 ///     pop the previous buffer off the stack, join it with the evaluated value, and keep going.
-pub fn expand(s: &str, vars: &VarMap, context: &Context) -> Result<String, MakeError> {
+pub fn expand(s: &str, vars: &VarMap) -> Result<String, String> {
     let mut stack: Vec<Frame> = vec![];
     let mut current_buffer: String = String::with_capacity(s.len());
     let mut hit_variable: bool = false;
@@ -65,7 +65,7 @@ pub fn expand(s: &str, vars: &VarMap, context: &Context) -> Result<String, MakeE
 
                             // Handle recursive variable expansion.
                             let result = if var.recursive {
-                                recursive_result = expand(&var.value.as_str(), vars, context)?;
+                                recursive_result = expand(&var.value.as_str(), vars)?;
                                 &recursive_result
                             } else {
                                 &var.value
@@ -102,12 +102,9 @@ pub fn expand(s: &str, vars: &VarMap, context: &Context) -> Result<String, MakeE
     // Return current buffer if the stack is empty, else an error.
     match stack.pop() {
         None => Ok(current_buffer),
-        Some(frame) => Err(MakeError::new(
-            format!(
-                "Unclosed variable: {}{}",
-                frame.opening_delimiter, frame.previous_buffer
-            ),
-            context.clone(),
+        Some(frame) => Err(format!(
+            "Unclosed variable: {}{}",
+            frame.opening_delimiter, frame.previous_buffer
         )),
     }
 }
@@ -119,18 +116,17 @@ mod tests {
     #[test]
     fn test_basic_single_letter_expansions() {
         let vars = VarMap::new([("A", "VALUE A"), ("B", "VALUE B")]);
-        let context = Context::new();
-        assert_eq!(expand("$A", &vars, &context).unwrap(), "VALUE A");
+        assert_eq!(expand("$A", &vars).unwrap(), "VALUE A");
         assert_eq!(
-            expand("$A with some text.", &vars, &context).unwrap(),
+            expand("$A with some text.", &vars).unwrap(),
             "VALUE A with some text.",
         );
         assert_eq!(
-            expand("Some leading text and $A.", &vars, &context).unwrap(),
+            expand("Some leading text and $A.", &vars).unwrap(),
             "Some leading text and VALUE A.",
         );
         assert_eq!(
-            expand("Both vars: $A and $B.", &vars, &context).unwrap(),
+            expand("Both vars: $A and $B.", &vars).unwrap(),
             "Both vars: VALUE A and VALUE B.",
         );
     }
@@ -138,14 +134,13 @@ mod tests {
     #[test]
     fn test_basic_long_expansions() {
         let vars = VarMap::new([("TESTA", "VALUE A"), ("TESTB", "VALUE B")]);
-        let context = Context::new();
-        assert_eq!(expand("$(TESTA)", &vars, &context).unwrap(), "VALUE A");
+        assert_eq!(expand("$(TESTA)", &vars).unwrap(), "VALUE A");
         assert_eq!(
-            expand("${TESTA} and $(TESTB)", &vars, &context).unwrap(),
+            expand("${TESTA} and $(TESTB)", &vars).unwrap(),
             "VALUE A and VALUE B",
         );
         assert_eq!(
-            expand("Leading text and $(TESTA) and $(TESTB).", &vars, &context).unwrap(),
+            expand("Leading text and $(TESTA) and $(TESTB).", &vars).unwrap(),
             "Leading text and VALUE A and VALUE B.",
         );
     }
@@ -153,29 +148,28 @@ mod tests {
     #[test]
     fn test_basic_nested_expansions() {
         let vars = VarMap::new([("A", "B"), ("B", "VALUE1"), ("CD", "VALUE2"), ("E", "D")]);
-        let context = Context::new();
         assert_eq!(
-            expand("This is $($(A))!", &vars, &context).unwrap(),
+            expand("This is $($(A))!", &vars).unwrap(),
             "This is VALUE1!",
         );
 
         // Test nested with both parentheses and braces.
         assert_eq!(
-            expand("This is $(${A})!", &vars, &context).unwrap(),
+            expand("This is $(${A})!", &vars).unwrap(),
             "This is VALUE1!",
         );
         assert_eq!(
-            expand("This is ${$(A)}!", &vars, &context).unwrap(),
+            expand("This is ${$(A)}!", &vars).unwrap(),
             "This is VALUE1!",
         );
         assert_eq!(
-            expand("This is ${${A}}!", &vars, &context).unwrap(),
+            expand("This is ${${A}}!", &vars).unwrap(),
             "This is VALUE1!",
         );
 
         // Test nested with nested string literal.
         assert_eq!(
-            expand("This is ${C$(E)}!", &vars, &context).unwrap(),
+            expand("This is ${C$(E)}!", &vars).unwrap(),
             "This is VALUE2!",
         );
     }
@@ -183,34 +177,22 @@ mod tests {
     #[test]
     fn test_escape_dollar_sign() {
         let vars = VarMap::new([("A", "B")]);
-        let context = Context::new();
-        assert_eq!(
-            expand("This is $$A!", &vars, &context).unwrap(),
-            "This is $A!"
-        );
-        assert_eq!(
-            expand("This is $${A}!", &vars, &context).unwrap(),
-            "This is ${A}!"
-        );
-        assert_eq!(
-            expand("This is $$${A}!", &vars, &context).unwrap(),
-            "This is $B!"
-        );
+        assert_eq!(expand("This is $$A!", &vars).unwrap(), "This is $A!");
+        assert_eq!(expand("This is $${A}!", &vars).unwrap(), "This is ${A}!");
+        assert_eq!(expand("This is $$${A}!", &vars).unwrap(), "This is $B!");
     }
 
     #[test]
     fn test_not_recursive() {
         let vars = VarMap::new([("A", "B"), ("C", "${A}")]);
-        let context = Context::new();
-        assert_eq!(expand("Test ${C}", &vars, &context).unwrap(), "Test ${A}");
+        assert_eq!(expand("Test ${C}", &vars).unwrap(), "Test ${A}");
     }
 
     #[test]
     fn test_recursive() {
         let mut vars = VarMap::new([("A", "B")]);
         vars.set("C", "${A}", true).unwrap();
-        let context = Context::new();
-        assert_eq!(expand("Test ${C}", &vars, &context).unwrap(), "Test B");
+        assert_eq!(expand("Test ${C}", &vars).unwrap(), "Test B");
     }
 
     #[test]
@@ -219,8 +201,7 @@ mod tests {
         for (k, v) in [("C", "${A}"), ("D", "$(C)")] {
             vars.set(k, v, true).unwrap();
         }
-        let context = Context::new();
-        assert_eq!(expand("Test ${D}", &vars, &context).unwrap(), "Test B");
+        assert_eq!(expand("Test ${D}", &vars).unwrap(), "Test B");
     }
 
     #[test]
@@ -229,8 +210,7 @@ mod tests {
         for (k, v) in [("A", "B"), ("D", "$(C)")] {
             vars.set(k, v, true).unwrap();
         }
-        let context = Context::new();
-        assert_eq!(expand("Test ${D}", &vars, &context).unwrap(), "Test ${A}");
+        assert_eq!(expand("Test ${D}", &vars).unwrap(), "Test ${A}");
     }
 
     #[test]
@@ -239,14 +219,12 @@ mod tests {
         for (k, v) in [("A", "B"), ("C", "${A}"), ("D", "$(C)")] {
             vars.set(k, v, true).unwrap();
         }
-        let context = Context::new();
-        assert_eq!(expand("Test ${D}", &vars, &context).unwrap(), "Test B");
+        assert_eq!(expand("Test ${D}", &vars).unwrap(), "Test B");
     }
 
     #[test]
     fn test_nested_variable_without_closing_delimiter() {
         let vars = VarMap::new([("TEST", "Value")]);
-        let context = Context::new();
-        assert!(expand("${TEST", &vars, &context).is_err());
+        assert!(expand("${TEST", &vars).is_err());
     }
 }
