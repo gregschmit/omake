@@ -10,16 +10,25 @@ use super::Context;
 /// warnings and errors in the makefile on the associated lines.
 fn format_log<S: Into<String>>(msg: S, level: &str, context: Option<&Context>) -> String {
     // Format context.
-    let context_disp = match context {
-        None => "".to_string(),
-        Some(context) => format!("[{}] ", context.line_number),
+    let context_display = match context {
+        None => "make:".to_string(),
+        Some(context) => match &context.path {
+            None => "make:".to_string(),
+            Some(path) => {
+                if context.line_number == 0 {
+                    format!("{}:{}", path.display(), context.line_number)
+                } else {
+                    format!("{}", path.display())
+                }
+            }
+        },
     };
 
     // Format log level.
-    let level_disp = format!("{:5} |", format!("{}", level));
+    let level_display = format!("{:5} |", level.to_string());
 
     // Print the log message.
-    format!("make: {} {}{}", level_disp, context_disp, msg.into())
+    format!("{context_display}{level_display}{}", msg.into())
 }
 
 /// Helper to format warnings.

@@ -17,8 +17,8 @@ pub struct Rule {
 }
 
 impl Rule {
-    /// Helper to simply execute a rule without checking if it already exists, .
-    pub fn execute(&self) -> Result<(), MakeError> {
+    /// Helper to unconditionally execute a rule.
+    pub(super) fn execute(&self) -> Result<(), MakeError> {
         for line in self.recipe.iter() {
             // Echo the line to stdout.
             println!("{}", line);

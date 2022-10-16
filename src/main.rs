@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use clap::Parser;
 use const_format::formatcp;
 
-/// Only interface via the `omake` library (lib.rs).
+/// Only interface via the `omake` library (`lib.rs`).
 use omake::{log_err, Context, Makefile};
 
 const MAKEFILE_SEARCH: [&str; 6] = [

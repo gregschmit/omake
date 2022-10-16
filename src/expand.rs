@@ -1,4 +1,4 @@
-use super::VarMap;
+use super::Vars;
 
 /// Represents a frame on the stack inside the `expand` function. This is used for tracking the
 /// previous buffer when expanding potentially nested expressions (i.e., either `$()` or `${}`).
@@ -10,8 +10,8 @@ struct Frame {
     pub opening_delimiter: char,
 }
 
-/// The primary public interface for running variable expansion on an input string, given a hash
-/// of `vars`. If we
+/// The primary public interface for running variable expansion on an input string, given a
+/// collection of `vars`.
 ///
 /// The goal here is to be `O(n)`. This works by iterating over the input string and storing plain
 /// characters into a buffer until we hit either:
@@ -21,7 +21,7 @@ struct Frame {
 ///     expressions, where we push the current buffer onto a stack, and then continue parsing. When
 ///     we hit a matching closing delimiter (tracked on the stack frame), we evaluate the buffer,
 ///     pop the previous buffer off the stack, join it with the evaluated value, and keep going.
-pub fn expand(s: &str, vars: &VarMap) -> Result<String, String> {
+pub fn expand(s: &str, vars: &Vars) -> Result<String, String> {
     let mut stack: Vec<Frame> = vec![];
     let mut current_buffer: String = String::with_capacity(s.len());
     let mut hit_variable: bool = false;
@@ -115,7 +115,7 @@ mod tests {
 
     #[test]
     fn test_basic_single_letter_expansions() {
-        let vars = VarMap::new([("A", "VALUE A"), ("B", "VALUE B")]);
+        let vars = Vars::new([("A", "VALUE A"), ("B", "VALUE B")]);
         assert_eq!(expand("$A", &vars).unwrap(), "VALUE A");
         assert_eq!(
             expand("$A with some text.", &vars).unwrap(),
@@ -133,7 +133,7 @@ mod tests {
 
     #[test]
     fn test_basic_long_expansions() {
-        let vars = VarMap::new([("TESTA", "VALUE A"), ("TESTB", "VALUE B")]);
+        let vars = Vars::new([("TESTA", "VALUE A"), ("TESTB", "VALUE B")]);
         assert_eq!(expand("$(TESTA)", &vars).unwrap(), "VALUE A");
         assert_eq!(
             expand("${TESTA} and $(TESTB)", &vars).unwrap(),
@@ -147,7 +147,7 @@ mod tests {
 
     #[test]
     fn test_basic_nested_expansions() {
-        let vars = VarMap::new([("A", "B"), ("B", "VALUE1"), ("CD", "VALUE2"), ("E", "D")]);
+        let vars = Vars::new([("A", "B"), ("B", "VALUE1"), ("CD", "VALUE2"), ("E", "D")]);
         assert_eq!(
             expand("This is $($(A))!", &vars).unwrap(),
             "This is VALUE1!",
@@ -176,7 +176,7 @@ mod tests {
 
     #[test]
     fn test_escape_dollar_sign() {
-        let vars = VarMap::new([("A", "B")]);
+        let vars = Vars::new([("A", "B")]);
         assert_eq!(expand("This is $$A!", &vars).unwrap(), "This is $A!");
         assert_eq!(expand("This is $${A}!", &vars).unwrap(), "This is ${A}!");
         assert_eq!(expand("This is $$${A}!", &vars).unwrap(), "This is $B!");
@@ -184,20 +184,20 @@ mod tests {
 
     #[test]
     fn test_not_recursive() {
-        let vars = VarMap::new([("A", "B"), ("C", "${A}")]);
+        let vars = Vars::new([("A", "B"), ("C", "${A}")]);
         assert_eq!(expand("Test ${C}", &vars).unwrap(), "Test ${A}");
     }
 
     #[test]
     fn test_recursive() {
-        let mut vars = VarMap::new([("A", "B")]);
+        let mut vars = Vars::new([("A", "B")]);
         vars.set("C", "${A}", true).unwrap();
         assert_eq!(expand("Test ${C}", &vars).unwrap(), "Test B");
     }
 
     #[test]
     fn test_double_recursive() {
-        let mut vars = VarMap::new([("A", "B")]);
+        let mut vars = Vars::new([("A", "B")]);
         for (k, v) in [("C", "${A}"), ("D", "$(C)")] {
             vars.set(k, v, true).unwrap();
         }
@@ -206,7 +206,7 @@ mod tests {
 
     #[test]
     fn test_intermediate_not_recursive() {
-        let mut vars = VarMap::new([("C", "${A}")]);
+        let mut vars = Vars::new([("C", "${A}")]);
         for (k, v) in [("A", "B"), ("D", "$(C)")] {
             vars.set(k, v, true).unwrap();
         }
@@ -215,7 +215,7 @@ mod tests {
 
     #[test]
     fn test_recursion_on_simple_value_works() {
-        let mut vars = VarMap::new([]);
+        let mut vars = Vars::new([]);
         for (k, v) in [("A", "B"), ("C", "${A}"), ("D", "$(C)")] {
             vars.set(k, v, true).unwrap();
         }
@@ -224,7 +224,7 @@ mod tests {
 
     #[test]
     fn test_nested_variable_without_closing_delimiter() {
-        let vars = VarMap::new([("TEST", "Value")]);
+        let vars = Vars::new([("TEST", "Value")]);
         assert!(expand("${TEST", &vars).is_err());
     }
 }

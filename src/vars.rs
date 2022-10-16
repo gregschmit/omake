@@ -11,7 +11,7 @@ pub struct Var {
 /// This wraps a `HashMap` and a default value, providing an easy way to get variables, handling
 /// special and automatic variables properly.
 #[derive(Debug)]
-pub struct VarMap {
+pub struct Vars {
     map: HashMap<String, Var>,
 
     // Heap-allocated "constant" `Var` objects, setup during initialization, designed to reduce
@@ -20,22 +20,22 @@ pub struct VarMap {
     default_recipe_prefix: Var,
 }
 
-impl VarMap {
+impl Vars {
     /// Primary interface for configuring a new instance. We also create some cached values that
     /// live for the lifetime of this instance to reduce the number of allocations.
     pub fn new<const N: usize>(init: [(&str, &str); N]) -> Self {
-        let map = HashMap::from(init.map(|e| {
-            (
-                e.0.to_string(),
-                Var {
-                    value: e.1.to_string(),
-                    recursive: false,
-                },
-            )
-        }));
+        // let map = HashMap::from(init.map(|e| {
+        //     (
+        //         e.0.to_string(),
+        //         Var {
+        //             value: e.1.to_string(),
+        //             recursive: false,
+        //         },
+        //     )
+        // }));
 
-        Self {
-            map: map,
+        let mut vars = Self {
+            map: HashMap::new(),
             blank: Var {
                 value: "".to_string(),
                 recursive: false,
@@ -44,7 +44,14 @@ impl VarMap {
                 value: DEFAULT_RECIPE_PREFIX.to_string(),
                 recursive: false,
             },
+        };
+
+        // Use `set` to initialize data.
+        for (k, v) in init {
+            let _ = vars.set(k, v, false);
         }
+
+        vars
     }
 
     /// Public interface for getting variables.
@@ -68,7 +75,7 @@ impl VarMap {
         }
     }
 
-    /// Public interface for setting variables. Return a `Result` of unity on success, or a str
+    /// Public interface for setting variables. Return a `Result` of unity on success, or a `String`
     /// containing the error message on failure.
     pub fn set<S: Into<String>>(&mut self, k: S, v: S, recursive: bool) -> Result<(), String> {
         let clean_key = k.into().trim().to_string();
@@ -104,15 +111,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_var_maps() {
-        let vars = VarMap::new([("A", "B")]);
+    fn test_normal_and_default_values() {
+        let vars = Vars::new([("A", "B")]);
         assert_eq!(vars.get("A").value, "B");
         assert_eq!(vars.get("B").value, "");
     }
 
     #[test]
     fn test_recipe_prefix() {
-        let mut vars = VarMap::new([]);
+        let mut vars = Vars::new([]);
         assert_eq!(vars.get(".RECIPEPREFIX").value, "\t");
         vars.set(".RECIPEPREFIX", "B", false).unwrap();
         assert_eq!(vars.get(".RECIPEPREFIX").value, "B");
