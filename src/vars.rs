@@ -1,3 +1,12 @@
+//! A wrapper for a `HashMap` for storing the environment variables during makefile.
+//!
+//! The only interesting behavior here is that for some special keys we have default values which
+//! should be "resettable" by setting the value to blank, and that calling `get` on a key that
+//! doesn't exist should return an empty `Var`. To support these behaviors without polluting the
+//! underlying `HashMap` with lots of duplicate data, the `Vars` struct contains fields for those
+//! heap-allocated "constant" objects. Since we always return a reference to a `Var`, this is quite
+//! efficient.
+
 use std::collections::HashMap;
 
 const DEFAULT_RECIPE_PREFIX: char = '\t';
@@ -24,16 +33,6 @@ impl Vars {
     /// Primary interface for configuring a new instance. We also create some cached values that
     /// live for the lifetime of this instance to reduce the number of allocations.
     pub fn new<const N: usize>(init: [(&str, &str); N]) -> Self {
-        // let map = HashMap::from(init.map(|e| {
-        //     (
-        //         e.0.to_string(),
-        //         Var {
-        //             value: e.1.to_string(),
-        //             recursive: false,
-        //         },
-        //     )
-        // }));
-
         let mut vars = Self {
             map: HashMap::new(),
             blank: Var {
@@ -54,7 +53,8 @@ impl Vars {
         vars
     }
 
-    /// Public interface for getting variables.
+    /// Public interface for getting variables. For unknown keys, the `blank` object is returned,
+    /// and some special keys have default values.
     pub fn get<S: Into<String>>(&self, k: S) -> &Var {
         let k = k.into();
         match k.as_str() {
@@ -75,11 +75,11 @@ impl Vars {
         }
     }
 
-    /// Public interface for setting variables. Return a `Result` of unity on success, or a `String`
-    /// containing the error message on failure.
+    /// Public interface for setting variables.
     pub fn set<S: Into<String>>(&mut self, k: S, v: S, recursive: bool) -> Result<(), String> {
         let clean_key = k.into().trim().to_string();
 
+        // Variable names must not include whitespace or any chars in the set: `:#=`.
         for ch in clean_key.chars() {
             if ch.is_whitespace() {
                 return Err("Variable contains whitespace.".to_string());

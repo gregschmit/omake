@@ -1,3 +1,4 @@
+mod context;
 mod error;
 mod expand;
 mod rule;
@@ -7,6 +8,7 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 
+pub use context::Context;
 pub use error::{log_err, log_warn};
 
 use error::MakeError;
@@ -16,34 +18,10 @@ use vars::Vars;
 
 const COMMENT_INDICATOR: char = '#';
 
-/// Represents parsing/execution context.
-#[derive(Clone, Debug)]
-pub struct Context {
-    pub path: Option<PathBuf>,
-    pub line_number: usize,
-    // pub row_number: Option(usize),
-}
-
-impl Context {
-    pub fn new() -> Self {
-        Self {
-            path: None,
-            line_number: 0,
-        }
-    }
-
-    pub fn from_path(path: PathBuf) -> Self {
-        Self {
-            path: Some(path),
-            line_number: 0,
-        }
-    }
-}
-
 /// The internal representation of a makefile.
 #[derive(Debug)]
 pub struct Makefile {
-    rulemap: RuleMap,
+    rule_map: RuleMap,
     default_target: Option<String>,
 
     // Parser state.
@@ -57,18 +35,18 @@ impl Makefile {
     pub fn new(makefile_fn: PathBuf) -> Result<Self, MakeError> {
         // Initialize the `Makefile` struct with default values.
         let mut makefile = Self {
-            rulemap: RuleMap::new(),
+            rule_map: RuleMap::new(),
             default_target: None,
             vars: Vars::new([]),
             current_rule: None,
-            context: Context::from_path(makefile_fn.clone()),
+            context: makefile_fn.clone().into(),
         };
 
         // Open the makefile and run it through the parser.
         let file = File::open(&makefile_fn).map_err(|e| {
             MakeError::new(
                 format!("Could not read makefile ({}).", e),
-                Context::from_path(makefile_fn),
+                makefile_fn.into(),
             )
         })?;
         makefile.parse(BufReader::new(file))?;
@@ -137,8 +115,8 @@ impl Makefile {
                     self.default_target = Some(target.clone());
                 }
 
-                // Finish terminating this rule definition (adding to rulemap).
-                match self.rulemap.get_mut(target) {
+                // Finish terminating this rule definition (adding to rule_map).
+                match self.rule_map.get_mut(target) {
                     Some(existing_rules) => {
                         // Catch user mixing single and double-colon rules.
                         if let Some(first) = existing_rules.first() {
@@ -157,7 +135,7 @@ impl Makefile {
                         }
                     }
                     None => {
-                        self.rulemap.insert(target.to_owned(), vec![rule.clone()]);
+                        self.rule_map.insert(target.to_owned(), vec![rule.clone()]);
                     }
                 }
             }
@@ -237,16 +215,22 @@ impl Makefile {
                 None => {
                     return Err(MakeError::new(
                         "No target specified and no default target found.",
-                        Context::new(),
+                        Context {
+                            path: None,
+                            line_number: 0,
+                        },
                     ))
                 }
             }
         }
 
         for target in targets {
-            let rules = self.rulemap.get(&target).ok_or(MakeError::new(
+            let rules = self.rule_map.get(&target).ok_or(MakeError::new(
                 format!("No rule to make target '{}'.", &target),
-                Context::new(),
+                Context {
+                    path: None,
+                    line_number: 0,
+                },
             ))?;
 
             // TODO: Replace all of this with rule executor.

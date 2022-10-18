@@ -41,7 +41,7 @@ pub type RuleMap = HashMap<String, Vec<Rule>>;
 // impl RuleMap {
 //     /// Helper to execute the rules for a particular target, checking dependencies
 //     // pub fn execute(&self) -> Result<(), MakeError> {
-//     //     let rules = self.rulemap.get(&target).ok_or(MakeError::new(
+//     //     let rules = self.rule_map.get(&target).ok_or(MakeError::new(
 //     //         format!("No rule to make target '{}'.", &target),
 //     //         Context::new(),
 //     //     ))?;
