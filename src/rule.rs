@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::process::Command;
 
-use super::{Context, MakeError};
+use super::{log_warn, Context, MakeError};
 
 const SHELL: &str = "/bin/sh";
 const SHELL_ARGS: &str = "-c";
@@ -35,18 +35,67 @@ impl Rule {
     }
 }
 
-/// Mapping of individual targets to vectors of rules which reference the target.
-pub type RuleMap = HashMap<String, Vec<Rule>>;
+/// Wrapper for a mapping of targets to rules. WE also provide a facility to execute targets.
+///
+/// TODO: I would ideally like to have a `rule_storage` vector of rules, and then the `rule_lookup`
+/// would map to rule refs rather than just rules. Currently, if a rule has 5 targets, then the rule
+/// gets cloned 5 times.
+#[derive(Debug)]
+pub struct RuleMap {
+    /// Maps targets to their rules.
+    rule_lookup: HashMap<String, Vec<Rule>>,
+}
 
-// impl RuleMap {
-//     /// Helper to execute the rules for a particular target, checking dependencies
-//     // pub fn execute(&self) -> Result<(), MakeError> {
-//     //     let rules = self.rule_map.get(&target).ok_or(MakeError::new(
-//     //         format!("No rule to make target '{}'.", &target),
-//     //         Context::new(),
-//     //     ))?;
-//     //     for rule in rules {
-//     //         rule.execute();
-//     //     }
-//     // }
-// }
+impl RuleMap {
+    pub fn new() -> Self {
+        Self {
+            rule_lookup: HashMap::new(),
+        }
+    }
+
+    /// A helper to insert a rule and update the `rule_lookup`.
+    pub fn insert(&mut self, rule: Rule) -> Result<(), MakeError> {
+        // Load each rule_target into the `rule_lookup` table.
+        for target in &rule.targets {
+            match self.rule_lookup.get_mut(target) {
+                Some(rules) => {
+                    // Catch user mixing single and double-colon rules.
+                    if let Some(first) = rules.first() {
+                        if first.double_colon != rule.double_colon {
+                            return Err(MakeError::new(
+                                "Cannot define rules using `:` and `::` on the same target.",
+                                rule.context.clone(),
+                            ));
+                        }
+                    }
+
+                    if rule.double_colon {
+                        rules.push(rule.clone())
+                    } else {
+                        log_warn("Ignoring duplicate definition.", Some(&rule.context));
+                    }
+                }
+                None => {
+                    self.rule_lookup
+                        .insert(target.to_owned(), vec![rule.clone()]);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Helper to execute the rules for a particular target, checking dependencies
+    pub fn execute(&self, target: &String) -> Result<(), MakeError> {
+        let rules = self.rule_lookup.get(target).ok_or(MakeError::new(
+            format!("No rule to make target '{}'.", target),
+            Context::new(),
+        ))?;
+
+        for rule in rules {
+            rule.execute()?;
+        }
+
+        Ok(())
+    }
+}

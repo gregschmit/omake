@@ -11,6 +11,15 @@ pub struct Context {
     // pub row_number: Option(usize),
 }
 
+impl Context {
+    pub fn new() -> Self {
+        Self {
+            path: None,
+            line_number: 0,
+        }
+    }
+}
+
 impl From<PathBuf> for Context {
     fn from(path: PathBuf) -> Self {
         Self {

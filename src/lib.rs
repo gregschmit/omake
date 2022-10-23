@@ -106,39 +106,21 @@ impl Makefile {
 
         // Anything other than recipe lines terminate a rule definition.
         if let Some(rule) = self.current_rule.take() {
-            for target in rule.targets.iter() {
-                // Set default target if none is specified and this is a normal target. Note that
-                // `unwrap()` here is safe because the target is a result of splitting on
-                // whitespace, which would result in an empty array if there is only whitespace or
-                // no text.
-                if self.default_target.is_none() && target.chars().nth(0).unwrap() != '.' {
-                    self.default_target = Some(target.clone());
-                }
-
-                // Finish terminating this rule definition (adding to rule_map).
-                match self.rule_map.get_mut(target) {
-                    Some(existing_rules) => {
-                        // Catch user mixing single and double-colon rules.
-                        if let Some(first) = existing_rules.first() {
-                            if first.double_colon != rule.double_colon {
-                                return Err(MakeError::new(
-                                    "Cannot define rules using `:` and `::` on the same target.",
-                                    self.context.clone(),
-                                ));
-                            }
-                        }
-
-                        if rule.double_colon {
-                            existing_rules.push(rule.clone())
-                        } else {
-                            log_warn("Ignoring duplicate definition.", Some(&self.context));
-                        }
-                    }
-                    None => {
-                        self.rule_map.insert(target.to_owned(), vec![rule.clone()]);
+            // If there is no default target, see if we can assign one.
+            if self.default_target.is_none() {
+                for target in rule.targets.iter() {
+                    // Set default target if none is specified and this is a normal target. Note that
+                    // `unwrap()` here is safe because the target is a result of splitting on
+                    // whitespace, which would result in an empty array if there is only whitespace or
+                    // no text.
+                    if self.default_target.is_none() && target.chars().nth(0).unwrap() != '.' {
+                        self.default_target = Some(target.clone());
                     }
                 }
             }
+
+            // Add the rule to the `rule_map`.
+            self.rule_map.insert(rule)?;
         }
 
         // Ignore comments and blank lines.
@@ -225,24 +207,7 @@ impl Makefile {
         }
 
         for target in targets {
-            let rules = self.rule_map.get(&target).ok_or(MakeError::new(
-                format!("No rule to make target '{}'.", &target),
-                Context {
-                    path: None,
-                    line_number: 0,
-                },
-            ))?;
-
-            // TODO: Replace all of this with rule executor.
-            for rule in rules {
-                for line in rule.recipe.iter() {
-                    const SHELL: &str = "/bin/sh";
-                    const SHELL_ARGS: &str = "-c";
-                    use std::process::Command;
-                    println!("{}", line);
-                    let _ = Command::new(SHELL).arg(SHELL_ARGS).arg(line).spawn();
-                }
-            }
+            self.rule_map.execute(&target)?;
         }
 
         Ok(())
