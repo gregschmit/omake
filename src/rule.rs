@@ -1,16 +1,26 @@
 use std::collections::HashMap;
+use std::fs;
 use std::process::Command;
+use std::time::SystemTime;
 
 use super::{log_warn, Context, MakeError};
 
 const SHELL: &str = "/bin/sh";
 const SHELL_ARGS: &str = "-c";
 
+/// Helper to get the `mtime` of a file as an optional value.
+fn get_mtime(file: &String) -> Option<SystemTime> {
+    match fs::metadata(file) {
+        Ok(metadata) => metadata.modified().ok(),
+        Err(_) => None,
+    }
+}
+
 /// Represents a parsed rule from a makefile.
 #[derive(Debug, Clone)]
 pub struct Rule {
     pub targets: Vec<String>,
-    pub dependencies: Vec<String>,
+    pub prerequisites: Vec<String>,
     pub recipe: Vec<String>,
     pub context: Context,
     pub double_colon: bool,
@@ -35,7 +45,7 @@ impl Rule {
     }
 }
 
-/// Wrapper for a mapping of targets to rules. WE also provide a facility to execute targets.
+/// Wrapper for a mapping of targets to rules. We also provide a facility to execute targets.
 ///
 /// TODO: I would ideally like to have a `rule_storage` vector of rules, and then the `rule_lookup`
 /// would map to rule refs rather than just rules. Currently, if a rule has 5 targets, then the rule
@@ -55,7 +65,7 @@ impl RuleMap {
 
     /// A helper to insert a rule and update the `rule_lookup`.
     pub fn insert(&mut self, rule: Rule) -> Result<(), MakeError> {
-        // Load each rule_target into the `rule_lookup` table.
+        // Load each target into the `rule_lookup` table.
         for target in &rule.targets {
             match self.rule_lookup.get_mut(target) {
                 Some(rules) => {
@@ -85,15 +95,40 @@ impl RuleMap {
         Ok(())
     }
 
-    /// Helper to execute the rules for a particular target, checking dependencies
+    /// Helper to execute the rules for a particular target, checking prerequisites.
     pub fn execute(&self, target: &String) -> Result<(), MakeError> {
         let rules = self.rule_lookup.get(target).ok_or(MakeError::new(
             format!("No rule to make target '{}'.", target),
             Context::new(),
         ))?;
+        let target_mtime_opt = get_mtime(target);
 
         for rule in rules {
-            rule.execute()?;
+            let mut should_execute = false;
+            // Check (and possibly execute) prereqs.
+            for prereq in &rule.prerequisites {
+                // Check if prereq exists.
+                match get_mtime(&prereq) {
+                    Some(prereq_mtime) => {
+                        // Prereq exists, so check if it's more up-to-date than the target.
+                        if let Some(target_mtime) = target_mtime_opt {
+                            if prereq_mtime > target_mtime {
+                                should_execute = true;
+                            }
+                        }
+                    }
+                    None => {
+                        // Prereq doesn't exist, so make it. By definition, it's more up-to-date
+                        // than the target.
+                        self.execute(prereq)?;
+                        should_execute = true;
+                    }
+                }
+            }
+
+            if target_mtime_opt.is_none() || should_execute {
+                rule.execute()?;
+            }
         }
 
         Ok(())

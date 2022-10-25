@@ -1,2 +1,2 @@
 mod t1_simple;
-mod t2_dependency;
+mod t2_prereq;

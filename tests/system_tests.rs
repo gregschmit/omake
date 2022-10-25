@@ -68,7 +68,8 @@ impl SystemTestCase {
 
         // Assert filesystem expectations.
         for (filename, expected_content) in &self.expected_files {
-            let content = fs::read_to_string(self.relative_path(filename)).unwrap();
+            let content =
+                fs::read_to_string(self.relative_path(filename)).unwrap_or("".to_string());
             assert_eq!(&content, expected_content);
         }
     }

@@ -25,10 +25,10 @@ fn format_log<S: Into<String>>(msg: S, level: &str, context: Option<&Context>) -
     };
 
     // Format log level.
-    let level_display = format!("{:5} |", level.to_string());
+    let level_display = format!("{:5}", level.to_string());
 
     // Print the log message.
-    format!("{context_display}{level_display}{}", msg.into())
+    format!("{context_display}: {level_display} | {}", msg.into())
 }
 
 /// Helper to format warnings.

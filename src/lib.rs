@@ -140,8 +140,8 @@ impl Makefile {
                 }
             }
 
-            // There could be a semicolon after dependencies, in which case we should
-            // parse everything after that as a rule line.
+            // There could be a semicolon after prerequisites, in which case we should parse
+            // everything after that as a rule line.
             let rule = deps.split_once(';').map(|(d, r)| {
                 deps = d;
                 r
@@ -153,7 +153,7 @@ impl Makefile {
                     .split_whitespace()
                     .map(|s| s.to_string())
                     .collect(),
-                dependencies: expand(deps, &self.vars)
+                prerequisites: expand(deps, &self.vars)
                     .map_err(|e| MakeError::new(e, self.context.clone()))?
                     .split_whitespace()
                     .map(|s| s.to_string())
