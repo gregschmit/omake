@@ -124,7 +124,8 @@ impl Makefile {
         }
 
         // Ignore comments and blank lines.
-        if line.starts_with(COMMENT_INDICATOR) || line.trim().is_empty() {
+        let trimmed_line = line.trim();
+        if trimmed_line.starts_with(COMMENT_INDICATOR) || trimmed_line.is_empty() {
             return Ok(());
         }
 
