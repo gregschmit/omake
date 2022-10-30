@@ -42,13 +42,16 @@ Working list of things that I plan on leaving out of this implementation intenti
    However, other projects might use these a lot, so if I find that's the case I might decide to
    implement implicit rules, especially if it's not too cumbersome.
 
-## Testing Methodology (TODO)
+## Testing Methodology
 
-I want to unit test as much of the code as possible.
+We have unit tests where they are feasible.
 
-After that, I want to build a series of "system" tests where we use the compiled binary on a series
-of makefiles and progammatically check the output (both stdout and filesystem output). I probably
-need to figure out how to check if other files are created by mistake and how to purge them.
+There is also a system test suite in the `tests` directory. In this context, "system" tests are
+directories which contain a makefile, a `mod.rs` file, and any other files needed by the makefile.
+The `mod.rs` invokes a `system_test_cases!` macro, which executes this project's resulting binary
+against that directory's makefile given the arguments provided and checks STDOUT against the
+expected STDOUT provided to the macro, and also checks any expected files and their content against
+the expected files and content provided to the macro.
 
-I should probably also copy over the GNU make test suite and try to get this project to pass the
-entire test suite.
+At some point, I should probably also copy over the GNU make test suite and try to get this project
+to pass the entire test suite.
