@@ -49,7 +49,8 @@ impl Rule {
 ///
 /// TODO: I would ideally like to have a `rule_storage` vector of rules, and then the `rule_lookup`
 /// would map to rule refs rather than just rules. Currently, if a rule has 5 targets, then the rule
-/// gets cloned 5 times.
+/// gets cloned 5 times. NOTE: I should use indexes to solve this problem but don't have the time
+/// right now.
 #[derive(Debug)]
 pub struct RuleMap {
     /// Maps targets to their rules.
@@ -96,7 +97,7 @@ impl RuleMap {
     }
 
     /// Helper to execute the rules for a particular target, checking prerequisites.
-    pub fn execute(&self, target: &String) -> Result<(), MakeError> {
+    pub fn execute(&self, target: &String, always_make: bool) -> Result<(), MakeError> {
         let rules = self.rule_lookup.get(target).ok_or(MakeError::new(
             format!("No rule to make target '{}'.", target),
             Context::new(),
@@ -104,24 +105,29 @@ impl RuleMap {
         let target_mtime_opt = get_mtime(target);
 
         for rule in rules {
-            let mut should_execute = false;
+            let mut should_execute = always_make;
+
             // Check (and possibly execute) prereqs.
             for prereq in &rule.prerequisites {
-                // Check if prereq exists.
-                match get_mtime(&prereq) {
-                    Some(prereq_mtime) => {
-                        // Prereq exists, so check if it's more up-to-date than the target.
-                        if let Some(target_mtime) = target_mtime_opt {
-                            if prereq_mtime > target_mtime {
-                                should_execute = true;
+                // Check if prereq exists unless `always_make`.
+                if always_make {
+                    self.execute(prereq, always_make)?;
+                } else {
+                    match get_mtime(&prereq) {
+                        Some(prereq_mtime) => {
+                            // Prereq exists, so check if it's more up-to-date than the target.
+                            if let Some(target_mtime) = target_mtime_opt {
+                                if prereq_mtime > target_mtime {
+                                    should_execute = true;
+                                }
                             }
                         }
-                    }
-                    None => {
-                        // Prereq doesn't exist, so make it. By definition, it's more up-to-date
-                        // than the target.
-                        self.execute(prereq)?;
-                        should_execute = true;
+                        None => {
+                            // Prereq doesn't exist, so make it. By definition, it's more up-to-date
+                            // than the target.
+                            self.execute(prereq, always_make)?;
+                            should_execute = true;
+                        }
                     }
                 }
             }

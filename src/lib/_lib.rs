@@ -1,7 +1,7 @@
 mod context;
 mod error;
 mod expand;
-mod rule;
+mod rule_map;
 mod vars;
 
 use std::fs::File;
@@ -13,14 +13,27 @@ pub use error::{log_err, log_warn};
 
 use error::MakeError;
 use expand::expand;
-use rule::{Rule, RuleMap};
+use rule_map::{Rule, RuleMap};
 use vars::Vars;
 
 const COMMENT_INDICATOR: char = '#';
 
+/// A representation of the options that may be provided to the `Makefile` struct. We keep this
+/// separate from the `clap`-based arguments struct on the binary side so this library may be used
+/// without requiring the use of `clap`.
+#[derive(Debug, Default)]
+pub struct Options {
+    /// Unconditionally make all targets.
+    pub always_make: bool,
+
+    /// Consider FILE to be very old and do not remake it.
+    pub old_file: Vec<String>,
+}
+
 /// The internal representation of a makefile.
 #[derive(Debug)]
 pub struct Makefile {
+    options: Options,
     rule_map: RuleMap,
     default_target: Option<String>,
 
@@ -32,9 +45,10 @@ pub struct Makefile {
 
 impl Makefile {
     /// Principal interface for reading and parsing a makefile.
-    pub fn new(makefile_fn: PathBuf) -> Result<Self, MakeError> {
+    pub fn new(makefile_fn: PathBuf, options: Options) -> Result<Self, MakeError> {
         // Initialize the `Makefile` struct with default values.
         let mut makefile = Self {
+            options: options,
             rule_map: RuleMap::new(),
             default_target: None,
             vars: Vars::new([]),
@@ -208,7 +222,7 @@ impl Makefile {
         }
 
         for target in targets {
-            self.rule_map.execute(&target)?;
+            self.rule_map.execute(&target, self.options.always_make)?;
         }
 
         Ok(())

@@ -61,8 +61,9 @@ impl SystemTestCase {
         // Assert expected `stdout` (unless expected is blank).
         if !self.expected_stdout.is_empty() {
             assert_eq!(
+                String::from_utf8_lossy(&output.stdout),
                 self.expected_stdout,
-                String::from_utf8_lossy(&output.stdout)
+                "STDOUT should match the expected STDOUT.",
             );
         }
 
@@ -70,7 +71,10 @@ impl SystemTestCase {
         for (filename, expected_content) in &self.expected_files {
             let content =
                 fs::read_to_string(self.relative_path(filename)).unwrap_or("".to_string());
-            assert_eq!(&content, expected_content);
+            assert_eq!(
+                &content, expected_content,
+                "Content of {filename} should match expected content.",
+            );
         }
     }
 
