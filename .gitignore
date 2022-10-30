@@ -1,5 +1,5 @@
 .vscode
-Makefile
+/Makefile
 
 # Created by https://www.toptal.com/developers/gitignore/api/rust,macos,windows,vim,emacs
 # Edit at https://www.toptal.com/developers/gitignore?templates=rust,macos,windows,vim,emacs

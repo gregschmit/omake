@@ -35,12 +35,15 @@ pub struct Args {
     #[arg(short = 'm')]
     pub m: Option<Option<String>>,
 
-    #[rustfmt::skip]
+    /// Print software license.
+    #[arg(long, display_order = 9999)]
+    pub license: bool,
+
     //
     // Start of `omake::Options` analogs.
     // These doc-comments should match the doc-comments in `omake::Options`.
     //
-
+    //
     /// Unconditionally make all targets.
     #[arg(short = 'B', long = "always-make")]
     pub always_make: bool,
@@ -48,15 +51,6 @@ pub struct Args {
     /// Consider FILE to be very old and do not remake it.
     #[arg(short, long, value_name = "FILE", visible_alias("assume-old"))]
     pub old_file: Vec<String>,
-
-    #[rustfmt::skip]
-    //
-    // End of `omake::Options` analogs.
-    //
-
-    /// Show full software license.
-    #[arg(long)]
-    pub license: bool,
 }
 
 impl Args {
