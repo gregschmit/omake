@@ -18,6 +18,16 @@ use vars::Vars;
 
 const COMMENT_INDICATOR: char = '#';
 
+/// An ordered list of files which ought to be used to search for a makefile.
+pub const MAKEFILE_SEARCH: [&str; 6] = [
+    "Makefile",
+    "makefile",
+    "BSDMakefile",
+    "BSDmakefile",
+    "GNUMakefile",
+    "GNUmakefile",
+];
+
 /// A representation of the options that may be provided to the `Makefile` struct. We keep this
 /// separate from the `clap`-based arguments struct on the binary side so this library may be used
 /// without requiring the use of `clap`.

@@ -9,19 +9,10 @@ use std::path::{Path, PathBuf};
 use clap::Parser;
 
 /// Only interface via the `omake` library (`lib/_lib.rs`).
-use omake::{log_err, Context, Makefile};
+use omake::{log_err, Context, Makefile, MAKEFILE_SEARCH};
 
 use args::Args;
 
-/// An ordered list of files which will be used to search for a makefile.
-const MAKEFILE_SEARCH: [&str; 6] = [
-    "Makefile",
-    "makefile",
-    "BSDMakefile",
-    "BSDmakefile",
-    "GNUMakefile",
-    "GNUmakefile",
-];
 const LICENSE: &str = include_str!("../LICENSE");
 
 /// Search for a makefile to execute.
