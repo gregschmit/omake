@@ -11,6 +11,22 @@ existing `make` implementations' source code very convoluted.
 
 https://xkcd.com/2314/
 
+## Installation
+
+You can install the binary by just doing `cargo install omake`.
+
+While the main goal of this project is the binary project `omake`, the project is designed such that
+most of the code that parses and runs makefiles is located inside the library component, `libomake`.
+
+If you want to use `libomake` library in your software, just include the dependency in your
+`Cargo.toml`, and you can disable the default feature to avoid having to bring in `clap` and
+`const_format` as dependencies of your project:
+
+```toml
+[dependencies]
+omake = { version = "*", features = [] }
+```
+
 ## Project Goals
 
 This project is in it's infancy, so I may find out later that some or all of the project goals are
