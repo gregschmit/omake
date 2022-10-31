@@ -13,10 +13,11 @@ https://xkcd.com/2314/
 
 ## Installation
 
-You can install the binary by just doing `cargo install omake`.
+You can install the binary with Cargo: `cargo install omake`. In the future, I may consider
+packaging this software for other repos such as Homebrew or the AUR.
 
 While the main goal of this project is the binary project `omake`, the project is designed such that
-most of the code that parses and runs makefiles is located inside the library component, `libomake`.
+most of the logic is located inside the library component, `libomake`.
 
 If you want to use `libomake` library in your software, just include the dependency in your
 `Cargo.toml`, and you can disable the default feature to avoid having to bring in `clap` and
@@ -65,9 +66,9 @@ We have unit tests where they are feasible.
 There is also a system test suite in the `tests` directory. In this context, "system" tests are
 directories which contain a makefile, a `mod.rs` file, and any other files needed by the makefile.
 The `mod.rs` invokes a `system_test_cases!` macro, which executes this project's resulting binary
-against that directory's makefile given the arguments provided and checks STDOUT against the
-expected STDOUT provided to the macro, and also checks the directory against the expected files and
-content provided to the macro.
+against that directory's makefile given the arguments provided and checks STDOUT/STDERR against the
+expected STDOUT/STDERR provided to the macro, and also checks the directory against the expected
+files and content provided to the macro.
 
 At some point, I should probably also copy over the GNU make test suite and try to get this project
 to pass the entire test suite.
