@@ -7,7 +7,7 @@ crate::system_test_cases!(
     },
     {
         args: &["test_prereq"],
-        expected_stdout: "",
+        expected_stdout: "?",
         expected_stderr: "",
         expected_files: &[("test", "This is a test\n"), ("test_prereq", "test2\n")],
     },

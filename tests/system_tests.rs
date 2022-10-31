@@ -62,8 +62,8 @@ impl SystemTestCase {
             .output()
             .unwrap();
 
-        // Assert expected STDOUT (unless expected is blank).
-        if !self.expected_stdout.is_empty() {
+        // Assert expected STDOUT (unless expected is sentinel `"?"`).
+        if self.expected_stdout != "?" {
             assert_eq!(
                 String::from_utf8_lossy(&output.stdout),
                 self.expected_stdout,
@@ -71,8 +71,8 @@ impl SystemTestCase {
             );
         }
 
-        // Assert expected STDERR (unless expected is blank).
-        if !self.expected_stderr.is_empty() {
+        // Assert expected STDERR (unless expected is sentinel `"?"`).
+        if self.expected_stderr != "?" {
             assert_eq!(
                 String::from_utf8_lossy(&output.stderr),
                 self.expected_stderr,
