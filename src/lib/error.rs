@@ -33,17 +33,17 @@ fn format_log<S: Into<String>>(msg: S, level: &str, context: Option<&Context>) -
 
 /// Helper to format info.
 fn format_info<S: Into<String>>(msg: S, context: Option<&Context>) -> String {
-    format!("{}", format_log(msg, "INFO", context))
+    format_log(msg, "INFO", context)
 }
 
 /// Helper to format warnings.
 fn format_warn<S: Into<String>>(msg: S, context: Option<&Context>) -> String {
-    format!("{}", format_log(msg, "WARN", context))
+    format_log(msg, "WARN", context)
 }
 
 /// Helper to format errors.
 fn format_err<S: Into<String>>(msg: S, context: Option<&Context>) -> String {
-    format!("{}", format_log(msg, "ERROR", context))
+    format_log(msg, "ERROR", context)
 }
 
 /// Helper to log info to STDERR.
@@ -72,7 +72,7 @@ impl MakeError {
     pub fn new<S: Into<String>>(msg: S, context: Context) -> Self {
         Self {
             msg: msg.into(),
-            context: context,
+            context,
         }
     }
 }

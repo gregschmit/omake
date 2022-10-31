@@ -64,13 +64,13 @@ impl Vars {
                     if var.value.is_empty() {
                         &self.default_recipe_prefix
                     } else {
-                        &var
+                        var
                     }
                 }
             },
             _ => match self.map.get(&k) {
                 None => &self.blank,
-                Some(var) => &var,
+                Some(var) => var,
             },
         }
     }
@@ -99,7 +99,7 @@ impl Vars {
             clean_key,
             Var {
                 value: v.into(),
-                recursive: recursive,
+                recursive,
             },
         );
         Ok(())

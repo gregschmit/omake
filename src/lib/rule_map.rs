@@ -109,10 +109,12 @@ impl RuleMap {
 
     /// Helper to execute the rules for a particular target, checking prerequisites.
     pub fn execute(&self, target: &String, opts: &Opts, recursive: bool) -> Result<(), MakeError> {
-        let rules = self.rule_lookup.get(target).ok_or(MakeError::new(
-            format!("No rule to make target '{}'.", target),
-            Context::new(),
-        ))?;
+        let rules = self.rule_lookup.get(target).ok_or_else(|| {
+            MakeError::new(
+                format!("No rule to make target '{}'.", target),
+                Context::new(),
+            )
+        })?;
         let target_mtime_opt = get_mtime(target, opts);
 
         // Old files have their rules ignored.
@@ -136,7 +138,7 @@ impl RuleMap {
                 if opts.always_make {
                     self.execute(prereq, opts, true)?;
                 } else {
-                    match get_mtime(&prereq, opts) {
+                    match get_mtime(prereq, opts) {
                         Some(prereq_mtime) => {
                             // Prereq exists, so check if it's more up-to-date than the target.
                             if let Some(target_mtime) = target_mtime_opt {

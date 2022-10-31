@@ -62,7 +62,7 @@ impl Makefile {
     pub fn new(makefile_fn: PathBuf, opts: Opts) -> Result<Self, MakeError> {
         // Initialize the `Makefile` struct with default values.
         let mut makefile = Self {
-            opts: opts,
+            opts,
             rule_map: RuleMap::new(),
             default_target: None,
             vars: Vars::new([]),
@@ -137,11 +137,8 @@ impl Makefile {
             // If there is no default target, see if we can assign one.
             if self.default_target.is_none() {
                 for target in rule.targets.iter() {
-                    // Set default target if none is specified and this is a normal target. Note that
-                    // `unwrap()` here is safe because the target is a result of splitting on
-                    // whitespace, which would result in an empty array if there is only whitespace or
-                    // no text.
-                    if self.default_target.is_none() && target.chars().nth(0).unwrap() != '.' {
+                    // Set default target if none is specified and this is a normal target.
+                    if self.default_target.is_none() && !target.starts_with('.') {
                         self.default_target = Some(target.clone());
                     }
                 }
@@ -189,7 +186,7 @@ impl Makefile {
                     .collect(),
                 recipe: vec![],
                 context: self.context.clone(),
-                double_colon: double_colon,
+                double_colon,
             });
 
             // Add rule line if we found one.
@@ -214,13 +211,13 @@ impl Makefile {
         }
 
         // Otherwise, throw error if line is not recognizable.
-        return Err(MakeError::new("Invalid line type.", self.context.clone()));
+        Err(MakeError::new("Invalid line type.", self.context.clone()))
     }
 
     /// Principal interface for executing a parsed makefile, given a list of targets.
     pub fn execute(&self, mut targets: Vec<String>) -> Result<(), MakeError> {
         // Set targets list to default target if none were provided.
-        if targets.len() == 0 {
+        if targets.is_empty() {
             match &self.default_target {
                 Some(t) => targets.push(t.clone()),
                 None => {

@@ -20,6 +20,12 @@ impl Context {
     }
 }
 
+impl Default for Context {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl From<PathBuf> for Context {
     fn from(path: PathBuf) -> Self {
         Self {

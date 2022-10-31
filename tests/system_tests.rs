@@ -32,15 +32,13 @@ impl SystemTestCase {
         let system_test = Self {
             // Trim leading/trailing slashes in `path`.
             path: path.trim_matches('/').to_string(),
-            args: Vec::from(args.iter().map(|a| a.to_string()).collect::<Vec<String>>()),
+            args: args.iter().map(|a| a.to_string()).collect::<Vec<String>>(),
             expected_stdout: expected_stdout.into(),
             expected_stderr: expected_stderr.into(),
-            expected_files: HashMap::from(
-                expected_files
-                    .iter()
-                    .map(|(f, c)| (f.to_string(), c.to_string()))
-                    .collect::<HashMap<String, String>>(),
-            ),
+            expected_files: expected_files
+                .iter()
+                .map(|(f, c)| (f.to_string(), c.to_string()))
+                .collect::<HashMap<String, String>>(),
         };
         system_test.run();
     }
@@ -52,7 +50,7 @@ impl SystemTestCase {
         let omake_path = format!(
             "{}target/debug/omake",
             // Traverse back from test directory to project directory.
-            "../".repeat(self.path.matches("/").count() + 1),
+            "../".repeat(self.path.matches('/').count() + 1),
         );
 
         // Run `omake` inside the system test directory.
@@ -83,7 +81,7 @@ impl SystemTestCase {
         // Assert filesystem expectations.
         for (filename, expected_content) in &self.expected_files {
             let content =
-                fs::read_to_string(self.relative_path(filename)).unwrap_or("".to_string());
+                fs::read_to_string(self.relative_path(filename)).unwrap_or_else(|_| "".to_string());
             assert_eq!(
                 &content, expected_content,
                 "Content of {filename} should match expected content.",
@@ -102,7 +100,7 @@ impl SystemTestCase {
 /// where the stack is unwinded and the `SystemTestCase` is therefore dropped.
 impl Drop for SystemTestCase {
     fn drop(&mut self) {
-        for (filename, _) in &self.expected_files {
+        for filename in self.expected_files.keys() {
             let _ = fs::remove_file(self.relative_path(filename));
         }
     }

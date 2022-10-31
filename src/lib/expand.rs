@@ -65,7 +65,7 @@ pub fn expand(s: &str, vars: &Vars) -> Result<String, String> {
 
                             // Handle recursive variable expansion.
                             let result = if var.recursive {
-                                recursive_result = expand(&var.value.as_str(), vars)?;
+                                recursive_result = expand(var.value.as_str(), vars)?;
                                 &recursive_result
                             } else {
                                 &var.value
