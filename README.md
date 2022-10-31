@@ -50,8 +50,8 @@ There is also a system test suite in the `tests` directory. In this context, "sy
 directories which contain a makefile, a `mod.rs` file, and any other files needed by the makefile.
 The `mod.rs` invokes a `system_test_cases!` macro, which executes this project's resulting binary
 against that directory's makefile given the arguments provided and checks STDOUT against the
-expected STDOUT provided to the macro, and also checks any expected files and their content against
-the expected files and content provided to the macro.
+expected STDOUT provided to the macro, and also checks the directory against the expected files and
+content provided to the macro.
 
 At some point, I should probably also copy over the GNU make test suite and try to get this project
 to pass the entire test suite.

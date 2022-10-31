@@ -1,13 +1,13 @@
-//! This module provides the `clap`-based `Args` struct and also a translation to `omake::Options`.
+//! This module provides the `clap`-based `Args` struct and also a translation to `omake::Opts`.
 //!
 //! The library portion of this software does not want to include `clap` as a dependency. To that
-//! end, there is an `Options` struct where various options may be defined and then passed to the
-//! `Makefile` constructor. We provide a facility `to_options` to translate `Args` to `Options`.
+//! end, there is an `Opts` struct where various options may be defined and then passed to the
+//! `Makefile` constructor. We provide a facility `to_opts` to translate `Args` to `Opts`.
 
 use clap::Parser;
 use const_format::formatcp;
 
-use omake::Options;
+use omake::Opts;
 
 /// Represents the `clap`-based arguments provided by this binary.
 #[derive(Clone, Debug, Parser)]
@@ -40,8 +40,8 @@ pub struct Args {
     pub license: bool,
 
     //
-    // Start of `omake::Options` analogs.
-    // These doc-comments should match the doc-comments in `omake::Options`.
+    // Start of `omake::Opts` analogs.
+    // These doc-comments should match the doc-comments in `omake::Opts`.
     //
     //
     /// Unconditionally make all targets.
@@ -51,14 +51,25 @@ pub struct Args {
     /// Consider FILE to be very old and do not remake it.
     #[arg(short, long, value_name = "FILE", visible_alias("assume-old"))]
     pub old_file: Vec<String>,
+
+    /// Consider FILE to be very new.
+    #[arg(
+        short = 'W',
+        long = "what-if",
+        value_name = "FILE",
+        visible_alias("new-file"),
+        visible_alias("assume-new")
+    )]
+    pub new_file: Vec<String>,
 }
 
 impl Args {
-    /// Helper to construct an `Options` instance from `self`.
-    pub fn to_options(&self) -> Options {
-        Options {
+    /// Helper to construct an `Opts` instance from `self`.
+    pub fn to_opts(&self) -> Opts {
+        Opts {
             always_make: self.always_make,
-            old_file: self.old_file.clone(),
+            old_files: self.old_file.clone(),
+            new_files: self.new_file.clone(),
         }
     }
 }

@@ -9,7 +9,7 @@ use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 
 pub use context::Context;
-pub use error::{log_err, log_warn};
+pub use error::{log_err, log_info, log_warn};
 
 use error::MakeError;
 use expand::expand;
@@ -22,18 +22,22 @@ const COMMENT_INDICATOR: char = '#';
 /// separate from the `clap`-based arguments struct on the binary side so this library may be used
 /// without requiring the use of `clap`.
 #[derive(Debug, Default)]
-pub struct Options {
+pub struct Opts {
     /// Unconditionally make all targets.
     pub always_make: bool,
 
     /// Consider FILE to be very old and do not remake it.
-    pub old_file: Vec<String>,
+    /// Consider the old FILE to be new, and do not remake it.
+    pub old_files: Vec<String>,
+
+    /// Consider FILE to be very new.
+    pub new_files: Vec<String>,
 }
 
 /// The internal representation of a makefile.
 #[derive(Debug)]
 pub struct Makefile {
-    options: Options,
+    opts: Opts,
     rule_map: RuleMap,
     default_target: Option<String>,
 
@@ -45,10 +49,10 @@ pub struct Makefile {
 
 impl Makefile {
     /// Principal interface for reading and parsing a makefile.
-    pub fn new(makefile_fn: PathBuf, options: Options) -> Result<Self, MakeError> {
+    pub fn new(makefile_fn: PathBuf, opts: Opts) -> Result<Self, MakeError> {
         // Initialize the `Makefile` struct with default values.
         let mut makefile = Self {
-            options: options,
+            opts: opts,
             rule_map: RuleMap::new(),
             default_target: None,
             vars: Vars::new([]),
@@ -222,7 +226,7 @@ impl Makefile {
         }
 
         for target in targets {
-            self.rule_map.execute(&target, self.options.always_make)?;
+            self.rule_map.execute(&target, &self.opts, false)?;
         }
 
         Ok(())

@@ -10,8 +10,10 @@ struct SystemTestCase {
     pub path: String,
     /// Arguments to pass to `omake`.
     pub args: Vec<String>,
-    /// Expected standard output.
+    /// Expected STDOUT.
     pub expected_stdout: String,
+    /// Expected STDERR.
+    pub expected_stderr: String,
     /// Expected files that should be created, mapped to their content.
     pub expected_files: HashMap<String, String>,
 }
@@ -24,6 +26,7 @@ impl SystemTestCase {
         path: &str,
         args: &[&str],
         expected_stdout: &str,
+        expected_stderr: &str,
         expected_files: &[(&str, &str)],
     ) {
         let system_test = Self {
@@ -31,6 +34,7 @@ impl SystemTestCase {
             path: path.trim_matches('/').to_string(),
             args: Vec::from(args.iter().map(|a| a.to_string()).collect::<Vec<String>>()),
             expected_stdout: expected_stdout.into(),
+            expected_stderr: expected_stderr.into(),
             expected_files: HashMap::from(
                 expected_files
                     .iter()
@@ -58,12 +62,21 @@ impl SystemTestCase {
             .output()
             .unwrap();
 
-        // Assert expected `stdout` (unless expected is blank).
+        // Assert expected STDOUT (unless expected is blank).
         if !self.expected_stdout.is_empty() {
             assert_eq!(
                 String::from_utf8_lossy(&output.stdout),
                 self.expected_stdout,
                 "STDOUT should match the expected STDOUT.",
+            );
+        }
+
+        // Assert expected STDERR (unless expected is blank).
+        if !self.expected_stderr.is_empty() {
+            assert_eq!(
+                String::from_utf8_lossy(&output.stderr),
+                self.expected_stderr,
+                "STDERR should match the expected STDERR.",
             );
         }
 
@@ -97,7 +110,17 @@ impl Drop for SystemTestCase {
 
 /// Helper to define system test cases inside a system test module.
 macro_rules! system_test_cases {
-    ($([$args:expr, $expected_stdout:expr, $expected_files:expr $(,)?]),+ $(,)?) => {
+    (
+        $({
+            args: $args:expr,
+            expected_stdout: $expected_stdout:expr,
+            expected_stderr: $expected_stderr:expr,
+            expected_files: $expected_files:expr
+            $(, pre_hook: $pre_hook:block)?
+            $(, post_hook: $post_hook:block)?
+            $(,)?
+        }),+ $(,)?
+    ) => {
         #[test]
         fn test() {
             // Get the path to the test file, pop off the filename, and convert to string.
@@ -107,7 +130,11 @@ macro_rules! system_test_cases {
 
             // Run the specified test cases.
             $(
-                crate::SystemTestCase::execute(&path, $args, $expected_stdout, $expected_files);
+                $($pre_hook)?
+                crate::SystemTestCase::execute(
+                    &path, $args, $expected_stdout, $expected_stderr, $expected_files
+                );
+                $($post_hook)?
             )*
         }
     };

@@ -16,9 +16,9 @@ fn format_log<S: Into<String>>(msg: S, level: &str, context: Option<&Context>) -
             None => "make:".to_string(),
             Some(path) => {
                 if context.line_number == 0 {
-                    format!("{}:{}", path.display(), context.line_number)
+                    format!("{}:{}:", path.display(), context.line_number)
                 } else {
-                    format!("{}", path.display())
+                    format!("{}:", path.display())
                 }
             }
         },
@@ -28,7 +28,12 @@ fn format_log<S: Into<String>>(msg: S, level: &str, context: Option<&Context>) -
     let level_display = format!("{:5}", level.to_string());
 
     // Print the log message.
-    format!("{context_display}: {level_display} | {}", msg.into())
+    format!("{context_display} {level_display} | {}", msg.into())
+}
+
+/// Helper to format info.
+fn format_info<S: Into<String>>(msg: S, context: Option<&Context>) -> String {
+    format!("{}", format_log(msg, "INFO", context))
 }
 
 /// Helper to format warnings.
@@ -39,6 +44,11 @@ fn format_warn<S: Into<String>>(msg: S, context: Option<&Context>) -> String {
 /// Helper to format errors.
 fn format_err<S: Into<String>>(msg: S, context: Option<&Context>) -> String {
     format!("{}", format_log(msg, "ERROR", context))
+}
+
+/// Helper to log info to STDERR.
+pub fn log_info<S: Into<String>>(msg: S, context: Option<&Context>) {
+    eprintln!("{}", format_info(msg, context));
 }
 
 /// Helper to log warnings to STDERR.

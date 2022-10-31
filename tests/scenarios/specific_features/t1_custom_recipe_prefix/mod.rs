@@ -9,4 +9,6 @@ test4
 echo \"test5\"
 test5\n";
 
-crate::system_test_cases!([&[], OUTPUT, &[],],);
+crate::system_test_cases!({
+    args: &[], expected_stdout: OUTPUT, expected_stderr: "", expected_files: &[]
+});

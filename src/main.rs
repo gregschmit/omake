@@ -57,8 +57,8 @@ fn main() {
     };
 
     // Parse the makefile.
-    let options = args.to_options();
-    let makefile = match Makefile::new(makefile_fn, options) {
+    let opts = args.to_opts();
+    let makefile = match Makefile::new(makefile_fn, opts) {
         Err(e) => exit_with(e.msg, Some(&e.context)),
         Ok(m) => m,
     };
