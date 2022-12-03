@@ -1,6 +1,6 @@
 [package]
 name = "omake"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2021"
 description = "A Rust implementation of make."
 authors = ["Gregory N. Schmit <schmitgreg@gmail.com>"]
