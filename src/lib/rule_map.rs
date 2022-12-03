@@ -57,49 +57,56 @@ impl Rule {
 }
 
 /// Wrapper for a mapping of targets to rules. We also provide a facility to execute targets.
-///
-/// TODO: I would ideally like to have a `rule_storage` vector of rules, and then the `rule_lookup`
-/// would map to rule refs rather than just rules. Currently, if a rule has 5 targets, then the rule
-/// gets cloned 5 times. NOTE: I should use indexes to solve this problem but don't have the time
-/// right now.
 #[derive(Debug)]
 pub struct RuleMap {
-    /// Maps targets to their rules.
-    rule_lookup: HashMap<String, Vec<Rule>>,
+    /// Storage for added rules. Rules must only be inserted, as removal may invalidate items in
+    /// `by_target`.
+    rules: Vec<Rule>,
+
+    /// Map targets (strings) to the rules which reference them by index into `self.rules`.
+    by_target: HashMap<String, Vec<usize>>,
 }
 
+/// Note that methods on `RuleMap` must ensure that only new entries are added to either `rules` or
+/// `by_target` to ensure index references always remain valid. Also, entries added to `by_target`
+/// must always initialize with at least one index, never an empty vector.
 impl RuleMap {
     pub fn new() -> Self {
         Self {
-            rule_lookup: HashMap::new(),
+            rules: vec![],
+            by_target: HashMap::new(),
         }
     }
 
-    /// A helper to insert a rule and update the `rule_lookup`.
+    /// Insert a rule, update the `by_target` hashmap, and validate the rule.
     pub fn insert(&mut self, rule: Rule) -> Result<(), MakeError> {
-        // Load each target into the `rule_lookup` table.
+        // Load rule into the storage vector and get a reference to it and the insertion index.
+        let index = self.rules.len();
+        self.rules.push(rule);
+        let rule = self.rules.last().unwrap();
+
+        // Load each target into `by_target` hashmap and catch some basic validation errors.
         for target in &rule.targets {
-            match self.rule_lookup.get_mut(target) {
-                Some(rules) => {
-                    // Catch user mixing single and double-colon rules.
-                    if let Some(first) = rules.first() {
-                        if first.double_colon != rule.double_colon {
-                            return Err(MakeError::new(
-                                "Cannot define rules using `:` and `::` on the same target.",
-                                rule.context.clone(),
-                            ));
-                        }
+            match self.by_target.get_mut(target) {
+                Some(rule_indices) => {
+                    // If there is an existing set of rules for this target, catch user mixing
+                    // single and double-colon rules.
+                    let first = &self.rules[rule_indices.first().unwrap().to_owned()];
+                    if first.double_colon != rule.double_colon {
+                        return Err(MakeError::new(
+                            "Cannot define rules using `:` and `::` on the same target.",
+                            rule.context.clone(),
+                        ));
                     }
 
                     if rule.double_colon {
-                        rules.push(rule.clone())
+                        rule_indices.push(index);
                     } else {
                         log_warn("Ignoring duplicate definition.", Some(&rule.context));
                     }
                 }
                 None => {
-                    self.rule_lookup
-                        .insert(target.to_owned(), vec![rule.clone()]);
+                    self.by_target.insert(target.to_owned(), vec![index]);
                 }
             }
         }
@@ -109,7 +116,7 @@ impl RuleMap {
 
     /// Helper to execute the rules for a particular target, checking prerequisites.
     pub fn execute(&self, target: &String, opts: &Opts, recursive: bool) -> Result<(), MakeError> {
-        let rules = self.rule_lookup.get(target).ok_or_else(|| {
+        let rule_indices = self.by_target.get(target).ok_or_else(|| {
             MakeError::new(
                 format!("No rule to make target '{}'.", target),
                 Context::new(),
@@ -121,7 +128,7 @@ impl RuleMap {
         if opts.old_files.contains(target) {
             if !recursive {
                 log_info(
-                    format!("'{target}' is up to date (old)."),
+                    format!("Target '{target}' is up to date (old)."),
                     Some(&Context::new()),
                 );
             }
@@ -129,7 +136,8 @@ impl RuleMap {
         }
 
         let mut executed = false;
-        for rule in rules {
+        for i in rule_indices {
+            let rule = &self.rules[i.to_owned()];
             let mut should_execute = opts.always_make;
 
             // Check (and possibly execute) prereqs.
@@ -163,8 +171,11 @@ impl RuleMap {
             }
         }
 
-        if !recursive && !executed {
-            log_info(format!("'{target}' is up to date."), Some(&Context::new()));
+        if !executed {
+            log_info(
+                format!("Target '{target}' is up to date."),
+                Some(&Context::new()),
+            );
         }
 
         Ok(())

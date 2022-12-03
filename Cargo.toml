@@ -27,7 +27,7 @@ required-features = ["bin"]
 
 # Optimize for a small binary.
 [profile.release]
-opt-level = "z"
+opt-level = "s"
 lto = true
 codegen-units = 1
 panic = "abort"

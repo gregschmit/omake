@@ -3,32 +3,28 @@ use std::fmt;
 
 use super::Context;
 
-/// Principal formatter for log messages.
-///
-/// Since existing tooling around `make` most likely targets GNU `make`, we should probably mimic
-/// that implementation's logging conventions. I imagine existing tools parse STDERR to display
-/// warnings and errors in the makefile on the associated lines.
+/// Formatter for all log messages.
 fn format_log<S: Into<String>>(msg: S, level: &str, context: Option<&Context>) -> String {
+    // Format log level.
+    let level_display = format!("{:5}", level.to_string());
+
     // Format context.
     let context_display = match context {
-        None => "make:".to_string(),
+        None => String::new(),
         Some(context) => match &context.path {
-            None => "make:".to_string(),
+            None => String::new(),
             Some(path) => {
                 if context.line_number == 0 {
-                    format!("{}:{}:", path.display(), context.line_number)
+                    format!("[{}:{}] ", path.display(), context.line_number)
                 } else {
-                    format!("{}:", path.display())
+                    format!("[{}] ", path.display())
                 }
             }
         },
     };
 
-    // Format log level.
-    let level_display = format!("{:5}", level.to_string());
-
     // Print the log message.
-    format!("{context_display} {level_display} | {}", msg.into())
+    format!("make: {level_display} {context_display}| {}", msg.into())
 }
 
 /// Helper to format info.
