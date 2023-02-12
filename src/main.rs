@@ -27,7 +27,7 @@ fn find_makefile() -> Option<PathBuf> {
 }
 
 /// Helper to print an error message and exit with code 2.
-fn exit_with<S: Into<String>>(msg: S, context: Option<&Context>) -> ! {
+fn exit_with(msg: impl AsRef<str>, context: Option<&Context>) -> ! {
     log_err(msg, context);
     std::process::exit(2)
 }

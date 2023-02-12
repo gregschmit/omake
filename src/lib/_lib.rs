@@ -29,18 +29,12 @@ pub const MAKEFILE_SEARCH: [&str; 6] = [
 ];
 
 /// A representation of the options that may be provided to the `Makefile` struct. We keep this
-/// separate from the `clap`-based arguments struct on the binary side so this library may be used
-/// without requiring the use of `clap`.
+/// separate from the `Args` struct on the binary side so this library may be used without requiring
+/// the use of `clap`.
 #[derive(Debug, Default)]
 pub struct Opts {
-    /// Unconditionally make all targets.
     pub always_make: bool,
-
-    /// Consider FILE to be very old and do not remake it.
-    /// Consider the old FILE to be new, and do not remake it.
     pub old_files: Vec<String>,
-
-    /// Consider FILE to be very new.
     pub new_files: Vec<String>,
 }
 

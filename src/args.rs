@@ -40,9 +40,7 @@ pub struct Args {
     pub license: bool,
 
     //
-    // Start of `omake::Opts` analogs.
-    // These doc-comments should match the doc-comments in `omake::Opts`.
-    //
+    // Start of `omake::Opts` analogs. All of these fields should exist in `omake::Opts`.
     //
     /// Unconditionally make all targets.
     #[arg(short = 'B', long = "always-make")]

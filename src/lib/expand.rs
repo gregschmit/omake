@@ -87,7 +87,7 @@ pub fn expand(s: &str, vars: &Vars) -> Result<String, String> {
             _ => {
                 // If we hit the variable indicator, then inline expansion since nesting is impossible.
                 if hit_variable {
-                    let eval = &vars.get(c).value;
+                    let eval = &vars.get(c.to_string()).value;
                     current_buffer.push_str(eval);
                     hit_variable = false;
                     continue;

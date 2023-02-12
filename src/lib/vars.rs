@@ -55,10 +55,10 @@ impl Vars {
 
     /// Public interface for getting variables. For unknown keys, the `blank` object is returned,
     /// and some special keys have default values.
-    pub fn get<S: Into<String>>(&self, k: S) -> &Var {
-        let k = k.into();
-        match k.as_str() {
-            ".RECIPEPREFIX" => match self.map.get(&k) {
+    pub fn get(&self, k: impl AsRef<str>) -> &Var {
+        let k = k.as_ref().trim();
+        match k {
+            ".RECIPEPREFIX" => match self.map.get(k) {
                 None => &self.default_recipe_prefix,
                 Some(var) => {
                     if var.value.is_empty() {
@@ -68,7 +68,7 @@ impl Vars {
                     }
                 }
             },
-            _ => match self.map.get(&k) {
+            _ => match self.map.get(k) {
                 None => &self.blank,
                 Some(var) => var,
             },
@@ -77,10 +77,11 @@ impl Vars {
 
     /// Public interface for setting variables.
     pub fn set<S: Into<String>>(&mut self, k: S, v: S, recursive: bool) -> Result<(), String> {
-        let clean_key = k.into().trim().to_string();
+        let k = k.into().trim().to_string();
+        let v = v.into();
 
         // Variable names must not include whitespace or any chars in the set: `:#=`.
-        for ch in clean_key.chars() {
+        for ch in k.chars() {
             if ch.is_whitespace() {
                 return Err("Variable contains whitespace.".to_string());
             }
@@ -96,9 +97,9 @@ impl Vars {
         }
 
         self.map.insert(
-            clean_key,
+            k,
             Var {
-                value: v.into(),
+                value: v,
                 recursive,
             },
         );
