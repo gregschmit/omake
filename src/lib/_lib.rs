@@ -83,7 +83,7 @@ impl Makefile {
 
         for (i, result) in stream.lines().enumerate() {
             // Set the context line number and extract the line.
-            self.context.line_number = i + 1;
+            self.context.line_number = (i + 1) as u64;
             let line = result.map_err(|e| MakeError::new(e.to_string(), self.context.clone()))?;
 
             // Parse the line.
@@ -220,6 +220,8 @@ impl Makefile {
                         Context {
                             path: None,
                             line_number: 0,
+                            row_number: None,
+                            line: None,
                         },
                     ))
                 }
