@@ -7,8 +7,9 @@ use std::path::PathBuf;
 #[derive(Clone, Debug)]
 pub struct Context {
     pub path: Option<PathBuf>,
-    pub line_number: usize,
-    // pub row_number: Option(usize),
+    pub line_number: u64,
+    pub row_number: Option<u64>,
+    pub line: Option<String>,
 }
 
 impl Context {
@@ -16,6 +17,8 @@ impl Context {
         Self {
             path: None,
             line_number: 0,
+            row_number: None,
+            line: None,
         }
     }
 }
@@ -31,6 +34,8 @@ impl From<PathBuf> for Context {
         Self {
             path: Some(path),
             line_number: 0,
+            row_number: None,
+            line: None,
         }
     }
 }
