@@ -3,7 +3,9 @@ use std::fs;
 use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use super::{log_info, log_warn, Context, MakeError, Opts};
+use super::args::Args;
+use super::context::Context;
+use super::error::{log_info, log_warn, MakeError};
 
 const SHELL: &str = "/bin/sh";
 const SHELL_ARGS: &str = "-c";
@@ -11,12 +13,12 @@ const SHELL_ARGS: &str = "-c";
 /// Helper to get the `mtime` of a file as an optional value. Note that the return value also
 /// signals whether or not the file is accessible, so a `None` value represents either the file not
 /// existing or the current user not having the appropriate permissions to access the file.
-fn get_mtime(file: &String, opts: &Opts) -> Option<SystemTime> {
+fn get_mtime(file: &String, args: &Args) -> Option<SystemTime> {
     match fs::metadata(file) {
         Ok(metadata) => {
-            if opts.old_files.contains(file) {
+            if args.old_file.contains(file) {
                 Some(UNIX_EPOCH)
-            } else if opts.new_files.contains(file) {
+            } else if args.new_file.contains(file) {
                 // 1 year in the future.
                 Some(SystemTime::now() + Duration::from_secs(365 * 24 * 60 * 60))
             } else {
@@ -115,17 +117,17 @@ impl RuleMap {
     }
 
     /// Helper to execute the rules for a particular target, checking prerequisites.
-    pub fn execute(&self, target: &String, opts: &Opts, recursive: bool) -> Result<(), MakeError> {
+    pub fn execute(&self, target: &String, args: &Args, recursive: bool) -> Result<(), MakeError> {
         let rule_indices = self.by_target.get(target).ok_or_else(|| {
             MakeError::new(
                 format!("No rule to make target '{}'.", target),
                 Context::new(),
             )
         })?;
-        let target_mtime_opt = get_mtime(target, opts);
+        let target_mtime_opt = get_mtime(target, args);
 
         // Old files have their rules ignored.
-        if opts.old_files.contains(target) {
+        if args.old_file.contains(target) {
             if !recursive {
                 log_info(
                     format!("Target '{target}' is up to date (old)."),
@@ -138,15 +140,15 @@ impl RuleMap {
         let mut executed = false;
         for i in rule_indices {
             let rule = &self.rules[i.to_owned()];
-            let mut should_execute = opts.always_make;
+            let mut should_execute = args.always_make;
 
             // Check (and possibly execute) prereqs.
             for prereq in &rule.prerequisites {
                 // Check if prereq exists unless `always_make`.
-                if opts.always_make {
-                    self.execute(prereq, opts, true)?;
+                if args.always_make {
+                    self.execute(prereq, args, true)?;
                 } else {
-                    match get_mtime(prereq, opts) {
+                    match get_mtime(prereq, args) {
                         Some(prereq_mtime) => {
                             // Prereq exists, so check if it's more up-to-date than the target.
                             if let Some(target_mtime) = target_mtime_opt {
@@ -158,7 +160,7 @@ impl RuleMap {
                         None => {
                             // Prereq doesn't exist, so make it. By definition, it's more up-to-date
                             // than the target.
-                            self.execute(prereq, opts, true)?;
+                            self.execute(prereq, args, true)?;
                             should_execute = true;
                         }
                     }

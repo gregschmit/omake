@@ -1,13 +1,8 @@
-//! This module provides the `clap`-based `Args` struct and also a translation to `omake::Opts`.
-//!
-//! The library portion of this software does not want to include `clap` as a dependency. To that
-//! end, there is an `Opts` struct where various options may be defined and then passed to the
-//! `Makefile` constructor. We provide a facility `to_opts` to translate `Args` to `Opts`.
+//! This module provides the `clap`-based `Args` struct. This is also used for invocations of
+//! sub-make using `$(MAKE)`.
 
 use clap::Parser;
 use const_format::formatcp;
-
-use omake::Opts;
 
 /// Represents the `clap`-based arguments provided by this binary.
 #[derive(Clone, Debug, Parser)]
@@ -35,13 +30,6 @@ pub struct Args {
     #[arg(short = 'm')]
     pub m: Option<Option<String>>,
 
-    /// Print software license.
-    #[arg(long, display_order = 9999)]
-    pub license: bool,
-
-    //
-    // Start of `omake::Opts` analogs. All of these fields should exist in `omake::Opts`.
-    //
     /// Unconditionally make all targets.
     #[arg(short = 'B', long = "always-make")]
     pub always_make: bool,
@@ -59,15 +47,8 @@ pub struct Args {
         visible_alias("assume-new")
     )]
     pub new_file: Vec<String>,
-}
 
-impl Args {
-    /// Helper to construct an `Opts` instance from `self`.
-    pub fn to_opts(&self) -> Opts {
-        Opts {
-            always_make: self.always_make,
-            old_files: self.old_file.clone(),
-            new_files: self.new_file.clone(),
-        }
-    }
+    /// Print software license.
+    #[arg(long)]
+    pub license: bool,
 }

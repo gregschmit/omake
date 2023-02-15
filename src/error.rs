@@ -1,7 +1,7 @@
 use std::error::Error;
 use std::fmt;
 
-use super::Context;
+use super::context::Context;
 
 /// Formatter for all log messages.
 fn format_log(msg: impl AsRef<str>, level: &str, context: Option<&Context>) -> String {

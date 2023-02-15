@@ -1,4 +1,4 @@
-use super::Vars;
+use super::vars::Vars;
 
 /// Represents a frame on the stack inside the `expand` function. This is used for tracking the
 /// previous buffer when expanding potentially nested expressions (i.e., either `$()` or `${}`).

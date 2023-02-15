@@ -13,20 +13,8 @@ https://xkcd.com/2314/
 
 ## Installation
 
-You can install the binary with Cargo: `cargo install omake`. In the future, I may consider
-packaging this software for other repos such as Homebrew or the AUR.
-
-While the main goal of this project is the binary project `omake`, the project is designed such that
-most of the logic is located inside the library component, `libomake`.
-
-If you want to use `libomake` library in your software, just include the dependency in your
-`Cargo.toml`, and you can disable the default feature to avoid having to bring in `clap` and
-`const_format` as dependencies of your project:
-
-```toml
-[dependencies]
-omake = { version = "*", features = [] }
-```
+You can install with Cargo: `cargo install omake`. In the future, I may consider packaging this
+project for other repos such as Homebrew or the AUR.
 
 ## Project Goals
 

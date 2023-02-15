@@ -1,47 +1,20 @@
-mod context;
-mod error;
-mod expand;
-mod rule_map;
-mod vars;
-
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 
-pub use context::Context;
-pub use error::{log_err, log_info, log_warn};
-
-use error::MakeError;
-use expand::expand;
-use rule_map::{Rule, RuleMap};
-use vars::Vars;
+use super::args::Args;
+use super::context::Context;
+use super::error::MakeError;
+use super::expand::expand;
+use super::rule_map::{Rule, RuleMap};
+use super::vars::Vars;
 
 const COMMENT_INDICATOR: char = '#';
-
-/// An ordered list of files which ought to be used to search for a makefile.
-pub const MAKEFILE_SEARCH: [&str; 6] = [
-    "Makefile",
-    "makefile",
-    "BSDMakefile",
-    "BSDmakefile",
-    "GNUMakefile",
-    "GNUmakefile",
-];
-
-/// A representation of the options that may be provided to the `Makefile` struct. We keep this
-/// separate from the `Args` struct on the binary side so this library may be used without requiring
-/// the use of `clap`.
-#[derive(Debug, Default)]
-pub struct Opts {
-    pub always_make: bool,
-    pub old_files: Vec<String>,
-    pub new_files: Vec<String>,
-}
 
 /// The internal representation of a makefile.
 #[derive(Debug)]
 pub struct Makefile {
-    opts: Opts,
+    args: Args,
     rule_map: RuleMap,
     default_target: Option<String>,
 
@@ -53,10 +26,10 @@ pub struct Makefile {
 
 impl Makefile {
     /// Principal interface for reading and parsing a makefile.
-    pub fn new(makefile_fn: PathBuf, opts: Opts) -> Result<Self, MakeError> {
+    pub fn new(makefile_fn: PathBuf, args: Args) -> Result<Self, MakeError> {
         // Initialize the `Makefile` struct with default values.
         let mut makefile = Self {
-            opts,
+            args,
             rule_map: RuleMap::new(),
             default_target: None,
             vars: Vars::new([]),
@@ -210,7 +183,9 @@ impl Makefile {
     }
 
     /// Principal interface for executing a parsed makefile, given a list of targets.
-    pub fn execute(&self, mut targets: Vec<String>) -> Result<(), MakeError> {
+    pub fn execute(&self) -> Result<(), MakeError> {
+        let mut targets = self.args.targets.clone();
+
         // Set targets list to default target if none were provided.
         if targets.is_empty() {
             match &self.default_target {
@@ -225,7 +200,7 @@ impl Makefile {
         }
 
         for target in targets {
-            self.rule_map.execute(&target, &self.opts, false)?;
+            self.rule_map.execute(&target, &self.args, false)?;
         }
 
         Ok(())

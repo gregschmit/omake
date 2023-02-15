@@ -1,17 +1,34 @@
 //! # omake (Oxidized Make)
 //!
-//! This is an implementation of `make`, written in Rust.
+//! This is an implementation of `make`, written in Rust. The goal is to provide an implementation
+//! of `make` that can be used to process both BSD and GNU makefiles.
 
 mod args;
+mod context;
+mod error;
+mod expand;
+mod makefile;
+mod rule_map;
+mod vars;
 
 use std::path::{Path, PathBuf};
 
 use clap::Parser;
 
-/// Only interface via the `omake` library (`lib/_lib.rs`).
-use omake::{log_err, Context, Makefile, MAKEFILE_SEARCH};
-
 use args::Args;
+use context::Context;
+use error::log_err;
+use makefile::Makefile;
+
+/// An ordered list of files which ought to be used to search for a makefile.
+const MAKEFILE_SEARCH: [&str; 6] = [
+    "Makefile",
+    "makefile",
+    "BSDMakefile",
+    "BSDmakefile",
+    "GNUMakefile",
+    "GNUmakefile",
+];
 
 const LICENSE: &str = include_str!("../LICENSE");
 
@@ -48,12 +65,11 @@ fn main() {
     };
 
     // Parse the makefile.
-    let opts = args.to_opts();
-    let makefile = match Makefile::new(makefile_fn, opts) {
+    let makefile = match Makefile::new(makefile_fn, args) {
         Err(e) => exit_with(e.msg, Some(&e.context)),
         Ok(m) => m,
     };
-    if let Err(e) = makefile.execute(args.targets) {
+    if let Err(e) = makefile.execute() {
         exit_with(e.msg, Some(&e.context));
     }
 }
