@@ -50,7 +50,7 @@ pub struct Args {
     #[arg(short, long, value_name = "FILE", visible_alias("assume-old"))]
     pub old_file: Vec<String>,
 
-    /// Consider FILE to be very new.
+    /// Consider FILE to be very new to simulate "what if" it changed.
     #[arg(
         short = 'W',
         long = "what-if",

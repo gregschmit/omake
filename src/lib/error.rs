@@ -27,22 +27,6 @@ fn format_log(msg: impl AsRef<str>, level: &str, context: Option<&Context>) -> S
     format!("make: {level_display} {context_display}| {}", msg.as_ref())
 }
 
-/// Get line content from a context.
-/// TODO: improve the implementation of this function.
-fn set_line_string_on_context(context: &mut Context) -> () {
-    if let Some(path) = &context.path {
-        return if let Ok(lines) = std::fs::read_to_string(path) {
-            if let Some(line) = lines.lines().nth(context.line_number as usize) {
-                context.line = Some(line.to_string());
-            } else {
-                context.line = None;
-            }
-        } else {
-            context.line = None;
-        };
-    }
-}
-
 /// Helper to format info.
 fn format_info(msg: impl AsRef<str>, context: Option<&Context>) -> String {
     format_log(msg, "INFO", context)
@@ -50,24 +34,12 @@ fn format_info(msg: impl AsRef<str>, context: Option<&Context>) -> String {
 
 /// Helper to format warnings.
 fn format_warn(msg: impl AsRef<str>, context: Option<&Context>) -> String {
-    if let Some(context) = context {
-        let mut context = context.clone();
-        set_line_string_on_context(&mut context);
-        format_log(msg, "WARN", Some(&context))
-    } else {
-        format_log(msg, "WARN", None)
-    }
+    format_log(msg, "WARN", context)
 }
 
 /// Helper to format errors.
 fn format_err(msg: impl AsRef<str>, context: Option<&Context>) -> String {
-    if let Some(context) = context {
-        let mut context = context.clone();
-        set_line_string_on_context(&mut context);
-        format_log(msg, "ERROR", Some(&context))
-    } else {
-        format_log(msg, "ERROR", None)
-    }
+    format_log(msg, "ERROR", context)
 }
 
 /// Helper to log info to STDERR.

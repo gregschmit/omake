@@ -83,8 +83,9 @@ impl Makefile {
 
         for (i, result) in stream.lines().enumerate() {
             // Set the context line number and extract the line.
-            self.context.line_number = (i + 1) as u64;
+            self.context.line_number = i + 1;
             let line = result.map_err(|e| MakeError::new(e.to_string(), self.context.clone()))?;
+            self.context.line = Some(line.clone());
 
             // Parse the line.
             self.parse_line(line)?;
@@ -217,12 +218,7 @@ impl Makefile {
                 None => {
                     return Err(MakeError::new(
                         "No target specified and no default target found.",
-                        Context {
-                            path: None,
-                            line_number: 0,
-                            row_number: None,
-                            line: None,
-                        },
+                        Context::new(),
                     ))
                 }
             }

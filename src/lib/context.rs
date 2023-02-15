@@ -1,4 +1,4 @@
-//! Simple implementation of a `Context` structure designed to track parsing/execution location.
+//! Simple implementation of a `Context` struct designed to track parsing/execution location.
 
 use std::path::PathBuf;
 
@@ -7,8 +7,14 @@ use std::path::PathBuf;
 #[derive(Clone, Debug)]
 pub struct Context {
     pub path: Option<PathBuf>,
-    pub line_number: u64,
-    pub row_number: Option<u64>,
+
+    // Line/row number is determined when iterating the input, so we use `usize` here to match the
+    // return type of `enumerate()`. Both line and row are `1`-indexed to match the convention other
+    // programs (including other make implementations) use when referencing line/column numbers, so
+    // `0` is a sentinel value indicating that the value is not set.
+    pub line_number: usize,
+    pub column_number: usize,
+
     pub line: Option<String>,
 }
 
@@ -17,7 +23,7 @@ impl Context {
         Self {
             path: None,
             line_number: 0,
-            row_number: None,
+            column_number: 0,
             line: None,
         }
     }
@@ -34,7 +40,7 @@ impl From<PathBuf> for Context {
         Self {
             path: Some(path),
             line_number: 0,
-            row_number: None,
+            column_number: 0,
             line: None,
         }
     }
