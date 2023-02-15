@@ -27,6 +27,44 @@ impl Context {
             line: None,
         }
     }
+
+    pub fn label(&self) -> Option<String> {
+        self.path.as_ref().map(|path| {
+            if self.line_number == 0 {
+                if self.column_number == 0 {
+                    format!("{}:{}", path.display(), self.line_number)
+                } else {
+                    format!(
+                        "{}:{}:{}",
+                        path.display(),
+                        self.line_number,
+                        self.column_number
+                    )
+                }
+            } else {
+                path.display().to_string()
+            }
+        })
+    }
+
+    pub fn display_line(&self) -> Option<String> {
+        self.line.as_ref().map(|line| {
+            let line_number_s = if self.line_number == 0 {
+                String::new()
+            } else {
+                self.line_number.to_string()
+            };
+            let pad = " ".repeat(line_number_s.len());
+            let caret = String::new();
+            format!(
+                "{pad} |\n{line_number} | {line}\n{pad} | {caret}\n",
+                pad = pad,
+                line_number = line_number_s,
+                line = line,
+                caret = caret,
+            )
+        })
+    }
 }
 
 impl Default for Context {

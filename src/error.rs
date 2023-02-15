@@ -3,43 +3,51 @@ use std::fmt;
 
 use super::context::Context;
 
+const INFO: &str = "INFO";
+const WARN: &str = "WARN";
+const ERROR: &str = "ERROR";
+const MAX_SEVERITY_LENGTH: usize = 5;
+
 /// Formatter for all log messages.
 fn format_log(msg: impl AsRef<str>, level: &str, context: Option<&Context>) -> String {
-    // Format log level.
-    let level_display = format!("{:5}", level);
+    // Format log level and context label/line.
+    let level_display = format!("{:0width$}", level, width = MAX_SEVERITY_LENGTH);
+    let context_label = context
+        .and_then(|c| c.label())
+        .map(|l| format!("[{}] ", l))
+        .unwrap_or_default();
 
-    // Format context.
-    let context_display = match context {
-        None => String::new(),
-        Some(context) => match &context.path {
-            None => String::new(),
-            Some(path) => {
-                if context.line_number == 0 {
-                    format!("[{}:{}] ", path.display(), context.line_number)
-                } else {
-                    format!("[{}] ", path.display())
-                }
-            }
-        },
+    // Only show the context line if we are logging warnings or errors.
+    let context_line = if level == "WARN" || level == "ERROR" {
+        context
+            .and_then(|c| c.display_line())
+            .map(|l| format!("\n{}", l))
+            .unwrap_or_default()
+    } else {
+        String::new()
     };
 
-    // Print the log message.
-    format!("make: {level_display} {context_display}| {}", msg.as_ref())
+    // Return the formatted message.
+    format!(
+        "make: {level_display} {context_label}| {}{}",
+        msg.as_ref(),
+        context_line
+    )
 }
 
 /// Helper to format info.
 fn format_info(msg: impl AsRef<str>, context: Option<&Context>) -> String {
-    format_log(msg, "INFO", context)
+    format_log(msg, INFO, context)
 }
 
 /// Helper to format warnings.
 fn format_warn(msg: impl AsRef<str>, context: Option<&Context>) -> String {
-    format_log(msg, "WARN", context)
+    format_log(msg, WARN, context)
 }
 
 /// Helper to format errors.
 fn format_err(msg: impl AsRef<str>, context: Option<&Context>) -> String {
-    format_log(msg, "ERROR", context)
+    format_log(msg, ERROR, context)
 }
 
 /// Helper to log info to STDERR.
