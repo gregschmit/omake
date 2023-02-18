@@ -43,7 +43,7 @@ impl SystemTestCase {
         system_test.run();
     }
 
-    /// Helper to run this system test and assert any expectations.
+    /// Run this system test and assert any expectations.
     fn run(&self) {
         // Determine path to `omake` (inside the `target/debug` directory). Note that we must
         // reference `omake` from within the directory that the system test is located.
@@ -89,7 +89,7 @@ impl SystemTestCase {
         }
     }
 
-    /// Helper to get the relative path to a file for this system test.
+    /// Get the relative path to a file for this system test.
     fn relative_path(&self, file: &String) -> String {
         format!("{}/{file}", self.path)
     }
@@ -106,7 +106,7 @@ impl Drop for SystemTestCase {
     }
 }
 
-/// Helper to define system test cases inside a system test module.
+/// Define system test cases inside a system test module.
 macro_rules! system_test_cases {
     (
         $({

@@ -49,8 +49,8 @@ impl Makefile {
         Ok(makefile)
     }
 
-    /// This helper is designed to iterate over the makefile lines, call `parse_line` to handle the
-    /// actual parsing logic, and manage context.
+    /// Iterate over the makefile lines, call `parse_line` to handle the actual parsing logic, and
+    /// manage context.
     fn parse<R: BufRead>(&mut self, stream: R) -> Result<(), MakeError> {
         self.current_rule = None;
 

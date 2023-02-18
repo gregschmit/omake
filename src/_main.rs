@@ -12,7 +12,8 @@ mod rule_map;
 mod vars;
 
 use std::env::{current_dir, set_current_dir};
-use std::path::{Path, PathBuf};
+use std::fs::read_dir;
+use std::path::PathBuf;
 
 use clap::Parser;
 
@@ -21,8 +22,7 @@ use context::Context;
 use error::{log_error, log_info};
 use makefile::Makefile;
 
-/// An ordered list of files which ought to be used to search for a makefile. POSIX specifies that
-/// `makefile` must be checked before `Makefile`, so we also extend that to the BSD/GNU flavors.
+/// An ordered list of files which ought to be used to search for a makefile.
 const MAKEFILE_SEARCH: [&str; 6] = [
     "makefile",
     "Makefile",
@@ -35,17 +35,48 @@ const MAKEFILE_SEARCH: [&str; 6] = [
 const LICENSE: &str = include_str!("../LICENSE");
 
 /// Search for a makefile to execute.
+///
+/// We have to take into account that the file system may be case-insensitive. Ideally, we want to
+/// return the proper casing of the makefile (so the file is properly reported when logging), and we
+/// also want to support weirdly-cased makefiles on case-insensitive file systems, such as
+/// `MAKEFILE`. To that end, we first get a directory listing and try to find makefiles from that
+/// list, which would ensure the proper casing is returned. As a fallback, we then iterate through
+/// the `MAKEFILE_SEARCH` list, which will do a case-insensitive match on case-insensitive file
+/// systems, and therefore would return improper casing (e.g., `MAKEFILE` would be returned as
+/// `makefile`, since that would be the first match).
 fn find_makefile() -> Option<PathBuf> {
+    // First, try to find a makefile from the directory listing, which will be a case-sensitive
+    // match. This ensures that if a case-sensitive match is found on a case-insensitive file
+    // system, we will return the proper casing (e.g., if `Makefile` is found, then we won't have
+    // first matched `makefile` and therefore returned the wrong casing.).
+    if let Some(cwd_files) = read_dir("./").ok().map(|rd| {
+        rd.flatten()
+            .filter_map(|rd| rd.path().file_name().map(PathBuf::from))
+            .collect::<Vec<PathBuf>>()
+    }) {
+        for file in MAKEFILE_SEARCH {
+            let f = PathBuf::from(file);
+            if cwd_files.contains(&f) && f.is_file() {
+                return Some(f);
+            }
+        }
+    }
+
+    // Second, test each file in `MAKEFILE_SEARCH`, which then does a case-insensitive match on
+    // case-insensitive file systems. This is purely for flexibility on case-insensitive file
+    // systems (e.g., so a file named `MAKEFILE` would be matched), however it does result in the
+    // "wrong" casing being logged.
     for file in MAKEFILE_SEARCH {
-        if Path::new(file).is_file() {
-            return Some(PathBuf::from(file));
+        let f = PathBuf::from(file);
+        if f.is_file() {
+            return Some(f);
         }
     }
 
     None
 }
 
-/// Helper to print an error message and exit with code 2.
+/// Print an error message and exit with code 2.
 fn exit_with(msg: impl AsRef<str>, context: Option<&Context>) -> ! {
     log_error(msg, context);
     std::process::exit(2)

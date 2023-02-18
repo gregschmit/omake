@@ -43,7 +43,7 @@ pub struct Rule {
 }
 
 impl Rule {
-    /// Helper to unconditionally execute a rule.
+    /// Unconditionally execute a rule.
     pub(super) fn execute(&self) -> Result<(), MakeError> {
         for line in self.recipe.iter() {
             // Echo the line to stdout.
@@ -119,7 +119,7 @@ impl RuleMap {
         Ok(())
     }
 
-    /// Helper to execute the rules for a particular target, checking prerequisites.
+    /// Execute the rules for a particular target, checking prerequisites.
     pub fn execute(&self, target: &String, args: &Args, recursive: bool) -> Result<(), MakeError> {
         let rule_indices = self.by_target.get(target).ok_or_else(|| {
             MakeError::new(
