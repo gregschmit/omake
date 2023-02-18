@@ -1,7 +1,7 @@
 use std::error::Error;
 use std::fmt;
 
-use super::context::Context;
+use crate::context::Context;
 
 const INFO: &str = "INFO";
 const WARN: &str = "WARN";

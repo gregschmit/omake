@@ -2,12 +2,12 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 
-use super::args::Args;
-use super::context::Context;
-use super::error::MakeError;
-use super::expand::expand;
-use super::rule_map::{Rule, RuleMap};
-use super::vars::Vars;
+use crate::args::Args;
+use crate::context::Context;
+use crate::error::MakeError;
+use crate::expand::expand;
+use crate::rule_map::{Rule, RuleMap};
+use crate::vars::Vars;
 
 const COMMENT_INDICATOR: char = '#';
 

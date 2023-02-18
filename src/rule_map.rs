@@ -3,9 +3,9 @@ use std::fs;
 use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use super::args::Args;
-use super::context::Context;
-use super::error::{log_info, log_warn, MakeError};
+use crate::args::Args;
+use crate::context::Context;
+use crate::error::{log_info, log_warn, MakeError};
 
 const SHELL: &str = "/bin/sh";
 const SHELL_ARGS: &str = "-c";
