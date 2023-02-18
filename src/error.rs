@@ -35,34 +35,19 @@ fn format_log(msg: impl AsRef<str>, level: &str, context: Option<&Context>) -> S
     )
 }
 
-/// Helper to format info.
-fn format_info(msg: impl AsRef<str>, context: Option<&Context>) -> String {
-    format_log(msg, INFO, context)
-}
-
-/// Helper to format warnings.
-fn format_warn(msg: impl AsRef<str>, context: Option<&Context>) -> String {
-    format_log(msg, WARN, context)
-}
-
-/// Helper to format errors.
-fn format_err(msg: impl AsRef<str>, context: Option<&Context>) -> String {
-    format_log(msg, ERROR, context)
-}
-
-/// Helper to log info to STDERR.
+/// Log an `INFO` message to STDERR.
 pub fn log_info(msg: impl AsRef<str>, context: Option<&Context>) {
-    eprintln!("{}", format_info(msg, context));
+    eprintln!("{}", format_log(msg, INFO, context));
 }
 
-/// Helper to log warnings to STDERR.
+/// Log a `WARN` message to STDERR.
 pub fn log_warn(msg: impl AsRef<str>, context: Option<&Context>) {
-    eprintln!("{}", format_warn(msg, context));
+    eprintln!("{}", format_log(msg, WARN, context));
 }
 
-/// Helper to log errors to STDERR.
-pub fn log_err(msg: impl AsRef<str>, context: Option<&Context>) {
-    eprintln!("{}", format_err(msg, context));
+/// Log an `ERROR` message to STDERR.
+pub fn log_error(msg: impl AsRef<str>, context: Option<&Context>) {
+    eprintln!("{}", format_log(msg, ERROR, context));
 }
 
 /// Represents a generic error in a makefile, including context.
@@ -85,6 +70,6 @@ impl Error for MakeError {}
 
 impl fmt::Display for MakeError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", format_err(&self.msg, Some(&self.context)))
+        write!(f, "{}", format_log(&self.msg, ERROR, Some(&self.context)))
     }
 }

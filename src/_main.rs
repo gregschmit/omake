@@ -17,7 +17,7 @@ use clap::Parser;
 
 use args::Args;
 use context::Context;
-use error::log_err;
+use error::log_error;
 use makefile::Makefile;
 
 /// An ordered list of files which ought to be used to search for a makefile.
@@ -45,7 +45,7 @@ fn find_makefile() -> Option<PathBuf> {
 
 /// Helper to print an error message and exit with code 2.
 fn exit_with(msg: impl AsRef<str>, context: Option<&Context>) -> ! {
-    log_err(msg, context);
+    log_error(msg, context);
     std::process::exit(2)
 }
 
