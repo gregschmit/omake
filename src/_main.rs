@@ -11,23 +11,25 @@ mod makefile;
 mod rule_map;
 mod vars;
 
+use std::env::{current_dir, set_current_dir};
 use std::path::{Path, PathBuf};
 
 use clap::Parser;
 
 use args::Args;
 use context::Context;
-use error::log_error;
+use error::{log_error, log_info};
 use makefile::Makefile;
 
-/// An ordered list of files which ought to be used to search for a makefile.
+/// An ordered list of files which ought to be used to search for a makefile. POSIX specifies that
+/// `makefile` must be checked before `Makefile`, so we also extend that to the BSD/GNU flavors.
 const MAKEFILE_SEARCH: [&str; 6] = [
-    "Makefile",
     "makefile",
-    "BSDMakefile",
+    "Makefile",
     "BSDmakefile",
-    "GNUMakefile",
+    "BSDMakefile",
     "GNUmakefile",
+    "GNUMakefile",
 ];
 
 const LICENSE: &str = include_str!("../LICENSE");
@@ -58,6 +60,28 @@ fn main() {
         return;
     }
 
+    // Change to another directory, if specified by the arguments.
+    let original_dir = if args.directory.is_empty() {
+        None
+    } else {
+        // Remember the current directory to return to.
+        let cwd = current_dir()
+            .unwrap_or_else(|e| exit_with(format!("Failed to get cwd ({}).", e), None));
+
+        // let dir = PathBuf::new();
+        let dir = args
+            .directory
+            .iter()
+            .fold(PathBuf::new(), |dir, d| dir.join(d));
+        // for d in &args.directory {
+        //     dir = dir.join(d);
+        // }
+        log_info(format!("Chdir to `{}`.", dir.display()), None);
+        set_current_dir(&dir).unwrap_or_else(|e| exit_with(format!("Chdir failed: {}.", e), None));
+
+        Some(cwd)
+    };
+
     // Determine the makefile to read.
     let makefile_fn = match args.file {
         Some(ref file) => PathBuf::from(file),
@@ -71,5 +95,11 @@ fn main() {
     };
     if let Err(e) = makefile.execute() {
         exit_with(e.msg, Some(&e.context));
+    }
+
+    // Go back to the original directory, if we chdir'd.
+    if let Some(cwd) = original_dir {
+        log_info(format!("Chdir back to `{}`.", cwd.display()), None);
+        set_current_dir(&cwd).unwrap_or_else(|e| exit_with(format!("Chdir failed: {}.", e), None));
     }
 }

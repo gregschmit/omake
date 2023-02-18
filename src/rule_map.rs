@@ -10,9 +10,12 @@ use crate::error::{log_info, log_warn, MakeError};
 const SHELL: &str = "/bin/sh";
 const SHELL_ARGS: &str = "-c";
 
-/// Helper to get the `mtime` of a file as an optional value. Note that the return value also
-/// signals whether or not the file is accessible, so a `None` value represents either the file not
-/// existing or the current user not having the appropriate permissions to access the file.
+/// Get the `mtime` of a file. Note that the return value also signals whether or not the file is
+/// accessible, so a `None` value represents either the file not existing or the current user not
+/// having the appropriate permissions to access the file.
+///
+/// TODO: Consider bailing on a file permissions issue? Not sure if POSIX specifies some behavior
+/// here or if the major implementations halt execution on a permissions error.
 fn get_mtime(file: &String, args: &Args) -> Option<SystemTime> {
     match fs::metadata(file) {
         Ok(metadata) => {

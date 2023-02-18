@@ -34,6 +34,10 @@ pub struct Args {
     #[arg(short = 'B', long = "always-make")]
     pub always_make: bool,
 
+    /// Change to DIR before doing anything.
+    #[arg(short = 'C', long, value_name = "DIR")]
+    pub directory: Vec<String>,
+
     /// Consider FILE to be very old and do not remake it.
     #[arg(short, long, value_name = "FILE", visible_alias("assume-old"))]
     pub old_file: Vec<String>,
