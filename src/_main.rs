@@ -102,7 +102,7 @@ fn main() {
         // Change to the specified directory.
         let dir = args
             .directory
-            .into_iter()
+            .iter()
             .fold(PathBuf::new(), |dir, d| dir.join(d));
         log_info(format!("Chdir to `{}`.", dir.display()), None);
         set_current_dir(&dir).unwrap_or_else(|e| exit_with(format!("Chdir failed: {}.", e), None));

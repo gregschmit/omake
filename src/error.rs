@@ -35,17 +35,17 @@ fn format_log(msg: impl AsRef<str>, level: &str, context: Option<&Context>) -> S
     )
 }
 
-/// Log an `INFO` message to STDERR.
+/// Log an `INFO` message to `STDERR`.
 pub fn log_info(msg: impl AsRef<str>, context: Option<&Context>) {
     eprintln!("{}", format_log(msg, INFO, context));
 }
 
-/// Log a `WARN` message to STDERR.
+/// Log a `WARN` message to `STDERR`.
 pub fn log_warn(msg: impl AsRef<str>, context: Option<&Context>) {
     eprintln!("{}", format_log(msg, WARN, context));
 }
 
-/// Log an `ERROR` message to STDERR.
+/// Log an `ERROR` message to `STDERR`.
 pub fn log_error(msg: impl AsRef<str>, context: Option<&Context>) {
     eprintln!("{}", format_log(msg, ERROR, context));
 }
