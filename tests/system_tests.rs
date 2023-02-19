@@ -32,13 +32,13 @@ impl SystemTestCase {
         let system_test = Self {
             // Trim leading/trailing slashes in `path`.
             path: path.trim_matches('/').to_string(),
-            args: args.iter().map(|a| a.to_string()).collect::<Vec<String>>(),
+            args: args.iter().map(|a| a.to_string()).collect::<Vec<_>>(),
             expected_stdout: expected_stdout.into(),
             expected_stderr: expected_stderr.into(),
             expected_files: expected_files
                 .iter()
                 .map(|(f, c)| (f.to_string(), c.to_string()))
-                .collect::<HashMap<String, String>>(),
+                .collect::<HashMap<_, _>>(),
         };
         system_test.run();
     }

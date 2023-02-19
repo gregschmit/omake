@@ -7,7 +7,7 @@ use crate::context::Context;
 use crate::error::MakeError;
 use crate::expand::expand;
 use crate::rule_map::{Rule, RuleMap};
-use crate::vars::Vars;
+use crate::vars::{Env, Vars};
 
 const COMMENT_INDICATOR: char = '#';
 
@@ -26,13 +26,13 @@ pub struct Makefile {
 
 impl Makefile {
     /// Principal interface for reading and parsing a makefile.
-    pub fn new(makefile_fn: PathBuf, args: Args) -> Result<Self, MakeError> {
+    pub fn new(makefile_fn: PathBuf, args: Args, env: Env) -> Result<Self, MakeError> {
         // Initialize the `Makefile` struct with default values.
         let mut makefile = Self {
             args,
             rule_map: RuleMap::new(),
             default_target: None,
-            vars: Vars::new([]),
+            vars: env.into(),
             current_rule: None,
             context: makefile_fn.clone().into(),
         };

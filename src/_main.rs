@@ -11,8 +11,8 @@ mod makefile;
 mod rule_map;
 mod vars;
 
-use std::env::{current_dir, set_current_dir};
-use std::fs::read_dir;
+use std::env;
+use std::fs;
 use std::path::PathBuf;
 
 use clap::Parser;
@@ -21,8 +21,9 @@ use args::Args;
 use context::Context;
 use error::{log_error, log_info};
 use makefile::Makefile;
+use vars::Env;
 
-/// An ordered list of files which ought to be used to search for a makefile.
+/// An ordered list of filenames used to search for a makefile.
 const MAKEFILE_SEARCH: [&str; 6] = [
     "makefile",
     "Makefile",
@@ -41,18 +42,21 @@ const LICENSE: &str = include_str!("../LICENSE");
 /// also want to support weirdly-cased makefiles on case-insensitive file systems, such as
 /// `MAKEFILE`. To that end, we first get a directory listing and try to find makefiles from that
 /// list, which would ensure the proper casing is returned. As a fallback, we then iterate through
-/// the `MAKEFILE_SEARCH` list, which will do a case-insensitive match on case-insensitive file
-/// systems, and therefore would return improper casing (e.g., `MAKEFILE` would be returned as
-/// `makefile`, since that would be the first match).
+/// the `MAKEFILE_SEARCH` list and try to read them from the file system, which will do a
+/// case-insensitive match on case-insensitive file systems, and therefore would return improper
+/// casing (e.g., `MAKEFILE` would be returned as `makefile`, since that would be the first match).
+///
+/// TODO: The first method of inspecting the directory listing is slower, and if that becomes an
+/// issue, perhaps we only do that when verbose logging is enabled?
 fn find_makefile() -> Option<PathBuf> {
     // First, try to find a makefile from the directory listing, which will be a case-sensitive
     // match. This ensures that if a case-sensitive match is found on a case-insensitive file
     // system, we will return the proper casing (e.g., if `Makefile` is found, then we won't have
-    // first matched `makefile` and therefore returned the wrong casing.).
-    if let Some(cwd_files) = read_dir("./").ok().map(|rd| {
+    // first matched `makefile` and therefore returned the wrong casing).
+    if let Some(cwd_files) = fs::read_dir("./").ok().map(|rd| {
         rd.flatten()
             .filter_map(|rd| rd.path().file_name().map(PathBuf::from))
-            .collect::<Vec<PathBuf>>()
+            .collect::<Vec<_>>()
     }) {
         for file in MAKEFILE_SEARCH {
             let f = PathBuf::from(file);
@@ -85,7 +89,6 @@ fn exit_with(msg: impl AsRef<str>, context: Option<&Context>) -> ! {
 fn main() {
     let args = Args::parse();
 
-    // Print LICENSE, if requested.
     if args.license {
         println!("{}", LICENSE);
         return;
@@ -96,7 +99,7 @@ fn main() {
         None
     } else {
         // Remember the current directory to return to.
-        let cwd = current_dir()
+        let cwd = env::current_dir()
             .unwrap_or_else(|e| exit_with(format!("Failed to get cwd ({}).", e), None));
 
         // Change to the specified directory.
@@ -105,7 +108,8 @@ fn main() {
             .iter()
             .fold(PathBuf::new(), |dir, d| dir.join(d));
         log_info(format!("Chdir to `{}`.", dir.display()), None);
-        set_current_dir(&dir).unwrap_or_else(|e| exit_with(format!("Chdir failed: {}.", e), None));
+        env::set_current_dir(&dir)
+            .unwrap_or_else(|e| exit_with(format!("Chdir failed: {}.", e), None));
 
         Some(cwd)
     };
@@ -117,7 +121,7 @@ fn main() {
     };
 
     // Parse the makefile.
-    let makefile = match Makefile::new(makefile_fn, args) {
+    let makefile = match Makefile::new(makefile_fn, args, env::vars().collect::<Env>()) {
         Err(e) => exit_with(e.msg, Some(&e.context)),
         Ok(m) => m,
     };
@@ -125,9 +129,10 @@ fn main() {
         exit_with(e.msg, Some(&e.context));
     }
 
-    // Go back to the original directory, if we chdir'd.
+    // Go back to the original directory, if we changed directory previously.
     if let Some(cwd) = original_dir {
         log_info(format!("Chdir back to `{}`.", cwd.display()), None);
-        set_current_dir(&cwd).unwrap_or_else(|e| exit_with(format!("Chdir failed: {}.", e), None));
+        env::set_current_dir(&cwd)
+            .unwrap_or_else(|e| exit_with(format!("Chdir failed: {}.", e), None));
     }
 }

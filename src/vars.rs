@@ -1,4 +1,4 @@
-//! A wrapper for a `HashMap` for storing the environment variables during makefile.
+//! A wrapper for a `HashMap` for storing the environment variables during makefile parsing.
 //!
 //! The only interesting behavior here is that for some special keys we have default values which
 //! should be "resettable" by setting the value to blank, and that calling `get` on a key that
@@ -10,6 +10,9 @@
 use std::collections::HashMap;
 
 const DEFAULT_RECIPE_PREFIX: char = '\t';
+
+/// Represents the "raw" environment coming from the OS.
+pub type Env = HashMap<String, String>;
 
 #[derive(Debug)]
 pub struct Var {
@@ -104,6 +107,23 @@ impl Vars {
             },
         );
         Ok(())
+    }
+}
+
+impl From<Env> for Vars {
+    fn from(env: Env) -> Self {
+        let mut vars = Self::new([]);
+        for (k, v) in env {
+            vars.map.insert(
+                k,
+                Var {
+                    value: v,
+                    recursive: false,
+                },
+            );
+        }
+
+        vars
     }
 }
 
