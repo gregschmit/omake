@@ -99,14 +99,11 @@ fn main() {
         let cwd = current_dir()
             .unwrap_or_else(|e| exit_with(format!("Failed to get cwd ({}).", e), None));
 
-        // let dir = PathBuf::new();
+        // Change to the specified directory.
         let dir = args
             .directory
-            .iter()
+            .into_iter()
             .fold(PathBuf::new(), |dir, d| dir.join(d));
-        // for d in &args.directory {
-        //     dir = dir.join(d);
-        // }
         log_info(format!("Chdir to `{}`.", dir.display()), None);
         set_current_dir(&dir).unwrap_or_else(|e| exit_with(format!("Chdir failed: {}.", e), None));
 
