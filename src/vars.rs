@@ -30,12 +30,36 @@ pub struct Vars {
     // multiple allocations and lifetime tracking.
     blank: Var,
     default_recipe_prefix: Var,
+    make_var: Var,
 }
 
 impl Vars {
     /// Primary interface for configuring a new instance. We also create some cached values that
     /// live for the lifetime of this instance to reduce the number of allocations.
     pub fn new<const N: usize>(init: [(&str, &str); N]) -> Self {
+        // Get the executable path for the `MAKE` variable.
+        let exe_path = match std::env::current_exe() {
+            // TODO: This should probably be a `Result` instead of a `panic!`.
+            // Try to canonicalize the path, but if that fails we panic because
+            // this means something is very wrong with the system.
+            Ok(path) => path.canonicalize().unwrap().to_string_lossy().into_owned(),
+            Err(_) => panic!("Unable to get executable path!"),
+        };
+
+        // Rudimetary MAKEFLAGS parsing, the '-j' flag handling is not implemented yet.
+        // TODO: This should probably be a `Result` instead of a `panic!`.
+        // NOTE: Maybe change the way this is done to a pure IPC solution? when sub-make is used?
+        let exe_args = std::env::args().collect::<Vec<_>>().iter().map(|arg| {
+            let mut arg_mod = arg.clone();
+            if arg_mod.contains(' ') {
+                arg_mod = format!("\"{}\"", arg_mod);
+            }
+            if arg_mod.starts_with('-') {
+                arg_mod = arg_mod[1..].to_string();
+            }
+            arg_mod
+        }).collect::<Vec<_>>().join(" ");
+
         let mut vars = Self {
             map: HashMap::new(),
             blank: Var {
@@ -44,6 +68,10 @@ impl Vars {
             },
             default_recipe_prefix: Var {
                 value: DEFAULT_RECIPE_PREFIX.to_string(),
+                recursive: false,
+            },
+            make_var: Var {
+                value: exe_path,
                 recursive: false,
             },
         };
@@ -61,6 +89,8 @@ impl Vars {
     pub fn get(&self, k: impl AsRef<str>) -> &Var {
         let k = k.as_ref().trim();
         match k {
+            // Special variables.
+            "MAKE" => &self.make_var,
             ".RECIPEPREFIX" => match self.map.get(k) {
                 None => &self.default_recipe_prefix,
                 Some(var) => {
@@ -71,6 +101,7 @@ impl Vars {
                     }
                 }
             },
+            // Normal variables.
             _ => match self.map.get(k) {
                 None => &self.blank,
                 Some(var) => var,
