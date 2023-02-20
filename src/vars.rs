@@ -31,6 +31,7 @@ pub struct Vars {
     blank: Var,
     default_recipe_prefix: Var,
     make_var: Var,
+    makeargs_var: Var,
 }
 
 impl Vars {
@@ -74,6 +75,10 @@ impl Vars {
                 value: exe_path,
                 recursive: false,
             },
+            makeargs_var: Var {
+                value: exe_args,
+                recursive: false,
+            },
         };
 
         // Use `set` to initialize data.
@@ -91,6 +96,7 @@ impl Vars {
         match k {
             // Special variables.
             "MAKE" => &self.make_var,
+            "MAKEFLAGS" => &self.makeargs_var,
             ".RECIPEPREFIX" => match self.map.get(k) {
                 None => &self.default_recipe_prefix,
                 Some(var) => {
