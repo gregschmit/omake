@@ -4,6 +4,14 @@
 use clap::Parser;
 use const_format::formatcp;
 
+const SUBMAKE_FORBIDDEN_FLAGS: [&str; 5] = ["-j", "-C", "-f", "-o", "-W"];
+
+const BUILD_MODE: &str = if cfg!(debug_assertions) {
+    "Debug"
+} else {
+    "Release"
+};
+
 /// Represents the `clap`-based arguments provided by this binary.
 #[derive(Clone, Debug, Parser)]
 #[clap(
@@ -11,7 +19,11 @@ use const_format::formatcp;
     version,
     about,
     after_help = formatcp!(
-        "License:  {}\nSource:   {}", env!("CARGO_PKG_LICENSE"), env!("CARGO_PKG_REPOSITORY")
+        "License:     {}\nSource:      {}\nVersion:     {}\nBuild type:  {}", 
+        env!("CARGO_PKG_LICENSE"),
+        env!("CARGO_PKG_REPOSITORY"),
+        env!("CARGO_PKG_VERSION"),
+        BUILD_MODE
     ),
 )]
 pub struct Args {
@@ -55,4 +67,38 @@ pub struct Args {
     /// Print software license.
     #[arg(long)]
     pub license: bool,
+}
+
+/// Converts the arguments to a string that can be passed to a sub-make invocation.
+pub fn args_to_submake_str() -> String {
+    // Rudimetary MAKEFLAGS parsing, the '-j' flag handling is not implemented yet.
+    // TODO: This should probably be a `Result` instead of a `panic!`.
+    // NOTE: Maybe change the way this is done to a pure IPC solution? when sub-make is used?
+    let args = std::env::args()
+        .collect::<Vec<_>>()
+        .iter()
+        .map(|arg| {
+            let mut arg_mod = arg.clone();
+
+            // If the argument contains a space, we need to quote it.
+            if arg_mod.contains(' ') {
+                arg_mod = format!("\"{}\"", arg_mod);
+            }
+
+            if arg_mod.starts_with("--") {
+                arg_mod = arg_mod[2..].to_string();
+            } else if arg_mod.starts_with('-') {
+                arg_mod = arg_mod[1..].to_string();
+            }
+
+            // remove special cases
+            if SUBMAKE_FORBIDDEN_FLAGS.contains(&arg_mod.as_str()) {
+                arg_mod = "".to_string();
+            }
+            arg_mod
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    format!("-{}", args)
 }

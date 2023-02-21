@@ -47,19 +47,7 @@ impl Vars {
             Err(_) => panic!("Unable to get executable path!"),
         };
 
-        // Rudimetary MAKEFLAGS parsing, the '-j' flag handling is not implemented yet.
-        // TODO: This should probably be a `Result` instead of a `panic!`.
-        // NOTE: Maybe change the way this is done to a pure IPC solution? when sub-make is used?
-        let exe_args = std::env::args().collect::<Vec<_>>().iter().map(|arg| {
-            let mut arg_mod = arg.clone();
-            if arg_mod.contains(' ') {
-                arg_mod = format!("\"{}\"", arg_mod);
-            }
-            if arg_mod.starts_with('-') {
-                arg_mod = arg_mod[1..].to_string();
-            }
-            arg_mod
-        }).collect::<Vec<_>>().join(" ");
+        
 
         let mut vars = Self {
             map: HashMap::new(),
@@ -76,7 +64,7 @@ impl Vars {
                 recursive: false,
             },
             makeargs_var: Var {
-                value: exe_args,
+                value: crate::args::args_to_submake_str(),
                 recursive: false,
             },
         };
