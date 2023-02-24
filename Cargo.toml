@@ -10,8 +10,8 @@ keywords = ["make", "oxidized", "development", "build"]
 categories = ["command-line-utilities", "development-tools", "development-tools::build-utils"]
 
 [dependencies]
-clap = { version = "4", features = ["derive"] }
-const_format = { version = "0.2" }
+clap = {version = "4", features = ["derive"]}
+const_format = "0.2"
 
 [[bin]]
 name = "omake"

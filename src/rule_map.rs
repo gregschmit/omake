@@ -93,6 +93,9 @@ impl RuleMap {
         // Load each target into `by_target` hashmap and catch some basic validation errors.
         for target in &rule.targets {
             match self.by_target.get_mut(target) {
+                None => {
+                    self.by_target.insert(target.to_owned(), vec![index]);
+                }
                 Some(rule_indices) => {
                     // If there is an existing set of rules for this target, catch user mixing
                     // single and double-colon rules.
@@ -109,9 +112,6 @@ impl RuleMap {
                     } else {
                         log_warn("Ignoring duplicate definition.", Some(&rule.context));
                     }
-                }
-                None => {
-                    self.by_target.insert(target.to_owned(), vec![index]);
                 }
             }
         }
@@ -152,6 +152,12 @@ impl RuleMap {
                     self.execute(prereq, args, true)?;
                 } else {
                     match get_mtime(prereq, args) {
+                        None => {
+                            // Prereq doesn't exist, so make it. By definition, it's more up-to-date
+                            // than the target.
+                            self.execute(prereq, args, true)?;
+                            should_execute = true;
+                        }
                         Some(prereq_mtime) => {
                             // Prereq exists, so check if it's more up-to-date than the target.
                             if let Some(target_mtime) = target_mtime_opt {
@@ -159,12 +165,6 @@ impl RuleMap {
                                     should_execute = true;
                                 }
                             }
-                        }
-                        None => {
-                            // Prereq doesn't exist, so make it. By definition, it's more up-to-date
-                            // than the target.
-                            self.execute(prereq, args, true)?;
-                            should_execute = true;
                         }
                     }
                 }

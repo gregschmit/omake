@@ -116,8 +116,8 @@ fn main() {
 
     // Determine the makefile to read.
     let makefile_fn = match args.file {
-        Some(ref file) => PathBuf::from(file),
         None => find_makefile().unwrap_or_else(|| exit_with("No makefile found.", None)),
+        Some(ref file) => PathBuf::from(file),
     };
 
     // Parse the makefile.

@@ -49,7 +49,7 @@ impl Makefile {
         Ok(makefile)
     }
 
-    /// Iterate over the makefile lines, call `parse_line` to handle the actual parsing logic, and
+    /// Iterate over the makefile's lines, call `parse_line` to handle the actual parsing logic, and
     /// manage context.
     fn parse<R: BufRead>(&mut self, stream: R) -> Result<(), MakeError> {
         self.current_rule = None;
@@ -64,7 +64,9 @@ impl Makefile {
             self.parse_line(line)?;
         }
 
-        // Always push a blank line at the end to terminate trailing rules.
+        // Always push two blank lines at the end to terminate trailing rules, even if the last rule
+        // contained a trailing backslash.
+        self.parse_line("".to_string())?;
         self.parse_line("".to_string())?;
 
         Ok(())
@@ -116,7 +118,7 @@ impl Makefile {
             self.rule_map.insert(rule)?;
         }
 
-        // Ignore comments and blank lines.
+        // Ignore pure comments and blank lines.
         let trimmed_line = line.trim();
         if trimmed_line.starts_with(COMMENT_INDICATOR) || trimmed_line.is_empty() {
             return Ok(());
@@ -189,13 +191,13 @@ impl Makefile {
         // Set targets list to default target if none were provided.
         if targets.is_empty() {
             match &self.default_target {
-                Some(t) => targets.push(t.clone()),
                 None => {
                     return Err(MakeError::new(
                         "No target specified and no default target found.",
                         Context::new(),
                     ))
                 }
+                Some(t) => targets.push(t.clone()),
             }
         }
 

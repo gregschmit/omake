@@ -10,6 +10,76 @@
 use std::collections::HashMap;
 
 const DEFAULT_RECIPE_PREFIX: char = '\t';
+const BAD_VARIABLE_CHARS: [char; 3] = [':', '#', '='];
+
+/// Variables which are set in a non-recursive context by default, and can be overridden by the
+/// environment. `SHELL` is not included, since it cannot be overridden by the environment, unless
+/// explicitly directed to by `-e`.
+const DEFAULT_VARS: [(&str, &str); 21] = [
+    ("AR", "ar"),
+    ("ARFLAGS", "rv"),
+    ("AS", "as"),
+    ("CC", "cc"),
+    ("CO", "co"),
+    ("CTANGLE", "ctangle"),
+    ("CWEAVE", "cweave"),
+    ("CXX", "c++"),
+    ("FC", "f77"),
+    ("GET", "get"),
+    ("LD", "ld"),
+    ("LEX", "lex"),
+    ("LINT", "lint"),
+    ("M2C", "m2c"),
+    ("OBJC", "cc"),
+    ("PC", "pc"),
+    ("RM", "rm -f"),
+    ("TANGLE", "tangle"),
+    ("TEX", "tex"),
+    ("WEAVE", "weave"),
+    ("YACC", "yacc"),
+];
+
+/// Variables which are set in a recursive context by default, and can be overridden by the
+/// environment.
+#[rustfmt::skip]
+const DEFAULT_RECURSIVE_VARS: [(&str, &str); 36] = [
+    ("COMPILE.C", "$(COMPILE.cc)"),
+    ("COMPILE.F", "$(FC) $(FFLAGS) $(CPPFLAGS) $(TARGET_ARCH) -c"),
+    ("COMPILE.S", "$(CC) $(ASFLAGS) $(CPPFLAGS) $(TARGET_MACH) -c"),
+    ("COMPILE.c", "$(CC) $(CFLAGS) $(CPPFLAGS) $(TARGET_ARCH) -c"),
+    ("COMPILE.cc", "$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(TARGET_ARCH) -c"),
+    ("COMPILE.cpp", "$(COMPILE.cc)"),
+    ("COMPILE.def", "$(M2C) $(M2FLAGS) $(DEFFLAGS) $(TARGET_ARCH)"),
+    ("COMPILE.f", "$(FC) $(FFLAGS) $(TARGET_ARCH) -c"),
+    ("COMPILE.m", "$(OBJC) $(OBJCFLAGS) $(CPPFLAGS) $(TARGET_ARCH) -c"),
+    ("COMPILE.mod", "$(M2C) $(M2FLAGS) $(MODFLAGS) $(TARGET_ARCH)"),
+    ("COMPILE.p", "$(PC) $(PFLAGS) $(CPPFLAGS) $(TARGET_ARCH) -c"),
+    ("COMPILE.r", "$(FC) $(FFLAGS) $(RFLAGS) $(TARGET_ARCH) -c"),
+    ("COMPILE.s", "$(AS) $(ASFLAGS) $(TARGET_MACH)"),
+    ("CPP", "$(CC) -E"),
+    ("F77", "$(FC)"),
+    ("F77FLAGS", "$(FFLAGS)"),
+    ("LEX.m", "$(LEX) $(LFLAGS) -t"),
+    ("LINK.C", "$(LINK.cc)"),
+    ("LINK.F", "$(FC) $(FFLAGS) $(CPPFLAGS) $(LDFLAGS) $(TARGET_ARCH)"),
+    ("LINK.S", "$(CC) $(ASFLAGS) $(CPPFLAGS) $(LDFLAGS) $(TARGET_MACH)"),
+    ("LINK.c", "$(CC) $(CFLAGS) $(CPPFLAGS) $(LDFLAGS) $(TARGET_ARCH)"),
+    ("LINK.cc", "$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(LDFLAGS) $(TARGET_ARCH)"),
+    ("LINK.cpp", "$(LINK.cc)"),
+    ("LINK.f", "$(FC) $(FFLAGS) $(LDFLAGS) $(TARGET_ARCH)"),
+    ("LINK.m", "$(OBJC) $(OBJCFLAGS) $(CPPFLAGS) $(LDFLAGS) $(TARGET_ARCH)"),
+    ("LINK.o", "$(CC) $(LDFLAGS) $(TARGET_ARCH)"),
+    ("LINK.p", "$(PC) $(PFLAGS) $(CPPFLAGS) $(LDFLAGS) $(TARGET_ARCH)"),
+    ("LINK.r", "$(FC) $(FFLAGS) $(RFLAGS) $(LDFLAGS) $(TARGET_ARCH)"),
+    ("LINK.s", "$(CC) $(ASFLAGS) $(LDFLAGS) $(TARGET_MACH)"),
+    ("LINT.c", "$(LINT) $(LINTFLAGS) $(CPPFLAGS) $(TARGET_ARCH)"),
+    ("OUTPUT_OPTION", "-o $@"),
+    ("PREPROCESS.F", "$(FC) $(FFLAGS) $(CPPFLAGS) $(TARGET_ARCH) -F"),
+    ("PREPROCESS.S", "$(CC) -E $(CPPFLAGS)"),
+    ("PREPROCESS.r", "$(FC) $(FFLAGS) $(RFLAGS) $(TARGET_ARCH) -F"),
+    ("YACC.m", "$(YACC) $(YFLAGS)"),
+    ("YACC.y", "$(YACC) $(YFLAGS)"),
+];
 
 /// Represents the "raw" environment coming from the OS.
 pub type Env = HashMap<String, String>;
@@ -48,6 +118,19 @@ impl Vars {
             },
         };
 
+        // Set default vars.
+        for (k, v) in DEFAULT_VARS {
+            vars.set(k, v, false).unwrap();
+        }
+
+        // Set default recursive vars.
+        for (k, v) in DEFAULT_RECURSIVE_VARS {
+            vars.set(k, v, true).unwrap();
+        }
+
+        // Set `SHELL` to `/bin/sh` by default.
+        vars.set("SHELL", "/bin/sh", false).unwrap();
+
         // Use `set` to initialize data.
         for (k, v) in init {
             let _ = vars.set(k, v, false);
@@ -83,19 +166,14 @@ impl Vars {
         let k = k.into().trim().to_string();
         let v = v.into();
 
-        // Variable names must not include whitespace or any chars in the set: `:#=`.
+        // Do not insert bad variable names.
         for ch in k.chars() {
             if ch.is_whitespace() {
                 return Err("Variable contains whitespace.".to_string());
             }
 
-            if let Some(bad_char) = match ch {
-                ':' => Some(':'),
-                '#' => Some('#'),
-                '=' => Some('='),
-                _ => None,
-            } {
-                return Err(format!("Variable contains bad character '{}'.", bad_char));
+            if BAD_VARIABLE_CHARS.contains(&ch) {
+                return Err(format!("Variable contains bad character '{}'.", ch));
             }
         }
 
@@ -113,7 +191,13 @@ impl Vars {
 impl From<Env> for Vars {
     fn from(env: Env) -> Self {
         let mut vars = Self::new([]);
+
         for (k, v) in env {
+            // Do not load `SHELL` from the environment.
+            if k == "SHELL" {
+                continue;
+            }
+
             vars.map.insert(
                 k,
                 Var {
@@ -136,6 +220,11 @@ mod tests {
         let vars = Vars::new([("A", "B")]);
         assert_eq!(vars.get("A").value, "B");
         assert_eq!(vars.get("B").value, "");
+        assert_eq!(vars.get("SHELL").value, "/bin/sh");
+        assert_eq!(
+            vars.get("COMPILE.c").value,
+            "$(CC) $(CFLAGS) $(CPPFLAGS) $(TARGET_ARCH) -c"
+        );
     }
 
     #[test]
