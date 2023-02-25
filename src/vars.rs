@@ -18,7 +18,8 @@ const DEFAULT_SUFFIXES: [&str; 13] = [
 /// Variables which are set in a non-recursive context by default, and can be overridden by the
 /// environment. `SHELL` is not included, since it cannot be overridden by the environment, unless
 /// explicitly directed to by `-e`.
-const DEFAULT_VARS: [(&str, &str); 21] = [
+const DEFAULT_VARS: [(&str, &str); 22] = [
+    (".SHELLFLAGS", "-c"),
     ("AR", "ar"),
     ("ARFLAGS", "rv"),
     ("AS", "as"),

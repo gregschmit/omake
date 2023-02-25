@@ -14,12 +14,12 @@ const COMMENT_INDICATOR: char = '#';
 /// The internal representation of a makefile.
 #[derive(Debug)]
 pub struct Makefile {
-    args: Args,
+    pub args: Args,
     rule_map: RuleMap,
     default_target: Option<String>,
 
     // Parser state.
-    vars: Vars,
+    pub vars: Vars,
     current_rule: Option<Rule>,
     context: Context,
 }
@@ -202,7 +202,7 @@ impl Makefile {
         }
 
         for target in targets {
-            self.rule_map.execute(&target, &self.args, false)?;
+            self.rule_map.execute(self, &target)?;
         }
 
         Ok(())
