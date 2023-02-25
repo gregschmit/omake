@@ -11,6 +11,9 @@ use std::collections::HashMap;
 
 const DEFAULT_RECIPE_PREFIX: char = '\t';
 const BAD_VARIABLE_CHARS: [char; 3] = [':', '#', '='];
+const DEFAULT_SUFFIXES: [&str; 13] = [
+    ".C", ".F", ".S", ".c", ".cc", ".cpp", ".def", ".f", ".m", ".mod", ".p", ".r", ".s",
+];
 
 /// Variables which are set in a non-recursive context by default, and can be overridden by the
 /// environment. `SHELL` is not included, since it cannot be overridden by the environment, unless
@@ -43,6 +46,17 @@ const DEFAULT_VARS: [(&str, &str); 21] = [
 /// environment.
 #[rustfmt::skip]
 const DEFAULT_RECURSIVE_VARS: [(&str, &str); 36] = [
+    ("OUTPUT_OPTION", "-o $@"),
+
+    // Compiler definitions.
+    ("CPP", "$(CC) -E"),
+    ("F77", "$(FC)"),
+    ("F77FLAGS", "$(FFLAGS)"),
+    ("LEX.m", "$(LEX) $(LFLAGS) -t"),
+    ("YACC.m", "$(YACC) $(YFLAGS)"),
+    ("YACC.y", "$(YACC) $(YFLAGS)"),
+
+    // Implicit rule definitions.
     ("COMPILE.C", "$(COMPILE.cc)"),
     ("COMPILE.F", "$(FC) $(FFLAGS) $(CPPFLAGS) $(TARGET_ARCH) -c"),
     ("COMPILE.S", "$(CC) $(ASFLAGS) $(CPPFLAGS) $(TARGET_MACH) -c"),
@@ -56,10 +70,6 @@ const DEFAULT_RECURSIVE_VARS: [(&str, &str); 36] = [
     ("COMPILE.p", "$(PC) $(PFLAGS) $(CPPFLAGS) $(TARGET_ARCH) -c"),
     ("COMPILE.r", "$(FC) $(FFLAGS) $(RFLAGS) $(TARGET_ARCH) -c"),
     ("COMPILE.s", "$(AS) $(ASFLAGS) $(TARGET_MACH)"),
-    ("CPP", "$(CC) -E"),
-    ("F77", "$(FC)"),
-    ("F77FLAGS", "$(FFLAGS)"),
-    ("LEX.m", "$(LEX) $(LFLAGS) -t"),
     ("LINK.C", "$(LINK.cc)"),
     ("LINK.F", "$(FC) $(FFLAGS) $(CPPFLAGS) $(LDFLAGS) $(TARGET_ARCH)"),
     ("LINK.S", "$(CC) $(ASFLAGS) $(CPPFLAGS) $(LDFLAGS) $(TARGET_MACH)"),
@@ -73,12 +83,9 @@ const DEFAULT_RECURSIVE_VARS: [(&str, &str); 36] = [
     ("LINK.r", "$(FC) $(FFLAGS) $(RFLAGS) $(LDFLAGS) $(TARGET_ARCH)"),
     ("LINK.s", "$(CC) $(ASFLAGS) $(LDFLAGS) $(TARGET_MACH)"),
     ("LINT.c", "$(LINT) $(LINTFLAGS) $(CPPFLAGS) $(TARGET_ARCH)"),
-    ("OUTPUT_OPTION", "-o $@"),
     ("PREPROCESS.F", "$(FC) $(FFLAGS) $(CPPFLAGS) $(TARGET_ARCH) -F"),
     ("PREPROCESS.S", "$(CC) -E $(CPPFLAGS)"),
     ("PREPROCESS.r", "$(FC) $(FFLAGS) $(RFLAGS) $(TARGET_ARCH) -F"),
-    ("YACC.m", "$(YACC) $(YFLAGS)"),
-    ("YACC.y", "$(YACC) $(YFLAGS)"),
 ];
 
 /// Represents the "raw" environment coming from the OS.
@@ -130,6 +137,12 @@ impl Vars {
 
         // Set `SHELL` to `/bin/sh` by default.
         vars.set("SHELL", "/bin/sh", false).unwrap();
+
+        // Set default `SUFFIXES` and `.SUFFIXES`.
+        vars.set("SUFFIXES", &DEFAULT_SUFFIXES.join(" "), false)
+            .unwrap();
+        vars.set(".SUFFIXES", &DEFAULT_SUFFIXES.join(" "), false)
+            .unwrap();
 
         // Use `set` to initialize data.
         for (k, v) in init {
