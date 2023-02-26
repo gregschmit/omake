@@ -70,8 +70,8 @@ impl Rule {
                 .status()
                 .map_err(|e| MakeError::new(e.to_string(), self.context.clone()))?;
 
+            // Check for recipe errors, unless directed to ignore them.
             if command_modifier != Some('-') && !makefile.args.ignore_errors {
-                // Check for recipe errors.
                 if let Some(code) = res.code() {
                     if code != 0 {
                         return Err(MakeError::new(
