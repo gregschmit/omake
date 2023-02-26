@@ -14,10 +14,6 @@ clap = {version = "4", features = ["derive"]}
 const_format = "0.2"
 lazy_static = "1"
 
-[[bin]]
-name = "omake"
-path = "src/_main.rs"
-
 # Optimize for a small binary.
 [profile.release]
 opt-level = "s"
