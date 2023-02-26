@@ -9,39 +9,48 @@
 
 use std::collections::HashMap;
 
-const DEFAULT_RECIPE_PREFIX: char = '\t';
+use lazy_static::lazy_static;
+
 const BAD_VARIABLE_CHARS: [char; 3] = [':', '#', '='];
 const DEFAULT_SUFFIXES: [&str; 13] = [
     ".C", ".F", ".S", ".c", ".cc", ".cpp", ".def", ".f", ".m", ".mod", ".p", ".r", ".s",
 ];
 
-/// Variables which are set in a non-recursive context by default, and can be overridden by the
-/// environment. `SHELL` is not included, since it cannot be overridden by the environment, unless
-/// explicitly directed to by `-e`.
-const DEFAULT_VARS: [(&str, &str); 22] = [
-    (".SHELLFLAGS", "-c"),
-    ("AR", "ar"),
-    ("ARFLAGS", "rv"),
-    ("AS", "as"),
-    ("CC", "cc"),
-    ("CO", "co"),
-    ("CTANGLE", "ctangle"),
-    ("CWEAVE", "cweave"),
-    ("CXX", "c++"),
-    ("FC", "f77"),
-    ("GET", "get"),
-    ("LD", "ld"),
-    ("LEX", "lex"),
-    ("LINT", "lint"),
-    ("M2C", "m2c"),
-    ("OBJC", "cc"),
-    ("PC", "pc"),
-    ("RM", "rm -f"),
-    ("TANGLE", "tangle"),
-    ("TEX", "tex"),
-    ("WEAVE", "weave"),
-    ("YACC", "yacc"),
-];
+/// List of variables where setting the value to blank means to reset it to the default value.
+const BLANK_MEANS_DEFAULT_VARS: [&str; 1] = [".RECIPEPREFIX"];
+
+lazy_static! {
+    /// Variables which are set in a non-recursive context by default, and can be overridden by the
+    /// environment. `SHELL` is not included, since it cannot be overridden by the environment, unless
+    /// explicitly directed to by `-e`.
+    static ref DEFAULT_VARS: HashMap<String, String> = HashMap::from(
+        [
+            (".RECIPEPREFIX", "\t"),
+            (".SHELLFLAGS", "-c"),
+            ("AR", "ar"),
+            ("ARFLAGS", "rv"),
+            ("AS", "as"),
+            ("CC", "cc"),
+            ("CO", "co"),
+            ("CTANGLE", "ctangle"),
+            ("CWEAVE", "cweave"),
+            ("CXX", "c++"),
+            ("FC", "f77"),
+            ("GET", "get"),
+            ("LD", "ld"),
+            ("LEX", "lex"),
+            ("LINT", "lint"),
+            ("M2C", "m2c"),
+            ("OBJC", "cc"),
+            ("PC", "pc"),
+            ("RM", "rm -f"),
+            ("TANGLE", "tangle"),
+            ("TEX", "tex"),
+            ("WEAVE", "weave"),
+            ("YACC", "yacc"),
+        ].map(|(k, v)| (k.to_string(), v.to_string()))
+    );
+}
 
 /// Variables which are set in a recursive context by default, and can be overridden by the
 /// environment.
@@ -104,10 +113,9 @@ pub struct Var {
 pub struct Vars {
     map: HashMap<String, Var>,
 
-    // Heap-allocated "constant" `Var` objects, setup during initialization, designed to reduce
-    // multiple allocations and lifetime tracking.
+    /// Variable to return when a variable is not found. This is allocated during initialization to
+    /// prevent multiple blank allocations in the map and lifetime tracking.
     blank: Var,
-    default_recipe_prefix: Var,
 }
 
 impl Vars {
@@ -120,14 +128,10 @@ impl Vars {
                 value: "".to_string(),
                 recursive: false,
             },
-            default_recipe_prefix: Var {
-                value: DEFAULT_RECIPE_PREFIX.to_string(),
-                recursive: false,
-            },
         };
 
         // Set default vars.
-        for (k, v) in DEFAULT_VARS {
+        for (k, v) in DEFAULT_VARS.iter() {
             vars.set(k, v, false).unwrap();
         }
 
@@ -153,32 +157,22 @@ impl Vars {
         vars
     }
 
-    /// Public interface for getting variables. For unknown keys, the `blank` object is returned,
-    /// and some special keys have default values.
+    /// Public interface for getting variables. For unknown keys, the `blank` object is returned. We
+    /// should try to keep this interface as fast/simple as possible since it's used far more often
+    /// than `set` (e.g., used for each line to check for recipe prefix).
     pub fn get(&self, k: impl AsRef<str>) -> &Var {
         let k = k.as_ref().trim();
-        match k {
-            ".RECIPEPREFIX" => match self.map.get(k) {
-                None => &self.default_recipe_prefix,
-                Some(var) => {
-                    if var.value.is_empty() {
-                        &self.default_recipe_prefix
-                    } else {
-                        var
-                    }
-                }
-            },
-            _ => match self.map.get(k) {
-                None => &self.blank,
-                Some(var) => var,
-            },
+
+        match self.map.get(k) {
+            None => &self.blank,
+            Some(var) => var,
         }
     }
 
     /// Public interface for setting variables.
     pub fn set<S: Into<String>>(&mut self, k: S, v: S, recursive: bool) -> Result<(), String> {
         let k = k.into().trim().to_string();
-        let v = v.into();
+        let mut v = v.into();
 
         // Do not insert bad variable names.
         for ch in k.chars() {
@@ -189,6 +183,10 @@ impl Vars {
             if BAD_VARIABLE_CHARS.contains(&ch) {
                 return Err(format!("Variable contains bad character '{}'.", ch));
             }
+        }
+
+        if BLANK_MEANS_DEFAULT_VARS.contains(&&k[..]) && v.is_empty() {
+            v = DEFAULT_VARS.get(&k).unwrap().to_string();
         }
 
         self.map.insert(
