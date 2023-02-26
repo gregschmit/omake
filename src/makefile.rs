@@ -1,3 +1,5 @@
+mod rule_map;
+
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
@@ -6,8 +8,9 @@ use crate::args::Args;
 use crate::context::Context;
 use crate::error::MakeError;
 use crate::expand::expand;
-use crate::rule_map::{Rule, RuleMap};
 use crate::vars::{Env, Vars};
+
+use rule_map::{Rule, RuleMap};
 
 const COMMENT_INDICATOR: char = '#';
 

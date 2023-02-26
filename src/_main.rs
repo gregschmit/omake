@@ -8,7 +8,6 @@ mod context;
 mod error;
 mod expand;
 mod makefile;
-mod rule_map;
 mod vars;
 
 use std::env;
