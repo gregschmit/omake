@@ -41,7 +41,6 @@ pub struct Rule {
 }
 
 impl Rule {
-    /// Unconditionally execute a rule.
     pub(super) fn execute(&self, makefile: &Makefile) -> Result<(), MakeError> {
         let shell = &makefile.vars.get("SHELL").value;
         let shell_flags = makefile
@@ -59,18 +58,23 @@ impl Rule {
             };
 
             // Echo the line to stdout, unless suppressed.
-            if command_modifier != Some('@') {
+            if command_modifier != Some('@') || makefile.args.just_print {
                 println!("{}", line);
+
+                // If we're just printing, we are done with this line.
+                if makefile.args.just_print {
+                    continue;
+                }
             }
 
-            // Run line in the shell.
+            // Execute the recipe line.
             let res = Command::new(shell)
                 .args(&shell_flags)
                 .arg(line)
                 .status()
                 .map_err(|e| MakeError::new(e.to_string(), self.context.clone()))?;
 
-            // Check for recipe errors, unless directed to ignore them.
+            // Check for command errors, unless directed to ignore them.
             if command_modifier != Some('-') && !makefile.args.ignore_errors {
                 if let Some(code) = res.code() {
                     if code != 0 {

@@ -43,6 +43,15 @@ pub struct Args {
     #[arg(short, long)]
     pub ignore_errors: bool,
 
+    /// Don't execute recipes; just print them.
+    #[arg(
+        short = 'n',
+        long = "just-print",
+        visible_alias("dry-run"),
+        visible_alias("recon")
+    )]
+    pub just_print: bool,
+
     /// Consider FILE to be very old and do not remake it.
     #[arg(short, long, value_name = "FILE", visible_alias("assume-old"))]
     pub old_file: Vec<String>,

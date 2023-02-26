@@ -120,11 +120,25 @@ fn main() {
         Some(ref file) => PathBuf::from(file),
     };
 
+    // TODO: Use `make_path` for sub-make invocations. Use `make_name` for logging rather than the
+    // hardcoded `make`.
+    //
+    // // Determine how the current program was invoked. Note that we do not use `current_exe` because,
+    // // at least on Linux, that would resolve symlinks, which is not what we want.
+    // let make_path: String = env::args().next().unwrap();
+    // let make_name: String = PathBuf::from(&make_path)
+    //     .file_name()
+    //     .unwrap()
+    //     .to_string_lossy()
+    //     .into();
+
     // Parse the makefile.
     let makefile = match Makefile::new(makefile_fn, args, env::vars().collect::<Env>()) {
         Err(e) => exit_with(e.msg, Some(&e.context)),
         Ok(m) => m,
     };
+
+    // Execute the makefile.
     if let Err(e) = makefile.execute() {
         exit_with(e.msg, Some(&e.context));
     }
