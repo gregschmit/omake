@@ -58,7 +58,7 @@ impl Rule {
                 _ => None,
             };
 
-            // Echo the line to stdout.
+            // Echo the line to stdout, unless suppressed.
             if command_modifier != Some('@') {
                 println!("{}", line);
             }
@@ -70,16 +70,18 @@ impl Rule {
                 .status()
                 .map_err(|e| MakeError::new(e.to_string(), self.context.clone()))?;
 
-            // Check for errors.
-            if let Some(code) = res.code() {
-                if code != 0 {
-                    return Err(MakeError::new(
-                        format!("Failed with code {}.", code),
-                        self.context.clone(),
-                    ));
+            if command_modifier != Some('-') && !makefile.args.ignore_errors {
+                // Check for recipe errors.
+                if let Some(code) = res.code() {
+                    if code != 0 {
+                        return Err(MakeError::new(
+                            format!("Failed with code {}.", code),
+                            self.context.clone(),
+                        ));
+                    }
+                } else {
+                    return Err(MakeError::new("Killed.", self.context.clone()));
                 }
-            } else {
-                return Err(MakeError::new("Killed.", self.context.clone()));
             }
         }
 
