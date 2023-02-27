@@ -6,7 +6,6 @@
 mod args;
 mod context;
 mod error;
-mod expand;
 mod makefile;
 mod vars;
 
