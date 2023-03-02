@@ -41,11 +41,6 @@ already other build systems, I don't actually want to make another one.
 
 Working list of things that I plan on leaving out of this implementation intentionally:
 1. Remaking makefiles from RCS/SCCS. I see no need to support this.
-2. Implicit rules. I'm on the fence, so I could be convinced to remove this from the list. The Linux
-   kernel's makefile explicitly disables implicit rules (ref:
-   https://github.com/torvalds/linux/blob/15b3f48a4339e3c16acf18624e2b7f60bc5e9a2c/Makefile#L202-L208).
-   However, other projects might use these a lot, so if I find that's the case I might decide to
-   implement implicit rules, especially if it's not too cumbersome.
 
 ## Testing Methodology
 

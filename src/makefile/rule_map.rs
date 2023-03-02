@@ -6,9 +6,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use crate::args::Args;
 use crate::context::Context;
 use crate::error::{log_info, log_warn, MakeError};
-
-const SHELL: &str = "/bin/sh";
-const SHELL_ARGS: &str = "-c";
+use crate::makefile::Makefile;
 
 /// Get the `mtime` of a file. Note that the return value also signals whether or not the file is
 /// accessible, so a `None` value represents either the file not existing or the current user not
@@ -43,18 +41,52 @@ pub struct Rule {
 }
 
 impl Rule {
-    /// Unconditionally execute a rule.
-    pub(super) fn execute(&self) -> Result<(), MakeError> {
-        for line in self.recipe.iter() {
-            // Echo the line to stdout.
-            println!("{}", line);
+    pub(super) fn execute(&self, makefile: &Makefile) -> Result<(), MakeError> {
+        let shell = &makefile.vars.get("SHELL").value;
+        let shell_flags = makefile
+            .vars
+            .get(".SHELLFLAGS")
+            .value
+            .split_whitespace()
+            .collect::<Vec<_>>();
 
-            // Run line in the shell.
-            Command::new(SHELL)
-                .arg(SHELL_ARGS)
+        for line in self.recipe.iter() {
+            // Determine if the first character is a command modifier.
+            let command_modifier = match line.chars().next().unwrap() {
+                ch @ ('@' | '-' | '+') => Some(ch),
+                _ => None,
+            };
+
+            // Echo the line to stdout, unless suppressed.
+            if command_modifier != Some('@') || makefile.args.just_print {
+                println!("{}", line);
+
+                // If we're just printing, we are done with this line.
+                if makefile.args.just_print {
+                    continue;
+                }
+            }
+
+            // Execute the recipe line.
+            let res = Command::new(shell)
+                .args(&shell_flags)
                 .arg(line)
                 .status()
                 .map_err(|e| MakeError::new(e.to_string(), self.context.clone()))?;
+
+            // Check for command errors, unless directed to ignore them.
+            if command_modifier != Some('-') && !makefile.args.ignore_errors {
+                if let Some(code) = res.code() {
+                    if code != 0 {
+                        return Err(MakeError::new(
+                            format!("Failed with code {}.", code),
+                            self.context.clone(),
+                        ));
+                    }
+                } else {
+                    return Err(MakeError::new("Killed.", self.context.clone()));
+                }
+            }
         }
 
         Ok(())
@@ -93,6 +125,9 @@ impl RuleMap {
         // Load each target into `by_target` hashmap and catch some basic validation errors.
         for target in &rule.targets {
             match self.by_target.get_mut(target) {
+                None => {
+                    self.by_target.insert(target.to_owned(), vec![index]);
+                }
                 Some(rule_indices) => {
                     // If there is an existing set of rules for this target, catch user mixing
                     // single and double-colon rules.
@@ -110,9 +145,6 @@ impl RuleMap {
                         log_warn("Ignoring duplicate definition.", Some(&rule.context));
                     }
                 }
-                None => {
-                    self.by_target.insert(target.to_owned(), vec![index]);
-                }
             }
         }
 
@@ -120,38 +152,42 @@ impl RuleMap {
     }
 
     /// Execute the rules for a particular target, checking prerequisites.
-    pub fn execute(&self, target: &String, args: &Args, recursive: bool) -> Result<(), MakeError> {
+    pub fn execute(&self, makefile: &Makefile, target: &String) -> Result<(), MakeError> {
         let rule_indices = self.by_target.get(target).ok_or_else(|| {
             MakeError::new(
                 format!("No rule to make target '{}'.", target),
                 Context::new(),
             )
         })?;
-        let target_mtime_opt = get_mtime(target, args);
+        let target_mtime_opt = get_mtime(target, &makefile.args);
 
         // Old files have their rules ignored.
-        if args.old_file.contains(target) {
-            if !recursive {
-                log_info(
-                    format!("Target '{target}' is up to date (old)."),
-                    Some(&Context::new()),
-                );
-            }
+        if makefile.args.old_file.contains(target) {
+            log_info(
+                format!("Target '{target}' is up to date (old)."),
+                Some(&Context::new()),
+            );
             return Ok(());
         }
 
         let mut executed = false;
         for i in rule_indices {
             let rule = &self.rules[i.to_owned()];
-            let mut should_execute = args.always_make;
+            let mut should_execute = makefile.args.always_make;
 
             // Check (and possibly execute) prereqs.
             for prereq in &rule.prerequisites {
                 // Check if prereq exists unless `always_make`.
-                if args.always_make {
-                    self.execute(prereq, args, true)?;
+                if makefile.args.always_make {
+                    self.execute(makefile, prereq)?;
                 } else {
-                    match get_mtime(prereq, args) {
+                    match get_mtime(prereq, &makefile.args) {
+                        None => {
+                            // Prereq doesn't exist, so make it. By definition, it's more up-to-date
+                            // than the target.
+                            self.execute(makefile, prereq)?;
+                            should_execute = true;
+                        }
                         Some(prereq_mtime) => {
                             // Prereq exists, so check if it's more up-to-date than the target.
                             if let Some(target_mtime) = target_mtime_opt {
@@ -160,18 +196,12 @@ impl RuleMap {
                                 }
                             }
                         }
-                        None => {
-                            // Prereq doesn't exist, so make it. By definition, it's more up-to-date
-                            // than the target.
-                            self.execute(prereq, args, true)?;
-                            should_execute = true;
-                        }
                     }
                 }
             }
 
             if target_mtime_opt.is_none() || should_execute {
-                rule.execute()?;
+                rule.execute(makefile)?;
                 executed = true;
             }
         }

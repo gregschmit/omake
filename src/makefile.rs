@@ -1,3 +1,6 @@
+mod expand;
+mod rule_map;
+
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
@@ -5,21 +8,22 @@ use std::path::PathBuf;
 use crate::args::Args;
 use crate::context::Context;
 use crate::error::MakeError;
-use crate::expand::expand;
-use crate::rule_map::{Rule, RuleMap};
 use crate::vars::{Env, Vars};
+
+use expand::expand;
+use rule_map::{Rule, RuleMap};
 
 const COMMENT_INDICATOR: char = '#';
 
 /// The internal representation of a makefile.
 #[derive(Debug)]
 pub struct Makefile {
-    args: Args,
+    pub args: Args,
     rule_map: RuleMap,
     default_target: Option<String>,
 
     // Parser state.
-    vars: Vars,
+    pub vars: Vars,
     current_rule: Option<Rule>,
     context: Context,
 }
@@ -49,7 +53,7 @@ impl Makefile {
         Ok(makefile)
     }
 
-    /// Iterate over the makefile lines, call `parse_line` to handle the actual parsing logic, and
+    /// Iterate over the makefile's lines, call `parse_line` to handle the actual parsing logic, and
     /// manage context.
     fn parse<R: BufRead>(&mut self, stream: R) -> Result<(), MakeError> {
         self.current_rule = None;
@@ -64,7 +68,9 @@ impl Makefile {
             self.parse_line(line)?;
         }
 
-        // Always push a blank line at the end to terminate trailing rules.
+        // Always push two blank lines at the end to terminate trailing rules, even if the last rule
+        // contained a trailing backslash.
+        self.parse_line("".to_string())?;
         self.parse_line("".to_string())?;
 
         Ok(())
@@ -116,7 +122,7 @@ impl Makefile {
             self.rule_map.insert(rule)?;
         }
 
-        // Ignore comments and blank lines.
+        // Ignore pure comments and blank lines.
         let trimmed_line = line.trim();
         if trimmed_line.starts_with(COMMENT_INDICATOR) || trimmed_line.is_empty() {
             return Ok(());
@@ -189,18 +195,18 @@ impl Makefile {
         // Set targets list to default target if none were provided.
         if targets.is_empty() {
             match &self.default_target {
-                Some(t) => targets.push(t.clone()),
                 None => {
                     return Err(MakeError::new(
                         "No target specified and no default target found.",
                         Context::new(),
                     ))
                 }
+                Some(t) => targets.push(t.clone()),
             }
         }
 
         for target in targets {
-            self.rule_map.execute(&target, &self.args, false)?;
+            self.rule_map.execute(self, &target)?;
         }
 
         Ok(())

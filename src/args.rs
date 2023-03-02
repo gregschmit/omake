@@ -38,17 +38,31 @@ pub struct Args {
     /// Ignored for compatibility.
     #[arg(short = 'b')]
     pub b: bool,
+
     /// Ignored for compatibility.
     #[arg(short = 'm')]
     pub m: Option<Option<String>>,
 
     /// Unconditionally make all targets.
-    #[arg(short = 'B', long = "always-make")]
+    #[arg(short = 'B', long)]
     pub always_make: bool,
 
     /// Change to DIR before doing anything.
     #[arg(short = 'C', long, value_name = "DIR")]
     pub directory: Vec<String>,
+
+    /// Ignore errors from recipes.
+    #[arg(short, long)]
+    pub ignore_errors: bool,
+
+    /// Don't execute recipes; just print them.
+    #[arg(
+        short = 'n',
+        long = "just-print",
+        visible_alias("dry-run"),
+        visible_alias("recon")
+    )]
+    pub just_print: bool,
 
     /// Consider FILE to be very old and do not remake it.
     #[arg(short, long, value_name = "FILE", visible_alias("assume-old"))]
