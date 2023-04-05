@@ -4,15 +4,27 @@
 use clap::Parser;
 use const_format::formatcp;
 
+const SUBMAKE_FORBIDDEN_FLAGS: [&str; 5] = ["-j", "-C", "-f", "-o", "-W"];
+
+const BUILD_MODE: &str = if cfg!(debug_assertions) {
+    "Debug"
+} else {
+    "Release"
+};
+
 /// Represents the `clap`-based arguments provided by this binary.
 #[derive(Clone, Debug, Parser)]
 #[clap(
-    name = "make (oxidized)",
-    version,
-    about,
-    after_help = formatcp!(
-        "License:  {}\nSource:   {}", env!("CARGO_PKG_LICENSE"), env!("CARGO_PKG_REPOSITORY")
-    ),
+name = "make (oxidized)",
+version,
+about,
+after_help = formatcp ! (
+"License:     {}\nSource:      {}\nVersion:     {}\nBuild type:  {}",
+env ! ("CARGO_PKG_LICENSE"),
+env ! ("CARGO_PKG_REPOSITORY"),
+env ! ("CARGO_PKG_VERSION"),
+BUILD_MODE
+),
 )]
 pub struct Args {
     /// Target(s) (if none specifired, use first regular target).
@@ -45,10 +57,10 @@ pub struct Args {
 
     /// Don't execute recipes; just print them.
     #[arg(
-        short = 'n',
-        long = "just-print",
-        visible_alias("dry-run"),
-        visible_alias("recon")
+    short = 'n',
+    long = "just-print",
+    visible_alias("dry-run"),
+    visible_alias("recon")
     )]
     pub just_print: bool,
 
@@ -58,15 +70,57 @@ pub struct Args {
 
     /// Consider FILE to be very new to simulate "what if" it changed.
     #[arg(
-        short = 'W',
-        long = "what-if",
-        value_name = "FILE",
-        visible_alias("new-file"),
-        visible_alias("assume-new")
+    short = 'W',
+    long = "what-if",
+    value_name = "FILE",
+    visible_alias("new-file"),
+    visible_alias("assume-new")
     )]
     pub new_file: Vec<String>,
 
     /// Print software license.
     #[arg(long)]
     pub license: bool,
+}
+
+/// Converts the arguments to a string that can be passed to a sub-make invocation.
+pub(crate) fn args_to_submake_str() -> String {
+    let mut single_flags = Vec::new();
+    let mut arguments = Vec::new();
+    // Rudimetary MAKEFLAGS parsing, the '-j' flag handling is not implemented yet.
+    // TODO: This should probably be a `Result` instead of a `panic!`.
+    // NOTE: Maybe change the way this is done to a pure IPC solution? when sub-make is used?
+    std::env::args()
+        .collect::<Vec<_>>()
+        .iter()
+        .for_each(|arg| {
+            let mut arg_mod = arg.clone();
+            // If the argument contains a space, we need to quote it.
+            if arg.contains(' ') {
+                arg_mod = format!("\"{}\"", arg);
+            }
+
+            if SUBMAKE_FORBIDDEN_FLAGS.contains(&arg_mod.as_str()) {
+                return;
+            }
+
+            if arg_mod.starts_with("--") {
+                arguments.push(arg[2..].to_string());
+            } else if arg_mod.starts_with('-') {
+                single_flags.push(arg[1..].to_string());
+            }
+        });
+
+    let mut result = "-".to_string();
+    if single_flags.is_empty() {
+        result = "".to_string();
+    } else {
+        result.insert_str(1, &single_flags.join(""));
+    }
+
+    for argument in arguments {
+        result.push_str(&format!(" --{}", argument));
+    }
+
+    result
 }
