@@ -4,7 +4,7 @@ This is a Rust implementation of `make`, striving to be simple, portable, and fa
 
 To avoid clashing with your system's `make`, this project is built as `omake` by default, but if
 this project is ever used as the default implementation of `make` in a system, then it should be
-named `make` (to follow the same convention as `gmake` and `bmake`).
+named `make` (to follow the same convention as `bmake` and `gmake`).
 
 I decided to try to re-write `make` in Rust both as a way to learn Rust and also because I found the
 existing `make` implementations' source code very convoluted.

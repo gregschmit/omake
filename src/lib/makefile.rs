@@ -1,24 +1,40 @@
-mod expand;
+mod opts;
 mod rule_map;
 
-use std::fs::File;
+pub use opts::Opts;
+
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::{fs, fs::File};
 
-use crate::args::Args;
 use crate::context::Context;
 use crate::error::MakeError;
-use crate::vars::{Env, Vars};
+use crate::expand::expand;
+use crate::logger::Logger;
+use crate::vars::Vars;
 
-use expand::expand;
 use rule_map::{Rule, RuleMap};
 
 const COMMENT_INDICATOR: char = '#';
 
+// struct PhysicalLine {
+//     content: String,
+//     index: usize,
+// }
+
+// struct LogicalLine {
+//     physical_lines: Vec<PhysicalLine>,
+//     smushed: String,
+//     breaks: Vec<usize>,
+// }
+
 /// The internal representation of a makefile.
 #[derive(Debug)]
-pub struct Makefile {
-    pub args: Args,
+pub struct Makefile<L: Logger> {
+    pub opts: Opts,
+    pub logger: Box<L>,
+
     rule_map: RuleMap,
     default_target: Option<String>,
 
@@ -28,25 +44,23 @@ pub struct Makefile {
     context: Context,
 }
 
-impl Makefile {
+impl<L: Logger> Makefile<L> {
     /// Principal interface for reading and parsing a makefile.
-    pub fn new(makefile_fn: PathBuf, args: Args, env: Env) -> Result<Self, MakeError> {
+    pub fn new(path: PathBuf, opts: Opts, logger: Box<L>, vars: Vars) -> Result<Self, MakeError> {
         // Initialize the `Makefile` struct with default values.
         let mut makefile = Self {
-            args,
+            opts,
+            logger: logger,
             rule_map: RuleMap::new(),
             default_target: None,
-            vars: env.into(),
+            vars: vars,
             current_rule: None,
-            context: makefile_fn.clone().into(),
+            context: path.clone().into(),
         };
 
         // Open the makefile and run it through the parser.
-        let file = File::open(&makefile_fn).map_err(|e| {
-            MakeError::new(
-                format!("Could not read makefile ({}).", e),
-                makefile_fn.into(),
-            )
+        let file = File::open(&path).map_err(|e| {
+            MakeError::new(format!("Could not read makefile ({}).", e), path.into())
         })?;
         makefile.parse(BufReader::new(file))?;
 
@@ -60,9 +74,9 @@ impl Makefile {
 
         for (i, result) in stream.lines().enumerate() {
             // Set the context line number and extract the line.
-            self.context.line_number = i + 1;
+            self.context.line_index = Some(i);
             let line = result.map_err(|e| MakeError::new(e.to_string(), self.context.clone()))?;
-            self.context.line = Some(line.clone());
+            self.context.content = Some(line.clone());
 
             // Parse the line.
             self.parse_line(line)?;
@@ -119,7 +133,7 @@ impl Makefile {
             }
 
             // Add the rule to the `rule_map`.
-            self.rule_map.insert(rule)?;
+            self.rule_map.insert(rule, &self.logger)?;
         }
 
         // Ignore pure comments and blank lines.
@@ -189,9 +203,7 @@ impl Makefile {
     }
 
     /// Principal interface for executing a parsed makefile, given a list of targets.
-    pub fn execute(&self) -> Result<(), MakeError> {
-        let mut targets = self.args.targets.clone();
-
+    pub fn execute(&self, mut targets: Vec<String>) -> Result<(), MakeError> {
         // Set targets list to default target if none were provided.
         if targets.is_empty() {
             match &self.default_target {
@@ -210,5 +222,27 @@ impl Makefile {
         }
 
         Ok(())
+    }
+
+    /// Get the `mtime` of a file. Note that the return value also signals whether or not the file
+    /// is accessible, so a `None` value represents either the file not existing or the current user
+    /// not having the appropriate permissions to access the file.
+    ///
+    /// TODO: Consider bailing on a file permissions issue? Not sure if POSIX specifies some
+    /// behavior here or if the major implementations halt execution on a permissions error.
+    fn get_mtime(&self, file: &String) -> Option<SystemTime> {
+        match fs::metadata(file) {
+            Ok(metadata) => {
+                if self.opts.old_file.contains(file) {
+                    Some(UNIX_EPOCH)
+                } else if self.opts.new_file.contains(file) {
+                    // 1 year in the future.
+                    Some(SystemTime::now() + Duration::from_secs(365 * 24 * 60 * 60))
+                } else {
+                    metadata.modified().ok()
+                }
+            }
+            Err(_) => None,
+        }
     }
 }

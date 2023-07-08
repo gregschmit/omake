@@ -4,6 +4,8 @@
 use clap::Parser;
 use const_format::formatcp;
 
+use omake::Opts;
+
 /// Represents the `clap`-based arguments provided by this binary.
 #[derive(Clone, Debug, Parser)]
 #[clap(
@@ -69,4 +71,16 @@ pub struct Args {
     /// Print software license.
     #[arg(long)]
     pub license: bool,
+}
+
+impl From<Args> for Opts {
+    fn from(args: Args) -> Self {
+        Self {
+            always_make: args.always_make,
+            ignore_errors: args.ignore_errors,
+            just_print: args.just_print,
+            old_file: args.old_file,
+            new_file: args.new_file,
+        }
+    }
 }

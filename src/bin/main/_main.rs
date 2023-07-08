@@ -4,10 +4,6 @@
 //! of `make` that can be used to process both BSD and GNU makefiles.
 
 mod args;
-mod context;
-mod error;
-mod makefile;
-mod vars;
 
 use std::env;
 use std::fs;
@@ -16,10 +12,8 @@ use std::path::PathBuf;
 use clap::Parser;
 
 use args::Args;
-use context::Context;
-use error::{log_error, log_info};
-use makefile::Makefile;
-use vars::Env;
+
+use omake::{Context, DefaultLogger, Env, Logger, Makefile};
 
 /// An ordered list of filenames used to search for a makefile.
 const MAKEFILE_SEARCH: [&str; 6] = [
@@ -31,7 +25,7 @@ const MAKEFILE_SEARCH: [&str; 6] = [
     "GNUMakefile",
 ];
 
-const LICENSE: &str = include_str!("../LICENSE");
+const LICENSE: &str = include_str!("../../../LICENSE");
 
 /// Search for a makefile to execute.
 ///
@@ -79,13 +73,14 @@ fn find_makefile() -> Option<PathBuf> {
 }
 
 /// Print an error message and exit with code 2.
-fn exit_with(msg: impl AsRef<str>, context: Option<&Context>) -> ! {
-    log_error(msg, context);
+fn exit_with(msg: impl AsRef<str>, logger: &DefaultLogger, context: Option<&Context>) -> ! {
+    logger.error(msg, context);
     std::process::exit(2)
 }
 
 fn main() {
     let args = Args::parse();
+    let logger = DefaultLogger {};
 
     if args.license {
         println!("{}", LICENSE);
@@ -98,23 +93,23 @@ fn main() {
     } else {
         // Remember the current directory to return to.
         let cwd = env::current_dir()
-            .unwrap_or_else(|e| exit_with(format!("Failed to get cwd ({}).", e), None));
+            .unwrap_or_else(|e| exit_with(format!("Failed to get cwd ({}).", e), &logger, None));
 
         // Change to the specified directory.
         let dir = args
             .directory
             .iter()
             .fold(PathBuf::new(), |dir, d| dir.join(d));
-        log_info(format!("Chdir to `{}`.", dir.display()), None);
+        logger.info(format!("Chdir to `{}`.", dir.display()), None);
         env::set_current_dir(&dir)
-            .unwrap_or_else(|e| exit_with(format!("Chdir failed: {}.", e), None));
+            .unwrap_or_else(|e| exit_with(format!("Chdir failed: {}.", e), &logger, None));
 
         Some(cwd)
     };
 
     // Determine the makefile to read.
     let makefile_fn = match args.file {
-        None => find_makefile().unwrap_or_else(|| exit_with("No makefile found.", None)),
+        None => find_makefile().unwrap_or_else(|| exit_with("No makefile found.", &logger, None)),
         Some(ref file) => PathBuf::from(file),
     };
 
@@ -131,20 +126,25 @@ fn main() {
     //     .into();
 
     // Parse the makefile.
-    let makefile = match Makefile::new(makefile_fn, args, env::vars().collect::<Env>()) {
-        Err(e) => exit_with(e.msg, Some(&e.context)),
+    let makefile = match Makefile::new(
+        makefile_fn,
+        args.clone().into(),
+        Box::new(DefaultLogger {}),
+        env::vars().collect::<Env>().into(),
+    ) {
+        Err(e) => exit_with(e.msg, &logger, Some(&e.context)),
         Ok(m) => m,
     };
 
     // Execute the makefile.
-    if let Err(e) = makefile.execute() {
-        exit_with(e.msg, Some(&e.context));
+    if let Err(e) = makefile.execute(args.targets) {
+        exit_with(e.msg, &logger, Some(&e.context));
     }
 
     // Go back to the original directory, if we changed directory previously.
     if let Some(cwd) = original_dir {
-        log_info(format!("Chdir back to `{}`.", cwd.display()), None);
+        logger.info(format!("Chdir back to `{}`.", cwd.display()), None);
         env::set_current_dir(&cwd)
-            .unwrap_or_else(|e| exit_with(format!("Chdir failed: {}.", e), None));
+            .unwrap_or_else(|e| exit_with(format!("Chdir failed: {}.", e), &logger, None));
     }
 }

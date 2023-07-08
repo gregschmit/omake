@@ -21,8 +21,8 @@ const BLANK_MEANS_DEFAULT_VARS: [&str; 1] = [".RECIPEPREFIX"];
 
 lazy_static! {
     /// Variables which are set in a non-recursive context by default, and can be overridden by the
-    /// environment. `SHELL` is not included, since it cannot be overridden by the environment, unless
-    /// explicitly directed to by `-e`.
+    /// environment. `SHELL` is not included, since it cannot be overridden by the environment,
+    /// unless explicitly directed to by `-e`.
     static ref DEFAULT_VARS: HashMap<String, String> = HashMap::from(
         [
             (".RECIPEPREFIX", "\t"),

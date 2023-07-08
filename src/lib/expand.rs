@@ -227,4 +227,10 @@ mod tests {
         let vars = Vars::new([("TEST", "Value")]);
         assert!(expand("${TEST", &vars).is_err());
     }
+
+    #[test]
+    fn test_dollar_space_empty_replacement() {
+        let vars = Vars::new([]);
+        assert_eq!(expand("one$ word", &vars).unwrap(), "oneword");
+    }
 }

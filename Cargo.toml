@@ -14,6 +14,18 @@ clap = {version = "4", features = ["derive"]}
 const_format = "0.2"
 lazy_static = "1"
 
+[[bin]]
+name = "omake"
+path = "src/bin/main/_main.rs"
+
+# [[bin]]
+# name = "omake_lsp_server"
+# path = "src/bin/lsp_server/main.rs"
+
+[lib]
+name = "omake"
+path = "src/lib/_lib.rs"
+
 # Optimize for a small binary.
 [profile.release]
 opt-level = "s"
