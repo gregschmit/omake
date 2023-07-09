@@ -1,16 +1,11 @@
 //! # omake (Oxidized Make)
 //!
-//! This is the library component of `omake`, generally oriented towards the main binary of this
-//! crate, but should be designed to be used by other applications.
+//! This is the library component of the `omake` project, responsible for parsing and executing
+//! makefiles.
 
-mod context;
-mod error;
-mod expand;
-mod logger;
-mod makefile;
-mod vars;
-
-pub use context::Context;
-pub use logger::{DefaultLogger, Logger, ERROR, INFO, WARN};
-pub use makefile::{Makefile, Opts};
-pub use vars::Env;
+pub mod context;
+pub mod error;
+pub mod expand;
+pub mod logger;
+pub mod makefile;
+pub mod vars;

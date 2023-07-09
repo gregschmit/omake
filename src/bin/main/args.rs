@@ -4,9 +4,9 @@
 use clap::Parser;
 use const_format::formatcp;
 
-use omake::Opts;
+use omake::makefile::Opts;
 
-/// Represents the `clap`-based arguments provided by this binary.
+/// The `clap`-based arguments provided by this binary.
 #[derive(Clone, Debug, Parser)]
 #[clap(
     name = "make (oxidized)",

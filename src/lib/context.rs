@@ -1,9 +1,8 @@
-//! Simple implementation of a `Context` struct designed to track parsing/execution location.
+//! Tracking mechanism for makefiles; generally useful for errors, logging, etc.
 
 use std::path::PathBuf;
 
-/// Represents parsing/execution context, specifically, which file and where in the file something
-/// is happening.
+/// Track a file path, content, and location within the file (line/column).
 #[derive(Clone, Debug)]
 pub struct Context {
     pub path: Option<PathBuf>,

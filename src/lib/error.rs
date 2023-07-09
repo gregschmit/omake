@@ -1,10 +1,11 @@
+//! Error type for the parser/executor.
+
 use std::error::Error;
 use std::fmt;
 
 use crate::context::Context;
-use crate::logger::{DefaultLogger, Logger, ERROR};
 
-/// Represents a generic error in a makefile, including context.
+/// An error in the parsing or execution of a makefile.
 #[derive(Debug)]
 pub struct MakeError {
     pub msg: String,
@@ -22,12 +23,9 @@ impl MakeError {
 
 impl Error for MakeError {}
 
+/// Not really used, but needed so `MakeError` can implement `Error`.
 impl fmt::Display for MakeError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(
-            f,
-            "{}",
-            DefaultLogger {}.format_log(&self.msg, ERROR, Some(&self.context))
-        )
+        write!(f, "{e:?}", e = &self)
     }
 }

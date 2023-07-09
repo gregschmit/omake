@@ -1,17 +1,17 @@
+//! Implementation of variable expansion.
+
 use crate::vars::Vars;
 
-/// Represents a frame on the stack inside the `expand` function. This is used for tracking the
-/// previous buffer when expanding potentially nested expressions (i.e., either `$()` or `${}`).
-/// Single variable expansions (e.g., `$X`) are handled inline without creating a frame since they
-/// cannot possibly have nested expressions.
+/// A stack frame used to track the previous buffer when expanding potentially nested expressions
+/// (i.e., either `$()` or `${}`). Single variable expansions (e.g., `$X`) are handled inline
+/// without creating a frame since they cannot possibly have nested expressions.
 struct Frame {
     pub previous_buffer: String,
-    /// Track which character opened this stack frame (should be parenthesis or brace).
+    /// Which character opened this stack frame (parenthesis or brace)?
     pub opening_delimiter: char,
 }
 
-/// The primary public interface for running variable expansion on an input string, given a
-/// collection of `vars`.
+/// Run variable expansion on an input string, given a collection of `vars`.
 ///
 /// The goal here is to be `O(n)`. This works by iterating over the input string and storing plain
 /// characters into a buffer until we hit either:

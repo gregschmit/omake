@@ -1,3 +1,5 @@
+//! Primary public interface for parsing/executing a makefile.
+
 mod opts;
 mod rule_map;
 
@@ -29,7 +31,7 @@ const COMMENT_INDICATOR: char = '#';
 //     breaks: Vec<usize>,
 // }
 
-/// The internal representation of a makefile.
+/// Represents a makefile.
 #[derive(Debug)]
 pub struct Makefile<L: Logger> {
     pub opts: Opts,

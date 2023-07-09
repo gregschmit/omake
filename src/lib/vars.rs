@@ -1,61 +1,56 @@
-//! A wrapper for a `HashMap` for storing the environment variables during makefile parsing.
+//! A wrapper for a [`HashMap`] storing the environment variables during makefile parsing.
 //!
 //! The only interesting behavior here is that for some special keys we have default values which
 //! should be "resettable" by setting the value to blank, and that calling `get` on a key that
-//! doesn't exist should return an empty `Var`. To support these behaviors without polluting the
-//! underlying `HashMap` with lots of duplicate data, the `Vars` struct contains fields for those
-//! heap-allocated "constant" objects. Since we always return a reference to a `Var`, this is quite
-//! efficient.
+//! doesn't exist should return an empty [`Var`]. To support these behaviors without polluting the
+//! underlying `HashMap` with lots of duplicate data, the [`Vars`] struct contains fields for those
+//! heap-allocated "constant" objects. Since we always return a reference to a [`Var`], this is
+//! quite efficient.
 
 use std::collections::HashMap;
 
-use lazy_static::lazy_static;
-
-const BAD_VARIABLE_CHARS: [char; 3] = [':', '#', '='];
-const DEFAULT_SUFFIXES: [&str; 13] = [
+pub const BAD_VARIABLE_CHARS: [char; 3] = [':', '#', '='];
+pub const DEFAULT_SUFFIXES: [&str; 13] = [
     ".C", ".F", ".S", ".c", ".cc", ".cpp", ".def", ".f", ".m", ".mod", ".p", ".r", ".s",
 ];
 
-/// List of variables where setting the value to blank means to reset it to the default value.
-const BLANK_MEANS_DEFAULT_VARS: [&str; 1] = [".RECIPEPREFIX"];
+/// List of variables where setting the value to blank means to reset it to the default value. All
+/// of these values MUST exist in [`DEFAULT_VARS`].
+pub const BLANK_MEANS_DEFAULT_VARS: [&str; 1] = [".RECIPEPREFIX"];
 
-lazy_static! {
-    /// Variables which are set in a non-recursive context by default, and can be overridden by the
-    /// environment. `SHELL` is not included, since it cannot be overridden by the environment,
-    /// unless explicitly directed to by `-e`.
-    static ref DEFAULT_VARS: HashMap<String, String> = HashMap::from(
-        [
-            (".RECIPEPREFIX", "\t"),
-            (".SHELLFLAGS", "-c"),
-            ("AR", "ar"),
-            ("ARFLAGS", "rv"),
-            ("AS", "as"),
-            ("CC", "cc"),
-            ("CO", "co"),
-            ("CTANGLE", "ctangle"),
-            ("CWEAVE", "cweave"),
-            ("CXX", "c++"),
-            ("FC", "f77"),
-            ("GET", "get"),
-            ("LD", "ld"),
-            ("LEX", "lex"),
-            ("LINT", "lint"),
-            ("M2C", "m2c"),
-            ("OBJC", "cc"),
-            ("PC", "pc"),
-            ("RM", "rm -f"),
-            ("TANGLE", "tangle"),
-            ("TEX", "tex"),
-            ("WEAVE", "weave"),
-            ("YACC", "yacc"),
-        ].map(|(k, v)| (k.to_string(), v.to_string()))
-    );
-}
+/// Variables which are set in a non-recursive context by default, and can be overridden by the
+/// environment. `SHELL` is not included, since it cannot be overridden by the environment,
+/// unless explicitly directed to by `-e`.
+pub const DEFAULT_VARS: [(&str, &str); 23] = [
+    (".RECIPEPREFIX", "\t"),
+    (".SHELLFLAGS", "-c"),
+    ("AR", "ar"),
+    ("ARFLAGS", "rv"),
+    ("AS", "as"),
+    ("CC", "cc"),
+    ("CO", "co"),
+    ("CTANGLE", "ctangle"),
+    ("CWEAVE", "cweave"),
+    ("CXX", "c++"),
+    ("FC", "f77"),
+    ("GET", "get"),
+    ("LD", "ld"),
+    ("LEX", "lex"),
+    ("LINT", "lint"),
+    ("M2C", "m2c"),
+    ("OBJC", "cc"),
+    ("PC", "pc"),
+    ("RM", "rm -f"),
+    ("TANGLE", "tangle"),
+    ("TEX", "tex"),
+    ("WEAVE", "weave"),
+    ("YACC", "yacc"),
+];
 
 /// Variables which are set in a recursive context by default, and can be overridden by the
 /// environment.
 #[rustfmt::skip]
-const DEFAULT_RECURSIVE_VARS: [(&str, &str); 36] = [
+pub const DEFAULT_RECURSIVE_VARS: [(&str, &str); 36] = [
     ("OUTPUT_OPTION", "-o $@"),
 
     // Compiler definitions.
@@ -101,13 +96,14 @@ const DEFAULT_RECURSIVE_VARS: [(&str, &str); 36] = [
 /// Represents the "raw" environment coming from the OS.
 pub type Env = HashMap<String, String>;
 
+/// A single variable, with a value and a flag indicating whether it is recursive.
 #[derive(Debug)]
 pub struct Var {
     pub value: String,
     pub recursive: bool,
 }
 
-/// This wraps a `HashMap` and a default value, providing an easy way to get variables, handling
+/// Wrap a [`HashMap`] and a default `blank` value, providing an easy way to get variables, handling
 /// special and automatic variables properly.
 #[derive(Debug)]
 pub struct Vars {
@@ -116,6 +112,10 @@ pub struct Vars {
     /// Variable to return when a variable is not found. This is allocated during initialization to
     /// prevent multiple blank allocations in the map and lifetime tracking.
     blank: Var,
+
+    /// Stashing a map of [`DEFAULT_VARS`] here to make lookup fast since we sometimes need to
+    /// revert a value back to the default.
+    default_vars: HashMap<String, String>,
 }
 
 impl Vars {
@@ -128,11 +128,13 @@ impl Vars {
                 value: "".to_string(),
                 recursive: false,
             },
+            default_vars: HashMap::new(),
         };
 
         // Set default vars.
-        for (k, v) in DEFAULT_VARS.iter() {
+        for (k, v) in DEFAULT_VARS {
             vars.set(k, v, false).unwrap();
+            vars.default_vars.insert(k.to_string(), v.to_string());
         }
 
         // Set default recursive vars.
@@ -186,7 +188,7 @@ impl Vars {
         }
 
         if BLANK_MEANS_DEFAULT_VARS.contains(&&k[..]) && v.is_empty() {
-            v = DEFAULT_VARS.get(&k).unwrap().to_string();
+            v = self.default_vars.get(&k).unwrap().to_string();
         }
 
         self.map.insert(

@@ -1,3 +1,5 @@
+//! Generic logging facility with a default implementation.
+
 use crate::context::Context;
 
 pub const INFO: &str = "INFO";
@@ -6,30 +8,28 @@ pub const ERROR: &str = "ERROR";
 
 const MAX_SEVERITY_LENGTH: usize = 5;
 
-#[derive(Clone, Debug)]
-pub struct DefaultLogger {}
-
-pub trait Logger: Clone + std::fmt::Debug {
+/// Generic trait any logger must implement.
+pub trait Logger {
     /// Write the message somewhere.
     fn write(&self, msg: String);
 
     /// Log an `INFO` message.
     fn info(&self, msg: impl AsRef<str>, context: Option<&Context>) {
-        self.write(self.format_log(msg, INFO, context));
+        self.write(self.format_log(INFO, msg, context));
     }
 
     /// Log a `WARN` message.
     fn warn(&self, msg: impl AsRef<str>, context: Option<&Context>) {
-        self.write(self.format_log(msg, WARN, context));
+        self.write(self.format_log(WARN, msg, context));
     }
 
     /// Log an `ERROR` message.
     fn error(&self, msg: impl AsRef<str>, context: Option<&Context>) {
-        self.write(self.format_log(msg, ERROR, context));
+        self.write(self.format_log(ERROR, msg, context));
     }
 
     /// Formatter for all log messages.
-    fn format_log(&self, msg: impl AsRef<str>, level: &str, context: Option<&Context>) -> String {
+    fn format_log(&self, level: &str, msg: impl AsRef<str>, context: Option<&Context>) -> String {
         // Format log level and context label/line.
         let level_display = format!("{:0width$}", level, width = MAX_SEVERITY_LENGTH);
         let context_label = context
@@ -55,6 +55,9 @@ pub trait Logger: Clone + std::fmt::Debug {
         )
     }
 }
+
+/// Uses the default implementation and outputs to `stderr`.
+pub struct DefaultLogger {}
 
 /// By default, print to `stderr`.
 impl Logger for DefaultLogger {
