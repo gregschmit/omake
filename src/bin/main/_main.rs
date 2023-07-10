@@ -13,10 +13,7 @@ use clap::Parser;
 
 use args::Args;
 
-use omake::context::Context;
-use omake::logger::{DefaultLogger, Logger};
-use omake::makefile::Makefile;
-use omake::vars::Env;
+use omake::{Context, DefaultLogger, Env, Logger, Makefile};
 
 /// An ordered list of filenames used to search for a makefile.
 const MAKEFILE_SEARCH: [&str; 6] = [

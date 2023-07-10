@@ -1,7 +1,7 @@
-//! Primary public interface for parsing/executing a makefile.
+//! The core logic for parsing and executing makefiles.
 
-mod opts;
-mod rule_map;
+pub mod opts;
+pub mod rule_map;
 
 pub use opts::Opts;
 
@@ -31,7 +31,7 @@ const COMMENT_INDICATOR: char = '#';
 //     breaks: Vec<usize>,
 // }
 
-/// Represents a makefile.
+/// The primary interface for reading, parsing, and executing a makefile.
 #[derive(Debug)]
 pub struct Makefile<L: Logger> {
     pub opts: Opts,

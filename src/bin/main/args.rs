@@ -4,7 +4,7 @@
 use clap::Parser;
 use const_format::formatcp;
 
-use omake::makefile::Opts;
+use omake::Opts;
 
 /// The `clap`-based arguments provided by this binary.
 #[derive(Clone, Debug, Parser)]

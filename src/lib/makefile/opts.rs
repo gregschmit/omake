@@ -1,6 +1,5 @@
-//! This module defines the options available for a makefile constructed by the library.
+//! Options available for makefiles.
 
-/// Represents options available for a makefile.
 #[derive(Debug, Default)]
 pub struct Opts {
     /// Unconditionally make all targets.

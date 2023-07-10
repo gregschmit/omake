@@ -1,9 +1,11 @@
+//! Data structures for makefile rules.
+
 use std::collections::HashMap;
 use std::process::Command;
 
 use super::{Context, Logger, MakeError, Makefile};
 
-/// Represents a parsed rule from a makefile.
+/// A parsed rule from a makefile.
 #[derive(Debug, Clone)]
 pub struct Rule {
     pub targets: Vec<String>,
@@ -66,10 +68,10 @@ impl Rule {
     }
 }
 
-/// Wrapper for a mapping of targets to rules. We also provide a facility to execute targets.
+/// Wrapper for a mapping of targets to rules, and with a facility to execute targets.
 #[derive(Debug)]
 pub struct RuleMap {
-    /// Storage for added rules. Rules must only be inserted, as removal may invalidate items in
+    /// Storage for added rules. Rules MUST only be inserted, as removal may invalidate items in
     /// `by_target`.
     rules: Vec<Rule>,
 
@@ -77,7 +79,7 @@ pub struct RuleMap {
     by_target: HashMap<String, Vec<usize>>,
 }
 
-/// Note that methods on `RuleMap` must ensure that only new entries are added to either `rules` or
+/// Note that methods on `RuleMap` MUST ensure that only new entries are added to either `rules` or
 /// `by_target` to ensure index references always remain valid. Also, entries added to `by_target`
 /// must always initialize with at least one index, never an empty vector.
 impl RuleMap {
