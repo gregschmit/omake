@@ -64,18 +64,76 @@ impl<L: Logger> Makefile<L> {
     fn parse<R: BufRead>(&mut self, input: R) -> Result<(), MakeError> {
         self.current_rule = None;
 
-        // TODO(logical-line-parser): join physical lines ending in an unescaped backslash into
-        // logical lines before handing them to `parse_line`. See `logical_line.rs` and TODO.md.
+        // Join physical lines ending in an unescaped backslash into logical lines. A non-recipe
+        // continuation collapses the backslash/newline (and surrounding whitespace) into a single
+        // space; a recipe continuation keeps the backslash and newline (so the shell sees the
+        // continuation) but strips the recipe prefix from each continuation line.
+        let mut pending: Option<PendingLine> = None;
+
         for (i, result) in input.lines().enumerate() {
             // Set the context line number, and clear the content until we successfully read the
             // line, so a read error (e.g. invalid UTF-8) doesn't report the previous line's text.
             self.context.line_index = Some(i);
             self.context.content = None;
-            let line = result.map_err(|e| MakeError::new(&e.to_string(), self.context.clone()))?;
-            self.context.content = Some(line.clone());
+            let physical =
+                result.map_err(|e| MakeError::new(&e.to_string(), self.context.clone()))?;
+            let continues = ends_with_odd_backslash(&physical);
 
-            // Parse the line.
-            self.parse_line(line)?;
+            // Extend the pending logical line, or start a new one.
+            let p = match pending.take() {
+                Some(mut p) => {
+                    if p.is_recipe {
+                        // Keep the backslash/newline; drop only the continuation's recipe prefix.
+                        let cont = physical
+                            .strip_prefix(&p.recipe_prefix)
+                            .unwrap_or(&physical)
+                            .to_string();
+                        p.accum.push('\n');
+                        p.accum.push_str(&cont);
+                    } else {
+                        let content = if continues {
+                            strip_one_trailing_backslash(&physical)
+                        } else {
+                            physical.clone()
+                        };
+                        let trimmed_len = p.accum.trim_end().len();
+                        p.accum.truncate(trimmed_len);
+                        p.accum.push(' ');
+                        p.accum.push_str(content.trim_start());
+                    }
+                    p
+                }
+                None => {
+                    let recipe_prefix = self.vars.get(".RECIPEPREFIX").value.to_string();
+                    let is_recipe = physical.starts_with(&recipe_prefix);
+                    let accum = if is_recipe || !continues {
+                        physical.clone()
+                    } else {
+                        strip_one_trailing_backslash(&physical)
+                    };
+                    PendingLine {
+                        start_index: i,
+                        is_recipe,
+                        recipe_prefix,
+                        accum,
+                    }
+                }
+            };
+
+            if continues {
+                pending = Some(p);
+            } else {
+                self.context.line_index = Some(p.start_index);
+                self.context.content = Some(p.accum.clone());
+                self.parse_line(p.accum)?;
+            }
+        }
+
+        // A continuation left dangling at end of input is still parsed.
+        if let Some(p) = pending {
+            self.context.line_index = Some(p.start_index);
+            self.context.content = Some(p.accum.clone());
+            self.parse_line(p.accum)?;
         }
 
         // Always push two blank lines at the end to terminate trailing rules, even if the last rule
@@ -319,6 +377,31 @@ impl<L: Logger> Makefile<L> {
             Err(_) => None,
         }
     }
+}
+
+/// State for a logical line being assembled from continued physical lines.
+struct PendingLine {
+    /// Index of the first physical line (for context/error reporting).
+    start_index: usize,
+    /// Whether the logical line is a recipe (the first physical line starts with the recipe prefix).
+    is_recipe: bool,
+    /// The recipe prefix in effect when this logical line began.
+    recipe_prefix: String,
+    /// The accumulated logical line so far.
+    accum: String,
+}
+
+/// Whether `line` ends with an odd number of backslashes, i.e. it continues onto the next line (an
+/// even count means the final backslash is itself escaped, so the line does not continue).
+fn ends_with_odd_backslash(line: &str) -> bool {
+    line.bytes().rev().take_while(|&b| b == b'\\').count() % 2 == 1
+}
+
+/// Remove the single trailing backslash that marks a line continuation.
+fn strip_one_trailing_backslash(line: &str) -> String {
+    let mut s = line.to_string();
+    s.pop();
+    s
 }
 
 /// Remove an inline comment (from the first unescaped `#` to end of line). An escaped `\#` becomes
