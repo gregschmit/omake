@@ -97,7 +97,7 @@ pub const DEFAULT_RECURSIVE_VARS: [(&str, &str); 36] = [
 pub type Env = HashMap<String, String>;
 
 /// A single variable, with a value and a flag indicating whether it is recursive.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Var {
     pub value: String,
     pub recursive: bool,
@@ -105,7 +105,7 @@ pub struct Var {
 
 /// Wrap a [`HashMap`] and a default `blank` value, providing an easy way to get variables, handling
 /// special and automatic variables properly.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Vars {
     map: HashMap<String, Var>,
 

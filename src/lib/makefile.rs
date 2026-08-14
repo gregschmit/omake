@@ -98,19 +98,15 @@ impl<L: Logger> Makefile<L> {
             match &mut self.current_rule {
                 None => return Err(MakeError::new("recipe without rule", self.context.clone())),
                 Some(r) => {
-                    // Strip the recipe prefix first.
+                    // Strip the recipe prefix and store the command RAW; recipes are expanded at
+                    // execution time (so later variable definitions and automatic variables like
+                    // `$@` resolve). Skip blank recipe lines.
                     let cmd = line
                         .strip_prefix(recipe_prefix)
-                        .expect("line known to start with a recipe prefix")
-                        .trim()
-                        .to_string();
+                        .expect("line known to start with a recipe prefix");
 
-                    if !cmd.is_empty() {
-                        r.recipe.push(
-                            expand(cmd.as_str(), &self.vars).map_err(|e| {
-                                MakeError::new(&e.to_string(), self.context.clone())
-                            })?,
-                        );
+                    if !cmd.trim().is_empty() {
+                        r.recipe.push(cmd.to_string());
                     }
                 }
             }

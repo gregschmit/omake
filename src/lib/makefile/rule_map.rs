@@ -1,9 +1,11 @@
 //! Data structures for makefile rules.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::process::Command;
 
 use super::{Context, Logger, MakeError, Makefile};
+use crate::expand::expand;
+use crate::vars::Vars;
 
 /// A parsed rule from a makefile.
 #[derive(Debug, Clone)]
@@ -16,16 +18,31 @@ pub struct Rule {
 }
 
 impl Rule {
-    pub fn execute<L: Logger>(&self, makefile: &Makefile<L>) -> Result<(), MakeError> {
-        let shell = &makefile.vars.get("SHELL").value;
-        let shell_flags = makefile
-            .vars
+    /// Execute this rule's recipe for a specific `target` (one rule may have several targets, and
+    /// automatic variables like `$@` depend on which one is being built).
+    pub fn execute<L: Logger>(
+        &self,
+        makefile: &Makefile<L>,
+        target: &str,
+    ) -> Result<(), MakeError> {
+        // Build a per-target variable scope: the makefile's variables plus automatic variables.
+        let mut vars = makefile.vars.clone();
+        self.set_automatic_vars(&mut vars, makefile, target);
+
+        let shell = vars.get("SHELL").value.clone();
+        let shell_flags = vars
             .get(".SHELLFLAGS")
             .value
             .split_whitespace()
+            .map(|s| s.to_string())
             .collect::<Vec<_>>();
 
-        for line in self.recipe.iter() {
+        for raw in self.recipe.iter() {
+            // Expand the recipe line now, at execution time. This resolves variables defined after
+            // the rule, automatic variables, and cases where a variable expands to a command
+            // modifier (e.g. the kernel's `$(Q)` = `@` pattern), which must be recognized below.
+            let line = expand(raw, &vars).map_err(|e| MakeError::new(&e, self.context.clone()))?;
+
             // Strip leading command modifiers: `@` (silence echo), `-` (ignore errors), and `+`
             // (run even under `--just-print`). They may be combined in any order and separated by
             // whitespace (e.g. `@-` or `- @`), and must be removed before the command is echoed or
@@ -61,7 +78,7 @@ impl Rule {
             }
 
             // Execute the recipe line.
-            let res = Command::new(shell)
+            let res = Command::new(&shell)
                 .args(&shell_flags)
                 .arg(command)
                 .status()
@@ -83,6 +100,70 @@ impl Rule {
         }
 
         Ok(())
+    }
+
+    /// Populate `vars` with the automatic variables for building `target`.
+    fn set_automatic_vars<L: Logger>(&self, vars: &mut Vars, makefile: &Makefile<L>, target: &str) {
+        // `$@`: the target being built.
+        let _ = vars.set("@", target, false);
+
+        // `$<`: the first prerequisite.
+        let first = self.prerequisites.first().map(String::as_str).unwrap_or("");
+        let _ = vars.set("<", first, false);
+
+        // `$^`: all prerequisites, de-duplicated with order preserved.
+        let mut seen = HashSet::new();
+        let deduped = self
+            .prerequisites
+            .iter()
+            .filter(|p| seen.insert(p.as_str()))
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .join(" ");
+        let _ = vars.set("^", deduped.as_str(), false);
+
+        // `$+`: all prerequisites, keeping duplicates.
+        let all = self.prerequisites.join(" ");
+        let _ = vars.set("+", all.as_str(), false);
+
+        // `$?`: prerequisites newer than the target, de-duplicated. If the target is absent, every
+        // prerequisite counts; if the target exists, a prerequisite counts when its file is newer or
+        // when it has no file (phony / just-rebuilt prerequisites are treated as newer).
+        let target_mtime = makefile.get_mtime(&target.to_string());
+        let mut seen_newer = HashSet::new();
+        let newer = self
+            .prerequisites
+            .iter()
+            .filter(|p| match target_mtime {
+                None => true,
+                Some(tm) => makefile.get_mtime(&p.to_string()).is_none_or(|pm| pm > tm),
+            })
+            .filter(|p| seen_newer.insert(p.as_str()))
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .join(" ");
+        let _ = vars.set("?", newer.as_str(), false);
+
+        // `$*`: the stem. Only meaningful for pattern/suffix rules (not yet implemented), so it is
+        // left empty for explicit rules.
+        let _ = vars.set("*", "", false);
+
+        // Directory/file parts of `$@` and `$<`.
+        let (at_dir, at_file) = split_dir_file(target);
+        let _ = vars.set("@D", at_dir.as_str(), false);
+        let _ = vars.set("@F", at_file.as_str(), false);
+        let (lt_dir, lt_file) = split_dir_file(first);
+        let _ = vars.set("<D", lt_dir.as_str(), false);
+        let _ = vars.set("<F", lt_file.as_str(), false);
+    }
+}
+
+/// Split a path into its directory part (`.` when there is no slash, trailing slash removed) and its
+/// file part, matching make's `$(@D)`/`$(@F)`.
+fn split_dir_file(path: &str) -> (String, String) {
+    match path.rfind('/') {
+        Some(i) => (path[..i].to_string(), path[i + 1..].to_string()),
+        None => (".".to_string(), path.to_string()),
     }
 }
 
@@ -202,7 +283,7 @@ impl RuleMap {
             }
 
             if target_mtime_opt.is_none() || should_execute {
-                rule.execute(makefile)?;
+                rule.execute(makefile, target)?;
                 executed = true;
             }
         }
