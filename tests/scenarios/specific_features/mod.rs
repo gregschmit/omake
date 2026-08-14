@@ -1,6 +1,8 @@
 mod t10_automatic_vars;
 mod t11_deferred_recipe;
 mod t12_line_continuation;
+mod t13_diamond;
+mod t14_circular;
 mod t1_custom_recipe_prefix;
 mod t2_always_make;
 mod t3_old_files;

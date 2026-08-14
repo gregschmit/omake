@@ -129,14 +129,14 @@ impl Rule {
         // `$?`: prerequisites newer than the target, de-duplicated. If the target is absent, every
         // prerequisite counts; if the target exists, a prerequisite counts when its file is newer or
         // when it has no file (phony / just-rebuilt prerequisites are treated as newer).
-        let target_mtime = makefile.get_mtime(&target.to_string());
+        let target_mtime = makefile.get_mtime(target);
         let mut seen_newer = HashSet::new();
         let newer = self
             .prerequisites
             .iter()
             .filter(|p| match target_mtime {
                 None => true,
-                Some(tm) => makefile.get_mtime(&p.to_string()).is_none_or(|pm| pm > tm),
+                Some(tm) => makefile.get_mtime(p).is_none_or(|pm| pm > tm),
             })
             .filter(|p| seen_newer.insert(p.as_str()))
             .map(String::as_str)
@@ -231,21 +231,69 @@ impl RuleMap {
         Ok(())
     }
 
-    /// Execute the rules for a particular target, checking prerequisites.
-    pub fn execute<L>(&self, makefile: &Makefile<L>, target: &String) -> Result<(), MakeError>
+    /// Execute the given `targets` in order, sharing build state so each is built at most once and
+    /// circular dependencies are detected rather than recursed into forever.
+    pub fn execute<L>(&self, makefile: &Makefile<L>, targets: &[String]) -> Result<(), MakeError>
     where
         L: Logger,
     {
+        let mut state = ExecState::default();
+        for target in targets {
+            // Top-level targets have no parent edge (they cannot be circular on first entry).
+            self.execute_target(makefile, target, "", &mut state)?;
+        }
+        Ok(())
+    }
+
+    /// Build a single target, guarding against re-building (memoization) and circular dependencies.
+    /// `parent` is the target that required this one (for the circular-dependency diagnostic).
+    fn execute_target<L: Logger>(
+        &self,
+        makefile: &Makefile<L>,
+        target: &str,
+        parent: &str,
+        state: &mut ExecState,
+    ) -> Result<(), MakeError> {
+        // Already resolved this run: nothing to do.
+        if state.done.contains(target) {
+            return Ok(());
+        }
+
+        // Already on the current stack: a circular dependency. GNU make warns and drops the edge
+        // that closes the cycle (`parent <- target`) rather than looping forever, so do the same.
+        if !state.in_progress.insert(target.to_string()) {
+            makefile.logger.warn(
+                &format!("Circular {parent} <- {target} dependency dropped."),
+                None,
+            );
+            return Ok(());
+        }
+
+        let result = self.build_target(makefile, target, state);
+
+        state.in_progress.remove(target);
+        if result.is_ok() {
+            state.done.insert(target.to_string());
+        }
+        result
+    }
+
+    /// The core build logic for one target: resolve prerequisites, then run recipes if out of date.
+    fn build_target<L: Logger>(
+        &self,
+        makefile: &Makefile<L>,
+        target: &str,
+        state: &mut ExecState,
+    ) -> Result<(), MakeError> {
         let rule_indices = self.by_target.get(target).ok_or_else(|| {
             MakeError::new(
                 &format!("No rule to make target '{target}'."),
                 Context::new(),
             )
         })?;
-        let target_mtime_opt = makefile.get_mtime(target);
 
         // Old files have their rules ignored.
-        if makefile.opts.old_file.contains(target) {
+        if makefile.opts.old_file.iter().any(|f| f == target) {
             makefile
                 .logger
                 .info(&format!("Target '{target}' is up to date (old)."), None);
@@ -255,19 +303,22 @@ impl RuleMap {
         let mut executed = false;
         for i in rule_indices {
             let rule = &self.rules[i.to_owned()];
+            // Re-read the target mtime per rule so a double-colon rule sees files written by an
+            // earlier rule for the same target.
+            let target_mtime_opt = makefile.get_mtime(target);
             let mut should_execute = makefile.opts.always_make;
 
             // Check (and possibly execute) prereqs.
             for prereq in &rule.prerequisites {
                 // Check if prereq exists unless `always_make`.
                 if makefile.opts.always_make {
-                    self.execute(makefile, prereq)?;
+                    self.execute_target(makefile, prereq, target, state)?;
                 } else {
                     match makefile.get_mtime(prereq) {
                         None => {
                             // Prereq doesn't exist, so make it. By definition, it's more up-to-date
                             // than the target.
-                            self.execute(makefile, prereq)?;
+                            self.execute_target(makefile, prereq, target, state)?;
                             should_execute = true;
                         }
                         Some(prereq_mtime) => {
@@ -297,4 +348,13 @@ impl RuleMap {
 
         Ok(())
     }
+}
+
+/// Mutable state threaded through a single top-level execution.
+#[derive(Default)]
+struct ExecState {
+    /// Targets currently on the recursion stack, used to detect circular dependencies.
+    in_progress: HashSet<String>,
+    /// Targets already resolved this run, so a shared prerequisite is built at most once.
+    done: HashSet<String>,
 }

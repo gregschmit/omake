@@ -349,11 +349,7 @@ impl<L: Logger> Makefile<L> {
             }
         }
 
-        for target in targets {
-            self.rule_map.execute(self, &target)?;
-        }
-
-        Ok(())
+        self.rule_map.execute(self, &targets)
     }
 
     /// Get the `mtime` of a file. Note that the return value also signals whether or not the file
@@ -362,12 +358,12 @@ impl<L: Logger> Makefile<L> {
     ///
     /// TODO: Consider bailing on a file permissions issue? Not sure if POSIX specifies some
     /// behavior here or if the major implementations halt execution on a permissions error.
-    fn get_mtime(&self, file: &String) -> Option<SystemTime> {
+    fn get_mtime(&self, file: &str) -> Option<SystemTime> {
         match fs::metadata(file) {
             Ok(metadata) => {
-                if self.opts.old_file.contains(file) {
+                if self.opts.old_file.iter().any(|f| f == file) {
                     Some(UNIX_EPOCH)
-                } else if self.opts.new_file.contains(file) {
+                } else if self.opts.new_file.iter().any(|f| f == file) {
                     // 1 year in the future.
                     Some(SystemTime::now() + Duration::from_secs(365 * 24 * 60 * 60))
                 } else {
