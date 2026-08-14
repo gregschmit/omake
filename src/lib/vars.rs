@@ -212,13 +212,9 @@ impl From<Env> for Vars {
                 continue;
             }
 
-            vars.map.insert(
-                k,
-                Var {
-                    value: v,
-                    recursive: false,
-                },
-            );
+            // Route through `set` so environment variables get the same validation and special-key
+            // handling (e.g. blank-means-default) as makefile assignments. Skip invalid names.
+            let _ = vars.set(k, v, false);
         }
 
         vars

@@ -9,6 +9,6 @@ pub mod makefile;
 pub mod vars;
 
 pub use error::MakeError;
-pub use logger::{context::Context, DefaultLogger, Logger};
-pub use makefile::{opts::Opts, Makefile};
+pub use logger::{DefaultLogger, Logger, context::Context};
+pub use makefile::{Makefile, opts::Opts};
 pub use vars::{Env, Vars};

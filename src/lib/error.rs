@@ -23,9 +23,8 @@ impl MakeError {
 
 impl Error for MakeError {}
 
-/// Not really used, but needed so `MakeError` can implement `Error`.
 impl fmt::Display for MakeError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{e:?}", e = &self)
+        write!(f, "{}", self.msg)
     }
 }

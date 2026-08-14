@@ -13,10 +13,9 @@ use std::{fs, fs::File};
 
 use crate::error::MakeError;
 use crate::expand::expand;
-use crate::logger::{context::Context, Logger};
+use crate::logger::{Logger, context::Context};
 use crate::vars::Vars;
 
-// use logical_line::LogicalLine;
 use rule_map::{Rule, RuleMap};
 
 const COMMENT_INDICATOR: char = '#';
@@ -27,7 +26,6 @@ pub struct Makefile<L: Logger> {
     pub opts: Opts,
     pub logger: Box<L>,
 
-    // logical_lines: Vec<LogicalLine>,
     rule_map: RuleMap,
     default_target: Option<String>,
 
@@ -44,10 +42,9 @@ impl<L: Logger> Makefile<L> {
         let mut makefile = Self {
             opts,
             logger: Box::new(logger),
-            // logical_lines: Vec::new(),
             rule_map: RuleMap::new(),
             default_target: None,
-            vars: vars,
+            vars,
             current_rule: None,
             context: path.clone().into(),
         };
@@ -65,45 +62,16 @@ impl<L: Logger> Makefile<L> {
     /// manage context.
     fn parse<R: BufRead>(&mut self, input: R) -> Result<(), MakeError> {
         self.current_rule = None;
-        // let current_logical_line: Option<LogicalLine> = None;
 
+        // TODO(logical-line-parser): join physical lines ending in an unescaped backslash into
+        // logical lines before handing them to `parse_line`. See `logical_line.rs` and TODO.md.
         for (i, result) in input.lines().enumerate() {
-            // Set the context line number and extract the line.
+            // Set the context line number, and clear the content until we successfully read the
+            // line, so a read error (e.g. invalid UTF-8) doesn't report the previous line's text.
             self.context.line_index = Some(i);
+            self.context.content = None;
             let line = result.map_err(|e| MakeError::new(&e.to_string(), self.context.clone()))?;
             self.context.content = Some(line.clone());
-
-            // If we're in a line continuation, then handle smushing the whitespace properly.
-            // if current_logical_line.is_some() {
-            //     if self.current_rule.is_some() {
-            //         // If we're in a rule, then we need to remove the recipe prefix.
-            //         let recipe_prefix = &self.vars.get(".RECIPEPREFIX").value;
-            //         if line.starts_with(recipe_prefix) {
-            //             line = line
-            //                 .strip_prefix(recipe_prefix)
-            //                 .unwrap_or(&line)
-            //                 .to_string();
-            //         }
-            //     } else {
-            //         // Otherwise, replace all leading whitespace with a single space.
-            //         line = line.trim_start().to_string();
-            //         line.insert(0, ' ');
-            //     }
-            // }
-
-            // if line.chars().last().unwrap() == '\\' {
-            //     // Make sure to set the `current_logline` to signal the next physical line should be
-            //     // appended to this one.
-            //     match current_logline {
-            //         Some(mut logline) => logline,
-            //         None => {}
-            //     }
-            // } else {
-            //     match current_line {
-            //         Some(mut logline) => {}
-            //         None => {}
-            //     }
-            // }
 
             // Parse the line.
             self.parse_line(line)?;
@@ -148,6 +116,10 @@ impl<L: Logger> Makefile<L> {
             return Ok(());
         }
 
+        // Strip inline comments (`#` to end of line) on non-recipe lines. Recipe lines keep `#` so
+        // it can reach the shell, and they already returned above.
+        let line = strip_inline_comment(&line);
+
         // Anything other than recipe lines terminate a rule definition.
         if let Some(rule) = self.current_rule.take() {
             // If there is no default target, see if we can assign one.
@@ -161,7 +133,7 @@ impl<L: Logger> Makefile<L> {
             }
 
             // Add the rule to the `rule_map`.
-            self.rule_map.insert(rule, &self.logger)?;
+            self.rule_map.insert(rule, &*self.logger)?;
         }
 
         // Ignore pure comments and blank lines.
@@ -175,11 +147,11 @@ impl<L: Logger> Makefile<L> {
             // First, if deps start with another `:`, then this is a double-colon rule, so we should
             // mark it as such.
             let mut double_colon = false;
-            if let Some(ch) = deps.chars().next() {
-                if ch == ':' {
-                    deps = &deps[1..];
-                    double_colon = true;
-                }
+            if let Some(ch) = deps.chars().next()
+                && ch == ':'
+            {
+                deps = &deps[1..];
+                double_colon = true;
             }
 
             // There could be a semicolon after prerequisites, in which case we should parse
@@ -239,7 +211,7 @@ impl<L: Logger> Makefile<L> {
                     return Err(MakeError::new(
                         "No target specified and no default target found.",
                         Context::new(),
-                    ))
+                    ));
                 }
                 Some(t) => targets.push(t.clone()),
             }
@@ -273,4 +245,29 @@ impl<L: Logger> Makefile<L> {
             Err(_) => None,
         }
     }
+}
+
+/// Remove an inline comment (from the first unescaped `#` to end of line). An escaped `\#` becomes
+/// a literal `#`; other backslash sequences are left untouched. This must not be used on recipe
+/// lines, where `#` is significant and passed through to the shell.
+fn strip_inline_comment(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut chars = line.chars();
+
+    while let Some(c) = chars.next() {
+        match c {
+            '#' => break,
+            '\\' => match chars.next() {
+                Some('#') => out.push('#'),
+                Some(other) => {
+                    out.push('\\');
+                    out.push(other);
+                }
+                None => out.push('\\'),
+            },
+            _ => out.push(c),
+        }
+    }
+
+    out
 }

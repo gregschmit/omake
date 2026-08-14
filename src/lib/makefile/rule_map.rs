@@ -26,40 +26,58 @@ impl Rule {
             .collect::<Vec<_>>();
 
         for line in self.recipe.iter() {
-            // Determine if the first character is a command modifier.
-            let command_modifier = match line.chars().next().unwrap() {
-                ch @ ('@' | '-' | '+') => Some(ch),
-                _ => None,
-            };
-
-            // Echo the line to stdout, unless suppressed.
-            if command_modifier != Some('@') || makefile.opts.just_print {
-                println!("{line}");
-
-                // If we're just printing, we are done with this line.
-                if makefile.opts.just_print {
-                    continue;
+            // Strip leading command modifiers: `@` (silence echo), `-` (ignore errors), and `+`
+            // (run even under `--just-print`). They may be combined in any order and separated by
+            // whitespace (e.g. `@-` or `- @`), and must be removed before the command is echoed or
+            // handed to the shell; only the remainder is a real command.
+            let mut silent = false;
+            let mut ignore_errors = false;
+            let mut force = false;
+            let mut command = line.as_str();
+            loop {
+                command = command.trim_start();
+                match command.chars().next() {
+                    Some('@') => silent = true,
+                    Some('-') => ignore_errors = true,
+                    Some('+') => force = true,
+                    _ => break,
                 }
+                command = &command[1..];
+            }
+
+            // A recipe consisting only of modifiers (e.g. `@`) is a no-op.
+            if command.is_empty() {
+                continue;
+            }
+
+            // Echo the command to stdout, unless silenced. `--just-print` always echoes.
+            if !silent || makefile.opts.just_print {
+                println!("{command}");
+            }
+
+            // Under `--just-print` we only echo and move on, except `+` commands always run.
+            if makefile.opts.just_print && !force {
+                continue;
             }
 
             // Execute the recipe line.
             let res = Command::new(shell)
                 .args(&shell_flags)
-                .arg(line)
+                .arg(command)
                 .status()
                 .map_err(|e| MakeError::new(&e.to_string(), self.context.clone()))?;
 
             // Check for command errors, unless directed to ignore them.
-            if command_modifier != Some('-') && !makefile.opts.ignore_errors {
-                if let Some(code) = res.code() {
-                    if code != 0 {
+            if !ignore_errors && !makefile.opts.ignore_errors {
+                match res.code() {
+                    Some(0) => {}
+                    Some(code) => {
                         return Err(MakeError::new(
                             &format!("Failed with code {code}."),
                             self.context.clone(),
                         ));
                     }
-                } else {
-                    return Err(MakeError::new("Killed.", self.context.clone()));
+                    None => return Err(MakeError::new("Killed.", self.context.clone())),
                 }
             }
         }
@@ -82,6 +100,12 @@ pub struct RuleMap {
 /// Note that methods on `RuleMap` MUST ensure that only new entries are added to either `rules` or
 /// `by_target` to ensure index references always remain valid. Also, entries added to `by_target`
 /// must always initialize with at least one index, never an empty vector.
+impl Default for RuleMap {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RuleMap {
     pub fn new() -> Self {
         Self {
@@ -91,7 +115,7 @@ impl RuleMap {
     }
 
     /// Insert a rule, update the `by_target` hashmap, and validate the rule.
-    pub fn insert<L: Logger>(&mut self, rule: Rule, logger: &Box<L>) -> Result<(), MakeError> {
+    pub fn insert<L: Logger>(&mut self, rule: Rule, logger: &L) -> Result<(), MakeError> {
         // Load rule into the storage vector and get a reference to it and the insertion index.
         let index = self.rules.len();
         self.rules.push(rule);
@@ -167,10 +191,10 @@ impl RuleMap {
                         }
                         Some(prereq_mtime) => {
                             // Prereq exists, so check if it's more up-to-date than the target.
-                            if let Some(target_mtime) = target_mtime_opt {
-                                if prereq_mtime > target_mtime {
-                                    should_execute = true;
-                                }
+                            if let Some(target_mtime) = target_mtime_opt
+                                && prereq_mtime > target_mtime
+                            {
+                                should_execute = true;
                             }
                         }
                     }

@@ -16,6 +16,8 @@ struct SystemTestCase {
     pub expected_stderr: String,
     /// Expected files that should be created, mapped to their content.
     pub expected_files: HashMap<String, String>,
+    /// Expected process exit code (`None` skips the check).
+    pub expected_code: Option<i32>,
 }
 
 impl SystemTestCase {
@@ -28,6 +30,7 @@ impl SystemTestCase {
         expected_stdout: &str,
         expected_stderr: &str,
         expected_files: &[(&str, &str)],
+        expected_code: Option<i32>,
     ) {
         let system_test = Self {
             // Trim leading/trailing slashes in `path`.
@@ -39,26 +42,23 @@ impl SystemTestCase {
                 .iter()
                 .map(|(f, c)| (f.to_string(), c.to_string()))
                 .collect::<HashMap<_, _>>(),
+            expected_code,
         };
         system_test.run();
     }
 
     /// Run this system test and assert any expectations.
     fn run(&self) {
-        // Determine path to `omake` (inside the `target/debug` directory). Note that we must
-        // reference `omake` from within the directory that the system test is located.
-        let omake_path = format!(
-            "{}target/debug/omake",
-            // Traverse back from test directory to project directory.
-            "../".repeat(self.path.matches('/').count() + 1),
-        );
+        // `CARGO_BIN_EXE_omake` is set by Cargo for integration tests and guarantees the binary is
+        // built first, so we don't have to hand-compute a `target/<profile>` path.
+        let omake_path = env!("CARGO_BIN_EXE_omake");
 
         // Run `omake` inside the system test directory.
         let output = Command::new(omake_path)
             .args(&self.args)
             .current_dir(self.relative_path(&"".to_string()))
             .output()
-            .unwrap();
+            .unwrap_or_else(|e| panic!("failed to run omake at {omake_path}: {e}"));
 
         // Assert expected STDOUT (unless expected is sentinel `"?"`).
         if self.expected_stdout != "?" {
@@ -75,6 +75,15 @@ impl SystemTestCase {
                 String::from_utf8_lossy(&output.stderr),
                 self.expected_stderr,
                 "STDERR should match the expected STDERR.",
+            );
+        }
+
+        // Assert the process exit code.
+        if let Some(code) = self.expected_code {
+            assert_eq!(
+                output.status.code(),
+                Some(code),
+                "Exit code should match the expected code.",
             );
         }
 
@@ -114,6 +123,7 @@ macro_rules! system_test_cases {
             expected_stdout: $expected_stdout:expr,
             expected_stderr: $expected_stderr:expr,
             expected_files: $expected_files:expr
+            $(, expected_code: $expected_code:expr)?
             $(, pre_hook: $pre_hook:block)?
             $(, post_hook: $post_hook:block)?
             $(,)?
@@ -129,9 +139,16 @@ macro_rules! system_test_cases {
             // Run the specified test cases.
             $(
                 $($pre_hook)?
-                crate::SystemTestCase::execute(
-                    &path, $args, $expected_stdout, $expected_stderr, $expected_files
-                );
+                {
+                    // Default to asserting a successful (0) exit; a case may override it.
+                    #[allow(unused_mut, unused_assignments)]
+                    let mut expected_code: Option<i32> = Some(0);
+                    $( expected_code = $expected_code; )?
+                    crate::SystemTestCase::execute(
+                        &path, $args, $expected_stdout, $expected_stderr, $expected_files,
+                        expected_code,
+                    );
+                }
                 $($post_hook)?
             )*
         }

@@ -9,7 +9,8 @@ crate::system_test_cases!(
             std::fs::write("tests/scenarios/specific_features/t3_old_files/a", "a\n").unwrap();
         },
         post_hook: {
-            std::fs::remove_file("tests/scenarios/specific_features/t3_old_files/a").unwrap();
+            // Cleanup should never panic over the real assertion, so ignore errors.
+            let _ = std::fs::remove_file("tests/scenarios/specific_features/t3_old_files/a");
         },
     },
     {
@@ -21,7 +22,8 @@ crate::system_test_cases!(
             std::fs::write("tests/scenarios/specific_features/t3_old_files/a", "a\n").unwrap();
         },
         post_hook: {
-            std::fs::remove_file("tests/scenarios/specific_features/t3_old_files/a").unwrap();
+            // Cleanup should never panic over the real assertion, so ignore errors.
+            let _ = std::fs::remove_file("tests/scenarios/specific_features/t3_old_files/a");
         },
     },
 );

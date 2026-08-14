@@ -14,6 +14,12 @@ pub struct Context {
     pub column_index: Option<usize>,
 }
 
+impl Default for Context {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Context {
     pub fn new() -> Self {
         Self {
@@ -25,19 +31,17 @@ impl Context {
     }
 
     pub fn label(&self) -> Option<String> {
-        let Some(path_display) = self.path.as_ref().map(|p| p.display() ) else {
-            return None;
-        };
+        let path_display = self.path.as_ref().map(|p| p.display())?;
 
         // Assume row index would only be set if line index is set. Also, increment indices by 1 to
         // convert to the traditional line/column display "number".
-        return match self.line_index {
+        match self.line_index {
             Some(line) => match self.column_index {
                 Some(column) => Some(format!("{path_display}:{}:{}", line + 1, column + 1)),
                 None => Some(format!("{path_display}:{}", line + 1)),
             },
             None => Some(path_display.to_string()),
-        };
+        }
     }
 
     pub fn display_line(&self) -> Option<String> {

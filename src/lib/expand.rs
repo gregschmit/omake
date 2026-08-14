@@ -53,7 +53,10 @@ pub fn expand(s: &str, vars: &Vars) -> Result<String, String> {
             }
             ')' | '}' => {
                 match stack.last() {
-                    None => current_buffer.push(c),
+                    None => {
+                        current_buffer.push(c);
+                        hit_variable = false;
+                    }
                     Some(f) => {
                         // Test if this character matches the opening delimiter.
                         if (c == '}' && f.opening_delimiter == '{')
@@ -80,7 +83,8 @@ pub fn expand(s: &str, vars: &Vars) -> Result<String, String> {
                         }
 
                         // Not the right trailing delimiter, so consider it just a char.
-                        current_buffer.push(c)
+                        current_buffer.push(c);
+                        hit_variable = false;
                     }
                 }
             }
@@ -97,6 +101,11 @@ pub fn expand(s: &str, vars: &Vars) -> Result<String, String> {
                 current_buffer.push(c);
             }
         }
+    }
+
+    // A dangling `$` at the very end of the input (nothing followed it) is a literal `$`.
+    if hit_variable {
+        current_buffer.push('$');
     }
 
     // Return current buffer if the stack is empty, else an error.
@@ -232,5 +241,20 @@ mod tests {
     fn test_dollar_space_empty_replacement() {
         let vars = Vars::new([]);
         assert_eq!(expand("one$ word", &vars).unwrap(), "oneword");
+    }
+
+    #[test]
+    fn test_trailing_dollar_is_literal() {
+        let vars = Vars::new([("A", "VALUE A")]);
+        assert_eq!(expand("foo$", &vars).unwrap(), "foo$");
+        assert_eq!(expand("$", &vars).unwrap(), "$");
+    }
+
+    #[test]
+    fn test_unmatched_closing_delimiter_after_dollar() {
+        // A `$` before an orphan `)`/`}` (no open expression) must not consume the next char.
+        let vars = Vars::new([("A", "VALUE A")]);
+        assert_eq!(expand("$)A", &vars).unwrap(), ")A");
+        assert_eq!(expand("$}A", &vars).unwrap(), "}A");
     }
 }

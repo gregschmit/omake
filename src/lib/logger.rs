@@ -33,7 +33,7 @@ pub trait Logger {
     /// Formatter for all log messages.
     fn format_log(&self, level: &str, msg: &str, context: Option<&Context>) -> String {
         // Format log level and context label/line.
-        let level_display = format!("{:0width$}", level, width = MAX_SEVERITY_LENGTH);
+        let level_display = format!("{level:width$}", width = MAX_SEVERITY_LENGTH);
         let context_label = context
             .and_then(|c| c.label())
             .map(|l| format!("[{l}] "))

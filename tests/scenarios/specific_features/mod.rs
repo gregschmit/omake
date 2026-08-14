@@ -2,3 +2,7 @@ mod t1_custom_recipe_prefix;
 mod t2_always_make;
 mod t3_old_files;
 mod t4_just_print;
+mod t5_silent;
+mod t6_ignore_errors;
+mod t7_inline_comment;
+mod t8_variables;
