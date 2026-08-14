@@ -171,6 +171,12 @@ impl Vars {
         }
     }
 
+    /// Whether a variable is currently defined (including defaults and environment). Used to
+    /// implement `?=` (set-if-undefined) and to pick `+=`'s behavior.
+    pub fn is_set(&self, k: impl AsRef<str>) -> bool {
+        self.map.contains_key(k.as_ref().trim())
+    }
+
     /// Public interface for setting variables.
     pub fn set<S: Into<String>>(&mut self, k: S, v: S, recursive: bool) -> Result<(), String> {
         let k = k.into().trim().to_string();

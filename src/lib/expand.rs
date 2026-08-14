@@ -22,6 +22,13 @@ struct Frame {
 ///     we hit a matching closing delimiter (tracked on the stack frame), we evaluate the buffer,
 ///     pop the previous buffer off the stack, join it with the evaluated value, and keep going.
 pub fn expand(s: &str, vars: &Vars) -> Result<String, String> {
+    expand_inner(s, vars, &mut Vec::new())
+}
+
+/// Inner expansion that carries `expanding`: the names of recursive variables currently being
+/// expanded. This lets us reject a variable that references itself (directly or through a chain)
+/// instead of recursing until the stack overflows.
+fn expand_inner(s: &str, vars: &Vars, expanding: &mut Vec<String>) -> Result<String, String> {
     let mut stack: Vec<Frame> = vec![];
     let mut current_buffer: String = String::with_capacity(s.len());
     let mut hit_variable: bool = false;
@@ -63,12 +70,21 @@ pub fn expand(s: &str, vars: &Vars) -> Result<String, String> {
                             || (c == ')' && f.opening_delimiter == '(')
                         {
                             // Expression terminated, so expand.
-                            let var = vars.get(&current_buffer);
+                            let name = current_buffer.trim().to_string();
+                            let var = vars.get(&name);
                             let recursive_result: String;
 
-                            // Handle recursive variable expansion.
+                            // Handle recursive variable expansion, guarding against a cycle.
                             let result = if var.recursive {
-                                recursive_result = expand(var.value.as_str(), vars)?;
+                                if expanding.contains(&name) {
+                                    return Err(format!(
+                                        "Recursive variable '{name}' references itself."
+                                    ));
+                                }
+                                expanding.push(name);
+                                recursive_result =
+                                    expand_inner(var.value.as_str(), vars, expanding)?;
+                                expanding.pop();
                                 &recursive_result
                             } else {
                                 &var.value
@@ -256,5 +272,19 @@ mod tests {
         let vars = Vars::new([("A", "VALUE A")]);
         assert_eq!(expand("$)A", &vars).unwrap(), ")A");
         assert_eq!(expand("$}A", &vars).unwrap(), "}A");
+    }
+
+    #[test]
+    fn test_recursive_self_reference_errors() {
+        // A recursive variable that references itself must error, not overflow the stack.
+        let mut vars = Vars::new([]);
+        vars.set("A", "$(A)", true).unwrap();
+        assert!(expand("$(A)", &vars).is_err());
+
+        // Mutual recursion is also caught.
+        let mut vars = Vars::new([]);
+        vars.set("B", "$(C)", true).unwrap();
+        vars.set("C", "$(B)", true).unwrap();
+        assert!(expand("$(B)", &vars).is_err());
     }
 }

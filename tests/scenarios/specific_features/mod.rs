@@ -6,3 +6,4 @@ mod t5_silent;
 mod t6_ignore_errors;
 mod t7_inline_comment;
 mod t8_variables;
+mod t9_assignment_operators;

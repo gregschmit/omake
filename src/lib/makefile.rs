@@ -8,6 +8,7 @@ use opts::Opts;
 
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
+use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{fs, fs::File};
 
@@ -142,6 +143,12 @@ impl<L: Logger> Makefile<L> {
             return Ok(());
         }
 
+        // Handle variable assignments. This must run before rule detection so operators like `:=`,
+        // `?=`, and `+=` are not mistaken for a rule colon.
+        if let Some((key, op, value)) = parse_assignment(&line) {
+            return self.handle_assignment(key, op, value);
+        }
+
         // Handle rule definitions.
         if let Some((targets, mut deps)) = line.split_once(':') {
             // First, if deps start with another `:`, then this is a double-colon rule, so we should
@@ -185,21 +192,92 @@ impl<L: Logger> Makefile<L> {
             return Ok(());
         }
 
-        // Handle variable assignments.
-        if let Some((k, v)) = line.split_once('=') {
-            if let Err(e) = self.vars.set(
-                k,
-                &expand(v.trim_start(), &self.vars)
-                    .map_err(|e| MakeError::new(&e, self.context.clone()))?,
-                false,
-            ) {
-                return Err(MakeError::new(&e, self.context.clone()));
-            };
-            return Ok(());
-        }
-
         // Otherwise, throw error if line is not recognizable.
         Err(MakeError::new("Invalid line type.", self.context.clone()))
+    }
+
+    /// Apply a variable assignment with the semantics of its operator.
+    fn handle_assignment(&mut self, key: &str, op: AssignOp, value: &str) -> Result<(), MakeError> {
+        if key.trim().is_empty() {
+            return Err(MakeError::new("Empty variable name.", self.context.clone()));
+        }
+
+        // make strips leading whitespace after the operator; the rest of the value is significant.
+        let value = value.trim_start();
+        let err = |e: String| MakeError::new(&e, self.context.clone());
+
+        match op {
+            // Recursive (`=`): store the raw value, expanded lazily at each use.
+            AssignOp::Recursive => self.vars.set(key, value, true).map_err(err),
+
+            // Simple (`:=` / `::=`): expand the value now and store the result.
+            AssignOp::Simple => {
+                let expanded = expand(value, &self.vars).map_err(err)?;
+                self.vars.set(key, &expanded, false).map_err(err)
+            }
+
+            // Conditional (`?=`): set (recursively) only if not already defined.
+            AssignOp::Conditional => {
+                if self.vars.is_set(key) {
+                    return Ok(());
+                }
+                self.vars.set(key, value, true).map_err(err)
+            }
+
+            // Append (`+=`): if undefined, act like `=`; otherwise append preserving the target's
+            // flavor (simple variables expand the addition now, recursive ones keep it raw).
+            AssignOp::Append => {
+                if !self.vars.is_set(key) {
+                    return self.vars.set(key, value, true).map_err(err);
+                }
+
+                let existing = self.vars.get(key);
+                let recursive = existing.recursive;
+                let existing_value = existing.value.clone();
+
+                let addition = if recursive {
+                    value.to_string()
+                } else {
+                    expand(value, &self.vars).map_err(err)?
+                };
+                let new_value = if existing_value.is_empty() {
+                    addition
+                } else {
+                    format!("{existing_value} {addition}")
+                };
+
+                self.vars.set(key, &new_value, recursive).map_err(err)
+            }
+
+            // Shell (`!=`): run the (expanded) value through the shell; store stdout with trailing
+            // newlines removed and remaining newlines turned into spaces. GNU make makes the result
+            // a recursively-expanded variable, so `$` in the output is re-expanded on use.
+            AssignOp::Shell => {
+                let cmd = expand(value, &self.vars).map_err(err)?;
+                let shell = self.vars.get("SHELL").value.clone();
+                let shell_flags = self
+                    .vars
+                    .get(".SHELLFLAGS")
+                    .value
+                    .split_whitespace()
+                    .map(|s| s.to_string())
+                    .collect::<Vec<_>>();
+
+                let output = Command::new(&shell)
+                    .args(&shell_flags)
+                    .arg(&cmd)
+                    .output()
+                    .map_err(|e| MakeError::new(&e.to_string(), self.context.clone()))?;
+
+                let mut result = String::from_utf8_lossy(&output.stdout).into_owned();
+                while result.ends_with('\n') || result.ends_with('\r') {
+                    result.pop();
+                }
+                let result = result.replace(['\n', '\r'], " ");
+
+                self.vars.set(key, &result, true).map_err(err)
+            }
+        }
     }
 
     /// Principal interface for executing a parsed makefile, given a list of targets.
@@ -270,4 +348,154 @@ fn strip_inline_comment(line: &str) -> String {
     }
 
     out
+}
+
+/// The flavor of a variable assignment operator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AssignOp {
+    /// `=` — recursively expanded (lazy): store the raw value, expand at each use.
+    Recursive,
+    /// `:=` / `::=` — simply expanded: expand the value once, now.
+    Simple,
+    /// `?=` — set only if the variable is not already defined.
+    Conditional,
+    /// `+=` — append, preserving the target variable's flavor.
+    Append,
+    /// `!=` — run the value as a shell command and store its output.
+    Shell,
+}
+
+/// Detect a top-level variable assignment in `line`, returning `(key, op, value)`, or `None` if the
+/// line is not an assignment (e.g. it is a rule). The operator is found before any rule colon: a `:`
+/// that is not part of `:=`/`::=` means the line is a rule. Text inside `$(...)`/`${...}` is skipped
+/// so operators there are not mistaken for the assignment. `key`/`value` are not trimmed here.
+fn parse_assignment(line: &str) -> Option<(&str, AssignOp, &str)> {
+    let bytes = line.as_bytes();
+    let mut depth: usize = 0;
+
+    for i in 0..bytes.len() {
+        let c = bytes[i];
+
+        // Inside a `$(...)`/`${...}` reference we only balance delimiters; operators there belong to
+        // the reference, not the assignment.
+        if depth > 0 {
+            match c {
+                b'(' | b'{' => depth += 1,
+                b')' | b'}' => depth -= 1,
+                _ => {}
+            }
+            continue;
+        }
+
+        match c {
+            // Only `$(` / `${` open a reference; a bare `(`/`{` is a literal part of the name.
+            b'(' | b'{' if i > 0 && bytes[i - 1] == b'$' => depth = 1,
+            b':' => {
+                // `::=` and `:=` are assignments; any other `:` starts a rule.
+                if line[i..].starts_with("::=") {
+                    return Some((&line[..i], AssignOp::Simple, &line[i + 3..]));
+                }
+                if line[i..].starts_with(":=") {
+                    return Some((&line[..i], AssignOp::Simple, &line[i + 2..]));
+                }
+                return None;
+            }
+            b'=' => {
+                // `+=`, `?=`, `!=` require the modifier char to immediately precede `=`.
+                let (op, key_end) = match (i > 0).then(|| bytes[i - 1]) {
+                    Some(b'+') => (AssignOp::Append, i - 1),
+                    Some(b'?') => (AssignOp::Conditional, i - 1),
+                    Some(b'!') => (AssignOp::Shell, i - 1),
+                    _ => (AssignOp::Recursive, i),
+                };
+                return Some((&line[..key_end], op, &line[i + 1..]));
+            }
+            _ => {}
+        }
+    }
+
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_assignment_operators() {
+        assert_eq!(
+            parse_assignment("X = y"),
+            Some(("X ", AssignOp::Recursive, " y"))
+        );
+        assert_eq!(
+            parse_assignment("X := y"),
+            Some(("X ", AssignOp::Simple, " y"))
+        );
+        assert_eq!(
+            parse_assignment("X ::= y"),
+            Some(("X ", AssignOp::Simple, " y"))
+        );
+        assert_eq!(
+            parse_assignment("X ?= y"),
+            Some(("X ", AssignOp::Conditional, " y"))
+        );
+        assert_eq!(
+            parse_assignment("X += y"),
+            Some(("X ", AssignOp::Append, " y"))
+        );
+        assert_eq!(
+            parse_assignment("X != y"),
+            Some(("X ", AssignOp::Shell, " y"))
+        );
+    }
+
+    #[test]
+    fn test_parse_assignment_no_spaces() {
+        assert_eq!(parse_assignment("X:=y"), Some(("X", AssignOp::Simple, "y")));
+        assert_eq!(parse_assignment("X+=y"), Some(("X", AssignOp::Append, "y")));
+    }
+
+    #[test]
+    fn test_parse_assignment_rules_return_none() {
+        // A `:` that is not part of `:=`/`::=` means the line is a rule, so even a later `=` (in a
+        // prerequisite) does not make it an assignment.
+        assert_eq!(parse_assignment("target: dep"), None);
+        assert_eq!(parse_assignment("target:: dep"), None);
+        assert_eq!(parse_assignment("all: CFLAGS=-g"), None);
+        assert_eq!(parse_assignment("just some words"), None);
+    }
+
+    #[test]
+    fn test_parse_assignment_first_operator_wins() {
+        // Later `:`/`=` are part of the value.
+        assert_eq!(
+            parse_assignment("X = a:b=c"),
+            Some(("X ", AssignOp::Recursive, " a:b=c"))
+        );
+    }
+
+    #[test]
+    fn test_parse_assignment_skips_var_references() {
+        // A `:`/`=` inside `$(...)` is not the operator.
+        assert_eq!(
+            parse_assignment("X = $(patsubst %.c,%.o,$(SRC))"),
+            Some(("X ", AssignOp::Recursive, " $(patsubst %.c,%.o,$(SRC))")),
+        );
+        // A `:` inside a `$(...)` in the key is skipped; the real `:=` is still found.
+        assert_eq!(
+            parse_assignment("$(subst a:b,c,d)x := z"),
+            Some(("$(subst a:b,c,d)x ", AssignOp::Simple, " z")),
+        );
+        // ...but the rule colon after a `$(...)` target is still detected.
+        assert_eq!(parse_assignment("$(OBJ): $(SRC)"), None);
+    }
+
+    #[test]
+    fn test_parse_assignment_literal_parens_in_name() {
+        // Balanced `(`/`{` not preceded by `$` are literal name chars, not a reference.
+        assert_eq!(
+            parse_assignment("foo(bar)=value"),
+            Some(("foo(bar)", AssignOp::Recursive, "value")),
+        );
+    }
 }
