@@ -1,5 +1,7 @@
 //! Implementation of variable expansion.
 
+use std::process::Command;
+
 use crate::vars::Vars;
 
 /// A stack frame used to track the previous buffer when expanding potentially nested expressions
@@ -14,8 +16,16 @@ struct Frame {
     /// its arguments before they are expanded (e.g. `$(subst $(comma),X,a,b)`).
     pub raw_start: usize,
     /// Nesting depth of matching literal `(`/`{` inside this expression, so a later literal
-    /// close is not mistaken for the end of the expression (`$(subst (a,b),Z,text)`).
+    /// close is not mistaken for the end of the expression (`$(subst (a,b),Z,text)`). In
+    /// `raw_mode` it also counts nested `$(...)` so the matching close is found without expanding.
     pub paren_depth: u32,
+    /// Set once this frame is known to be a control-function call: its argument text is collected
+    /// verbatim (nothing is expanded) until the matching close, so lazy branches and side effects
+    /// behave correctly.
+    pub raw_mode: bool,
+    /// Whether the name-so-far has been tested for being a control function (tested once, at the
+    /// whitespace ending the name).
+    pub checked_name: bool,
 }
 
 /// Run variable expansion on an input string, given a collection of `vars`.
@@ -35,12 +45,59 @@ pub fn expand(s: &str, vars: &Vars) -> Result<String, String> {
 /// Inner expansion that carries `expanding`: the names of recursive variables currently being
 /// expanded. This lets us reject a variable that references itself (directly or through a chain)
 /// instead of recursing until the stack overflows.
+// Not a `pop_if`: the raw-mode frame is only popped when its matching close is reached, not on
+// every character it consumes.
+#[allow(clippy::manual_pop_if)]
 fn expand_inner(s: &str, vars: &Vars, expanding: &mut Vec<String>) -> Result<String, String> {
     let mut stack: Vec<Frame> = vec![];
     let mut current_buffer: String = String::with_capacity(s.len());
     let mut hit_variable: bool = false;
 
     for (i, c) in s.char_indices() {
+        // Inside a control function, collect its argument text verbatim (expanding nothing) until
+        // the matching close, tracking only delimiter depth. This is what makes lazy branches
+        // (`$(if)`) and side-effecting / binding functions (`$(shell)`/`$(foreach)`/`$(call)`/
+        // `$(info)`) behave correctly instead of being eagerly evaluated as the scanner passes.
+        if stack.last().is_some_and(|f| f.raw_mode) {
+            let opener = stack.last().unwrap().opening_delimiter;
+            let closer = if opener == '(' { ')' } else { '}' };
+            if c == opener {
+                stack.last_mut().unwrap().paren_depth += 1;
+            } else if c == closer {
+                let frame = stack.last_mut().unwrap();
+                if frame.paren_depth > 0 {
+                    frame.paren_depth -= 1;
+                } else {
+                    let raw = &s[frame.raw_start..i];
+                    let (func, raw_args) = raw
+                        .split_once(char::is_whitespace)
+                        .expect("raw_mode is only set after a name and whitespace were seen");
+                    let result = call_control(func, raw_args, opener, vars, expanding)?
+                        .expect("raw_mode is only set for control functions");
+                    current_buffer = stack.pop().unwrap().previous_buffer;
+                    current_buffer.push_str(&result);
+                    hit_variable = false;
+                }
+            }
+            continue;
+        }
+
+        // The whitespace ending a function name switches the enclosing frame to raw-accumulation
+        // mode when that name is a control function. The check uses the RAW name token, not the
+        // (inline-expanded) buffer, so a computed name like `$($(F) …)` is a variable, not a call.
+        if (c == ' ' || c == '\t')
+            && !current_buffer.trim().is_empty()
+            && stack.last().is_some_and(|f| !f.checked_name)
+        {
+            let top = stack.last_mut().unwrap();
+            top.checked_name = true;
+            // The name must immediately follow `$(` (no leading whitespace), matching GNU make.
+            if is_control_function(&s[top.raw_start..i]) {
+                top.raw_mode = true;
+                continue;
+            }
+        }
+
         match c {
             '$' => {
                 hit_variable = !hit_variable;
@@ -70,6 +127,8 @@ fn expand_inner(s: &str, vars: &Vars, expanding: &mut Vec<String>) -> Result<Str
                     opening_delimiter: c,
                     raw_start: i + 1,
                     paren_depth: 0,
+                    raw_mode: false,
+                    checked_name: false,
                 });
                 current_buffer = String::new();
                 hit_variable = false;
@@ -99,16 +158,26 @@ fn expand_inner(s: &str, vars: &Vars, expanding: &mut Vec<String>) -> Result<Str
 
                 // The expression is terminated. Its raw (unexpanded) text lets a function split its
                 // arguments before expanding them.
+                let opener = f.opening_delimiter;
                 let raw = &s[f.raw_start..i];
 
-                // A function call is `$(name args)`: a known function name followed by whitespace.
-                // Each argument is split from the raw text (commas inside `$(...)` / `(...)` are
-                // protected) and expanded independently. Unknown names fall through to a variable.
-                if let Some((func, raw_args)) = raw.trim_start().split_once(char::is_whitespace)
+                // A text function is `$(name args)`: a known function name (immediately after `$(`)
+                // followed by whitespace. Each argument is split from the raw text (commas inside
+                // the opener's delimiter are protected) and expanded independently. (Control
+                // functions never reach here — raw mode handles them.) Unknown names fall through.
+                if let Some((func, raw_args)) = raw.split_once(char::is_whitespace)
                     && let Some(arity) = function_arity(func)
                 {
+                    let parts = split_function_args(raw_args.trim_start(), arity, opener);
+                    // GNU make aborts when a multi-argument function is given too few arguments.
+                    if parts.len() < arity {
+                        return Err(format!(
+                            "insufficient number of arguments ({}) to function '{func}'.",
+                            parts.len()
+                        ));
+                    }
                     let mut args = Vec::with_capacity(arity);
-                    for part in split_function_args(raw_args.trim_start(), arity) {
+                    for part in parts {
                         args.push(expand_inner(part, vars, expanding)?);
                     }
                     let result = call_function(func, &args)?;
@@ -235,6 +304,283 @@ fn call_function(name: &str, args: &[String]) -> Result<String, String> {
     })
 }
 
+/// Whether `name` is a control function (handled with raw, unexpanded arguments).
+fn is_control_function(name: &str) -> bool {
+    matches!(
+        name,
+        "shell"
+            | "if"
+            | "or"
+            | "and"
+            | "foreach"
+            | "call"
+            | "value"
+            | "flavor"
+            | "info"
+            | "warning"
+            | "error"
+    )
+}
+
+/// Dispatch a control function — one that needs the raw (unexpanded) arguments plus `vars`, because
+/// it expands its arguments lazily, binds variables, or runs a shell. Returns `Ok(None)` if `name`
+/// is not a control function (so the caller falls back to text functions / a variable reference).
+/// `$(error)` propagates via `Err`; the caller turns it into a located make error.
+fn call_control(
+    name: &str,
+    raw_args: &str,
+    open: char,
+    vars: &Vars,
+    expanding: &mut Vec<String>,
+) -> Result<Option<String>, String> {
+    let result = match name {
+        "shell" => func_shell(raw_args, vars, expanding)?,
+        "if" => func_if(raw_args, open, vars, expanding)?,
+        "or" => func_or(raw_args, open, vars, expanding)?,
+        "and" => func_and(raw_args, open, vars, expanding)?,
+        "foreach" => func_foreach(raw_args, open, vars, expanding)?,
+        "call" => func_call(raw_args, open, vars, expanding)?,
+        "value" => func_value(raw_args, vars, expanding)?,
+        "flavor" => func_flavor(raw_args, vars, expanding)?,
+        "info" => func_diagnostic(raw_args, vars, expanding, Stream::Stdout)?,
+        "warning" => func_diagnostic(raw_args, vars, expanding, Stream::Stderr)?,
+        // `$(error TEXT)` aborts: expand the message and return it as an error.
+        "error" => return Err(expand_inner(raw_args.trim_start(), vars, expanding)?),
+        _ => return Ok(None),
+    };
+    Ok(Some(result))
+}
+
+/// `$(shell COMMAND)`: expand COMMAND, run it through `$(SHELL) $(.SHELLFLAGS)`, and return its
+/// stdout with all trailing newlines removed and each remaining newline turned into a space (a CR
+/// right before such a newline is dropped; a lone CR is kept). An empty command runs nothing.
+///
+/// Note: unlike GNU make, this does not set `.SHELLSTATUS` (expansion has only a shared `&Vars`).
+fn func_shell(raw_args: &str, vars: &Vars, expanding: &mut Vec<String>) -> Result<String, String> {
+    let command = expand_inner(raw_args, vars, expanding)?;
+    if command.trim().is_empty() {
+        return Ok(String::new());
+    }
+
+    let shell = vars.get("SHELL").value.clone();
+    let flags: Vec<String> = vars
+        .get(".SHELLFLAGS")
+        .value
+        .split_whitespace()
+        .map(str::to_string)
+        .collect();
+    let output = Command::new(&shell)
+        .args(&flags)
+        .arg(&command)
+        // Capture stdout only; let the command's stderr reach the terminal, like GNU make.
+        .stderr(std::process::Stdio::inherit())
+        .output()
+        .map_err(|e| e.to_string())?;
+
+    let mut result = String::from_utf8_lossy(&output.stdout).into_owned();
+    // A NUL byte truncates the captured output (make treats it as C-string data).
+    if let Some(nul) = result.find('\0') {
+        result.truncate(nul);
+    }
+    // Remove all trailing newlines (and a CR immediately before each).
+    while result.ends_with('\n') {
+        result.pop();
+        if result.ends_with('\r') {
+            result.pop();
+        }
+    }
+    // Turn remaining newlines into single spaces (`\r\n` collapses; a lone `\r` is preserved).
+    Ok(result.replace("\r\n", " ").replace('\n', " "))
+}
+
+/// `$(if COND,THEN[,ELSE])`: if COND (arg-text trimmed, then expanded) is non-empty, expand and
+/// return THEN, else ELSE (or empty). Only the taken branch is expanded; THEN/ELSE keep whitespace.
+fn func_if(
+    raw_args: &str,
+    open: char,
+    vars: &Vars,
+    expanding: &mut Vec<String>,
+) -> Result<String, String> {
+    let parts = split_function_args(raw_args, 3, open);
+    if parts.len() < 2 {
+        return Err(format!(
+            "insufficient number of arguments ({}) to function 'if'.",
+            parts.len()
+        ));
+    }
+    if !expand_inner(parts[0].trim(), vars, expanding)?.is_empty() {
+        expand_inner(parts[1], vars, expanding)
+    } else {
+        expand_inner(parts.get(2).copied().unwrap_or(""), vars, expanding)
+    }
+}
+
+/// `$(or A,B,...)`: return the first argument (arg-text trimmed, then expanded) that is non-empty,
+/// short-circuiting. `$(and A,B,...)`: empty on the first empty argument, else the last one.
+fn func_or(
+    raw_args: &str,
+    open: char,
+    vars: &Vars,
+    expanding: &mut Vec<String>,
+) -> Result<String, String> {
+    for part in split_function_args(raw_args, usize::MAX, open) {
+        let value = expand_inner(part.trim(), vars, expanding)?;
+        if !value.is_empty() {
+            return Ok(value);
+        }
+    }
+    Ok(String::new())
+}
+
+fn func_and(
+    raw_args: &str,
+    open: char,
+    vars: &Vars,
+    expanding: &mut Vec<String>,
+) -> Result<String, String> {
+    let mut last = String::new();
+    for part in split_function_args(raw_args, usize::MAX, open) {
+        last = expand_inner(part.trim(), vars, expanding)?;
+        if last.is_empty() {
+            return Ok(String::new());
+        }
+    }
+    Ok(last)
+}
+
+/// `$(foreach VAR,LIST,TEXT)`: bind VAR to each word of LIST and expand TEXT per word, joining the
+/// results with single spaces. The binding is local (a cloned scope), so it never leaks.
+fn func_foreach(
+    raw_args: &str,
+    open: char,
+    vars: &Vars,
+    expanding: &mut Vec<String>,
+) -> Result<String, String> {
+    let parts = split_function_args(raw_args, 3, open);
+    if parts.len() < 3 {
+        return Err(format!(
+            "insufficient number of arguments ({}) to function 'foreach'.",
+            parts.len()
+        ));
+    }
+    let var = expand_inner(parts[0], vars, expanding)?;
+    let var = var.trim();
+    let list = expand_inner(parts[1], vars, expanding)?;
+    let text = parts[2];
+
+    let mut scope = vars.clone();
+    let mut results = Vec::new();
+    for word in list.split_whitespace() {
+        scope.set(var, word, false)?;
+        results.push(expand_inner(text, &scope, expanding)?);
+    }
+    Ok(results.join(" "))
+}
+
+/// `$(call NAME,P1,P2,...)`: expand the value of variable NAME (or invoke a built-in function of
+/// that name) with `$(0)` bound to NAME and `$(1)`,`$(2)`,... to the parameters (expanded in the
+/// caller's scope, whitespace preserved).
+fn func_call(
+    raw_args: &str,
+    open: char,
+    vars: &Vars,
+    expanding: &mut Vec<String>,
+) -> Result<String, String> {
+    let parts = split_function_args(raw_args, usize::MAX, open);
+    let name = expand_inner(parts[0], vars, expanding)?;
+    let name = name.trim();
+
+    // Positional parameters, expanded once in the caller's scope.
+    let mut params = Vec::with_capacity(parts.len().saturating_sub(1));
+    for param in &parts[1..] {
+        params.push(expand_inner(param, vars, expanding)?);
+    }
+
+    // A call to a built-in function (not shadowed by a variable) forwards the parameters as its
+    // arguments — a text function directly, a control function via its comma-joined raw form.
+    if !vars.is_set(name) {
+        if function_arity(name).is_some() {
+            return call_function(name, &params);
+        }
+        if is_control_function(name) {
+            let joined = params.join(",");
+            let result = call_control(name, &joined, open, vars, expanding)?;
+            return Ok(result.unwrap_or_default());
+        }
+    }
+
+    let body = vars.get(name).value.clone();
+    let mut scope = vars.clone();
+    // Start from a clean set of positional parameters so a nested call does not inherit the
+    // enclosing call's higher-numbered parameters.
+    scope.clear_call_params();
+    scope.set("0", name, false)?;
+    for (index, value) in params.into_iter().enumerate() {
+        scope.set((index + 1).to_string(), value, false)?;
+    }
+    expand_inner(&body, &scope, expanding)
+}
+
+/// Look up a variable name for `$(value)`/`$(flavor)`: leading whitespace of the argument is
+/// stripped but trailing is significant, so a name with trailing whitespace can never match.
+fn lookup_name(raw_args: &str, vars: &Vars, expanding: &mut Vec<String>) -> Result<String, String> {
+    let expanded = expand_inner(raw_args, vars, expanding)?;
+    let name = expanded.trim_start();
+    // A trailing space makes the name unmatchable (real variable names have none).
+    Ok(if name == name.trim_end() {
+        name.to_string()
+    } else {
+        String::new()
+    })
+}
+
+/// `$(value VAR)`: the raw, unexpanded value stored for VAR (no reference/function expansion).
+fn func_value(raw_args: &str, vars: &Vars, expanding: &mut Vec<String>) -> Result<String, String> {
+    let name = lookup_name(raw_args, vars, expanding)?;
+    Ok(vars.get(&name).value.clone())
+}
+
+/// `$(flavor VAR)`: `undefined`, `recursive`, or `simple`.
+///
+/// Note: omake flavors environment and built-in default variables as `simple`, whereas GNU make
+/// reports them `recursive` — omake's variable store keeps only a recursive flag, not the origin.
+fn func_flavor(raw_args: &str, vars: &Vars, expanding: &mut Vec<String>) -> Result<String, String> {
+    let name = lookup_name(raw_args, vars, expanding)?;
+    let flavor = if !vars.is_set(&name) {
+        "undefined"
+    } else if vars.get(&name).recursive {
+        "recursive"
+    } else {
+        "simple"
+    };
+    Ok(flavor.to_string())
+}
+
+/// Which stream a diagnostic function writes to.
+enum Stream {
+    Stdout,
+    Stderr,
+}
+
+/// `$(info TEXT)` (stdout) / `$(warning TEXT)` (stderr): print the expanded message and return the
+/// empty string. Leading whitespace of TEXT is stripped; trailing whitespace is preserved.
+///
+/// Note: GNU prefixes `$(warning)` with `file:line:`; omake's expander has no source context, so the
+/// message is printed without that prefix.
+fn func_diagnostic(
+    raw_args: &str,
+    vars: &Vars,
+    expanding: &mut Vec<String>,
+    stream: Stream,
+) -> Result<String, String> {
+    let message = expand_inner(raw_args.trim_start(), vars, expanding)?;
+    match stream {
+        Stream::Stdout => println!("{message}"),
+        Stream::Stderr => eprintln!("{message}"),
+    }
+    Ok(String::new())
+}
+
 /// `$(wildcard PATTERN...)`: expand each whitespace-separated glob pattern against the filesystem,
 /// concatenating the (sorted, existing) matches. A pattern that matches nothing contributes
 /// nothing.
@@ -303,9 +649,12 @@ fn word_matches(pattern: &str, word: &str) -> bool {
     }
 }
 
-/// Split `s` into at most `max` comma-separated arguments, ignoring commas nested inside
-/// `(...)`/`{...}`. The final argument keeps any remaining commas (matching GNU make).
-fn split_function_args(s: &str, max: usize) -> Vec<&str> {
+/// Split `s` into at most `max` comma-separated arguments, ignoring commas nested inside the
+/// delimiter pair that opened this call (`(...)` for `open == '('`, `{...}` for `'{'`). GNU make
+/// balances only the opener's own delimiter, so a stray brace inside a `$(...)` call is literal.
+/// The final argument keeps any remaining commas.
+fn split_function_args(s: &str, max: usize, open: char) -> Vec<&str> {
+    let close = if open == '(' { ')' } else { '}' };
     let mut args = Vec::new();
     let mut depth: i32 = 0;
     let mut start = 0;
@@ -313,14 +662,13 @@ fn split_function_args(s: &str, max: usize) -> Vec<&str> {
         if args.len() + 1 == max {
             break;
         }
-        match c {
-            '(' | '{' => depth += 1,
-            ')' | '}' => depth -= 1,
-            ',' if depth == 0 => {
-                args.push(&s[start..i]);
-                start = i + 1;
-            }
-            _ => {}
+        if c == open {
+            depth += 1;
+        } else if c == close {
+            depth -= 1;
+        } else if c == ',' && depth == 0 {
+            args.push(&s[start..i]);
+            start = i + 1;
         }
     }
     args.push(&s[start..]);
@@ -344,10 +692,11 @@ fn func_subst(args: &[String]) -> String {
 }
 
 /// `$(patsubst PATTERN,REPLACEMENT,TEXT)`: per word, replace a match of `PATTERN` (with `%`, else
-/// an exact word) by `REPLACEMENT`.
+/// an exact word) by `REPLACEMENT`. Unlike the other word functions, patsubst preserves TEXT's
+/// original whitespace layout (leading, trailing, and the runs between words).
 fn func_patsubst(args: &[String]) -> String {
     let (pattern, replacement, text) = (arg(args, 0), arg(args, 1), arg(args, 2));
-    map_words(text, |word| {
+    map_words_keep_spaces(text, |word| {
         if pattern.contains('%') {
             match pattern_stem(pattern, word) {
                 Some(stem) => subst_stem(replacement, stem),
@@ -359,6 +708,27 @@ fn func_patsubst(args: &[String]) -> String {
             word.to_string()
         }
     })
+}
+
+/// Apply `f` to each whitespace-separated word of `text`, preserving every whitespace run (leading,
+/// trailing, and between words) verbatim.
+fn map_words_keep_spaces(text: &str, f: impl Fn(&str) -> String) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while !rest.is_empty() {
+        let ws_end = rest
+            .find(|c: char| !c.is_whitespace())
+            .unwrap_or(rest.len());
+        out.push_str(&rest[..ws_end]);
+        rest = &rest[ws_end..];
+        if rest.is_empty() {
+            break;
+        }
+        let word_end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+        out.push_str(&f(&rest[..word_end]));
+        rest = &rest[word_end..];
+    }
+    out
 }
 
 /// `$(strip TEXT)`: collapse runs of whitespace to a single space and trim the ends.
@@ -736,5 +1106,107 @@ mod tests {
         assert!(expand("$(wordlist 0,2,a b)", &vars).is_err());
         // A valid but out-of-range index is empty, not an error.
         assert_eq!(expand("$(word 9,a b)", &vars).unwrap(), "");
+    }
+
+    #[test]
+    fn test_control_functions() {
+        let vars = Vars::new([("L", "a b c"), ("E", "")]);
+        let e = |s: &str| expand(s, &vars).unwrap();
+
+        // if: taken branch only; THEN/ELSE keep whitespace; COND arg-text trimmed then expanded.
+        assert_eq!(e("$(if 1,yes,no)"), "yes");
+        assert_eq!(e("$(if ,yes,no)"), "no");
+        assert_eq!(e("$(if 1, yes , no )"), " yes ");
+        assert_eq!(e("$(if $(E),yes,no)"), "no");
+        assert!(expand("$(if 1)", &vars).is_err()); // too few arguments
+
+        // or / and: short-circuit, return first-non-empty / last.
+        assert_eq!(e("$(or ,,c,d)"), "c");
+        assert_eq!(e("$(or ,,)"), "");
+        assert_eq!(e("$(and a,b,c)"), "c");
+        assert_eq!(e("$(and a,,c)"), "");
+
+        // foreach: per-word binding, join with single spaces, no leak.
+        assert_eq!(e("$(foreach x,$(L),<$(x)>)"), "<a> <b> <c>");
+        assert_eq!(e("$(foreach x,,<$(x)>)"), "");
+        assert_eq!(
+            e("$(foreach a,1 2,$(foreach b,x y,$(a)$(b)))"),
+            "1x 1y 2x 2y"
+        );
+        assert!(expand("$(foreach x,a b)", &vars).is_err());
+
+        // call: positional params, $(0) = name, recursion.
+        let vars2 = Vars::new([
+            ("reverse", "$(2) $(1)"),
+            ("named", "n=$(0) p=$(1)"),
+            (
+                "map",
+                "$(if $(1),$(firstword $(1)) $(call map,$(wordlist 2,999,$(1))))",
+            ),
+        ]);
+        assert_eq!(expand("$(call reverse,a,b)", &vars2).unwrap(), "b a");
+        assert_eq!(expand("$(call named,X)", &vars2).unwrap(), "n=named p=X");
+        assert_eq!(expand("$(call map,a b c)", &vars2).unwrap(), "a b c ");
+
+        // value: raw, unexpanded text; flavor: recursive / simple / undefined.
+        let mut vars3 = Vars::new([]);
+        vars3.set("REC", "x $(L) y", true).unwrap();
+        vars3.set("SIMPLE", "z", false).unwrap();
+        assert_eq!(expand("$(value REC)", &vars3).unwrap(), "x $(L) y");
+        assert_eq!(expand("$(flavor REC)", &vars3).unwrap(), "recursive");
+        assert_eq!(expand("$(flavor SIMPLE)", &vars3).unwrap(), "simple");
+        assert_eq!(expand("$(flavor NOPE)", &vars3).unwrap(), "undefined");
+
+        // shell: runs the command, returns processed stdout.
+        assert_eq!(e("$(shell echo hi)"), "hi");
+        assert_eq!(e("$(shell printf 'a\\nb\\nc\\n')"), "a b c");
+        assert_eq!(e("$(shell true)"), "");
+
+        // error aborts (propagates as Err); info/warning expand to empty.
+        assert!(expand("$(error boom)", &vars).is_err());
+        assert_eq!(e("before$(info hi)after"), "beforeafter");
+
+        // A computed name (`$($(F) …)`) is a variable reference, NOT a function call — the control
+        // check must use the raw token, not the inline-expanded buffer (else it would panic).
+        let vars4 = Vars::new([("F", "if")]);
+        assert_eq!(expand("$($(F) 1,yes,no)", &vars4).unwrap(), "");
+        assert_eq!(expand("${if 1,a,b}", &vars4).unwrap(), "a"); // brace form still works
+    }
+
+    #[test]
+    fn test_function_edge_cases() {
+        let vars = Vars::new([]);
+        let e = |s: &str| expand(s, &vars).unwrap();
+
+        // A nested call must not inherit the enclosing call's higher-numbered parameters.
+        let nested = Vars::new([("inner", "[$(1)|$(2)]"), ("outer", "$(call inner,X)")]);
+        assert_eq!(expand("$(call outer,A,B)", &nested).unwrap(), "[X|]");
+
+        // A text function given too few arguments aborts, like GNU make.
+        assert!(expand("$(subst a,b)", &vars).is_err());
+        assert!(expand("$(word 1)", &vars).is_err());
+        assert_eq!(e("$(subst a,b,xax)"), "xbx"); // enough args is fine
+
+        // patsubst preserves TEXT's whitespace layout (unlike the other word functions).
+        assert_eq!(e("$(patsubst a,X,a  b   c)"), "X  b   c");
+        assert_eq!(e("$(patsubst z,X,a  b)"), "a  b");
+
+        // A leading space before the name means it is NOT a function (matches GNU): `$( sort …)`
+        // and `$( if …)` are undefined variable references.
+        assert_eq!(e("$( sort b a)"), "");
+        assert_eq!(e("$( if 1,a,b)"), "");
+
+        // Argument comma-splitting balances only the opener's delimiter, so a stray `{` in a
+        // `$(...)` call is literal (does not protect the following comma).
+        assert_eq!(e("$(if 1,{a,b},c)"), "{a");
+
+        // `$(call ...)` can invoke a built-in function by name.
+        assert_eq!(e("$(call subst,a,b,xax)"), "xbx");
+        assert_eq!(e("$(call if,1,yes,no)"), "yes");
+
+        // `$(value)`/`$(flavor)` keep trailing whitespace in the name (so it stays unmatchable).
+        let v = Vars::new([("FOO", "x")]);
+        assert_eq!(expand("$(flavor FOO )", &v).unwrap(), "undefined");
+        assert_eq!(expand("$(value FOO )", &v).unwrap(), "");
     }
 }

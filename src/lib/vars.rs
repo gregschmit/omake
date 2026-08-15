@@ -180,6 +180,14 @@ impl Vars {
         self.map.contains_key(k.as_ref().trim())
     }
 
+    /// Remove the positional call parameters (`$(0)`, `$(1)`, ...): every variable whose name is
+    /// all ASCII digits. `$(call ...)` uses this so a nested call does not inherit higher-numbered
+    /// parameters from the enclosing call.
+    pub fn clear_call_params(&mut self) {
+        self.map
+            .retain(|k, _| k.is_empty() || !k.bytes().all(|b| b.is_ascii_digit()));
+    }
+
     /// Public interface for setting variables.
     pub fn set<S: Into<String>>(&mut self, k: S, v: S, recursive: bool) -> Result<(), String> {
         let k = k.into().trim().to_string();

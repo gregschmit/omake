@@ -362,6 +362,18 @@ impl<L: Logger> Makefile<L> {
             return self.handle_assignment(key, op, value);
         }
 
+        // A line that is only a function/variable reference (e.g. `$(info ...)`, `$(warning ...)`,
+        // `$(error ...)`) is expanded for its side effects; if it expands to nothing, the line is a
+        // no-op. This matches GNU make evaluating a bare function-call line, and runs before rule
+        // detection so a `:` inside the reference is not mistaken for a rule colon.
+        if trimmed_line.starts_with('$') {
+            let expanded = expand(trimmed_line, &self.vars)
+                .map_err(|e| MakeError::new(&e, self.context.clone()))?;
+            if expanded.trim().is_empty() {
+                return Ok(());
+            }
+        }
+
         // Handle rule definitions.
         if let Some((targets, mut deps)) = line.split_once(':') {
             // First, if deps start with another `:`, then this is a double-colon rule, so we should
@@ -491,14 +503,22 @@ impl<L: Logger> Makefile<L> {
                 let output = Command::new(&shell)
                     .args(&shell_flags)
                     .arg(&cmd)
+                    // Capture stdout only; let the command's stderr reach the terminal.
+                    .stderr(std::process::Stdio::inherit())
                     .output()
                     .map_err(|e| MakeError::new(&e.to_string(), self.context.clone()))?;
 
+                // `!=` removes only the final newline (and a preceding CR), then turns the
+                // remaining newlines into spaces — unlike `$(shell)`, which strips all trailing
+                // newlines.
                 let mut result = String::from_utf8_lossy(&output.stdout).into_owned();
-                while result.ends_with('\n') || result.ends_with('\r') {
+                if result.ends_with('\n') {
                     result.pop();
+                    if result.ends_with('\r') {
+                        result.pop();
+                    }
                 }
-                let result = result.replace(['\n', '\r'], " ");
+                let result = result.replace("\r\n", " ").replace('\n', " ");
 
                 self.vars.set(key, &result, true).map_err(err)
             }
@@ -1428,12 +1448,17 @@ fn strip_one_trailing_backslash(line: &str) -> String {
 /// lines, where `#` is significant and passed through to the shell.
 fn strip_inline_comment(line: &str) -> String {
     let mut out = String::with_capacity(line.len());
-    let mut chars = line.chars();
+    let mut chars = line.chars().peekable();
+    // Stack of the opener chars (`(`/`{`) of the enclosing `$(...)` / `${...}` references. A `#`
+    // inside a reference is literal, not a comment (GNU make behavior), so `$(shell echo a#b)` and
+    // URLs like `http://x#frag` survive. Only the opener's own delimiter closes it, so a stray `}`
+    // inside `$(...)` (or `)` inside `${...}`) is literal.
+    let mut refs: Vec<char> = Vec::new();
 
     while let Some(c) = chars.next() {
         match c {
-            '#' => break,
-            '\\' => match chars.next() {
+            '#' if refs.is_empty() => break,
+            '\\' if refs.is_empty() => match chars.next() {
                 Some('#') => out.push('#'),
                 Some(other) => {
                     out.push('\\');
@@ -1441,6 +1466,22 @@ fn strip_inline_comment(line: &str) -> String {
                 }
                 None => out.push('\\'),
             },
+            '$' => {
+                out.push(c);
+                if matches!(chars.peek(), Some('(') | Some('{')) {
+                    let open = chars.next().unwrap();
+                    out.push(open);
+                    refs.push(open);
+                }
+            }
+            ')' if refs.last() == Some(&'(') => {
+                refs.pop();
+                out.push(c);
+            }
+            '}' if refs.last() == Some(&'{') => {
+                refs.pop();
+                out.push(c);
+            }
             _ => out.push(c),
         }
     }
