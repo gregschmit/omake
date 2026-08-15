@@ -252,6 +252,9 @@ impl<L: Logger> Makefile<L> {
             if directive_keyword(trimmed).is_some() {
                 return self.handle_conditional(trimmed);
             }
+            if let Some((kw, rest)) = bsd_cond_keyword(trimmed) {
+                return self.handle_bsd_conditional(kw, rest);
+            }
         }
 
         // Skip everything else while inside an inactive conditional branch.
@@ -317,6 +320,15 @@ impl<L: Logger> Makefile<L> {
         // Handle `include` / `-include` / `sinclude` directives.
         if let Some((optional, names)) = parse_include(trimmed_line) {
             return self.handle_include(optional, names);
+        }
+
+        // Handle BSD `.include "file"` / `.include <file>` (and the optional `.-include` /
+        // `.sinclude` variants). System-header form (`<...>`) is treated like the quoted form. The
+        // name is a single file (which may contain spaces), so it bypasses the GNU list tokenizer.
+        if let Some((optional, name)) = parse_bsd_include(trimmed_line) {
+            let expanded =
+                expand(name, &self.vars).map_err(|e| MakeError::new(&e, self.context.clone()))?;
+            return self.include_file(expanded.trim(), optional);
         }
 
         // Handle `export` / `unexport` directives.
@@ -604,9 +616,191 @@ impl<L: Logger> Makefile<L> {
         }
     }
 
-    /// Handle an `include`/`-include`/`sinclude` directive: parse each named file into the current
-    /// parser state. `include` errors on a missing file; the others silently ignore it.
+    /// Push a conditional level whose branch is active iff `cond` (which already accounts for the
+    /// enclosing context).
+    fn cond_push(&mut self, cond: bool) {
+        let parent_active = self.cond_active();
+        self.cond_stack.push(CondState {
+            active: cond,
+            taken: cond,
+            parent_active,
+        });
+    }
+
+    /// Switch to an `else`/`elif` branch. `follow` is the follow-on condition (`None` for a plain
+    /// `else`, always taken if no earlier branch was).
+    fn cond_else(&mut self, follow: Option<bool>) -> Result<(), MakeError> {
+        let (parent_active, taken) = match self.cond_stack.last() {
+            Some(s) => (s.parent_active, s.taken),
+            None => {
+                return Err(MakeError::new(
+                    "`else`/`elif` without conditional.",
+                    self.context.clone(),
+                ));
+            }
+        };
+        let activate = parent_active && !taken && follow.unwrap_or(true);
+        let state = self.cond_stack.last_mut().unwrap();
+        state.active = activate;
+        state.taken = state.taken || activate;
+        Ok(())
+    }
+
+    /// Close the innermost conditional level.
+    fn cond_endif(&mut self) -> Result<(), MakeError> {
+        if self.cond_stack.pop().is_none() {
+            return Err(MakeError::new(
+                "`endif` without conditional.",
+                self.context.clone(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Handle a BSD conditional directive (`.if`/`.ifdef`/`.ifndef`/`.elif`/`.else`/`.endif`, and
+    /// the `.elifdef`/`.elifndef` variants).
+    fn handle_bsd_conditional(&mut self, kw: &str, rest: &str) -> Result<(), MakeError> {
+        match kw {
+            ".if" => {
+                let cond = self.cond_active() && self.eval_bsd_expr(rest)?;
+                self.cond_push(cond);
+            }
+            ".ifdef" => {
+                let cond = self.cond_active() && self.bsd_defined(rest)?;
+                self.cond_push(cond);
+            }
+            ".ifndef" => {
+                let cond = self.cond_active() && !self.bsd_defined(rest)?;
+                self.cond_push(cond);
+            }
+            ".elif" => {
+                let follow = self.eval_bsd_expr(rest)?;
+                self.cond_else(Some(follow))?;
+            }
+            ".elifdef" => {
+                let follow = self.bsd_defined(rest)?;
+                self.cond_else(Some(follow))?;
+            }
+            ".elifndef" => {
+                let follow = !self.bsd_defined(rest)?;
+                self.cond_else(Some(follow))?;
+            }
+            ".else" => self.cond_else(None)?,
+            ".endif" => self.cond_endif()?,
+            _ => unreachable!("bsd_cond_keyword only returns known directives"),
+        }
+        Ok(())
+    }
+
+    /// Whether the (expanded) variable named by `rest` is defined (BSD `defined()`/`.ifdef`).
+    fn bsd_defined(&self, rest: &str) -> Result<bool, MakeError> {
+        let name =
+            expand(rest, &self.vars).map_err(|e| MakeError::new(&e, self.context.clone()))?;
+        Ok(self.vars.is_set(name.trim()))
+    }
+
+    /// Evaluate a BSD `.if` expression. Supports `!expr`, `defined(x)`/`empty(x)`, comparisons
+    /// (`==`/`!=`/`<`/`<=`/`>`/`>=`), and a bare value (true when non-empty and not `0`). Logical
+    /// `&&`/`||` operators are not yet supported.
+    fn eval_bsd_expr(&self, expr: &str) -> Result<bool, MakeError> {
+        let expr = expr.trim();
+        let err = |e: String| MakeError::new(&e, self.context.clone());
+
+        if let Some(rest) = expr.strip_prefix('!') {
+            return Ok(!self.eval_bsd_expr(rest)?);
+        }
+        if let Some(inner) = expr
+            .strip_prefix("defined(")
+            .and_then(|s| s.strip_suffix(')'))
+        {
+            return self.bsd_defined(inner);
+        }
+        if let Some(inner) = expr
+            .strip_prefix("empty(")
+            .and_then(|s| s.strip_suffix(')'))
+        {
+            // `empty(VAR)` is true when the variable expands to nothing.
+            let value = expand(&format!("${{{}}}", inner.trim()), &self.vars).map_err(err)?;
+            return Ok(value.is_empty());
+        }
+
+        // Comparison operators. Two-character forms are tried before one-character ones so `<=` is
+        // not mistaken for `<`.
+        for op in ["==", "!=", "<=", ">=", "<", ">"] {
+            if let Some((lhs, rhs)) = expr.split_once(op) {
+                return self.eval_bsd_compare(lhs, rhs, op);
+            }
+        }
+
+        // A bare expression is true when it expands to a non-empty, non-zero value.
+        let value = expand(expr, &self.vars).map_err(err)?;
+        let value = value.trim();
+        Ok(!value.is_empty() && value != "0")
+    }
+
+    /// Evaluate a BSD comparison. `==`/`!=` compare numerically when both operands are unquoted
+    /// numbers, otherwise as strings; the relational operators are always numeric (matching bmake).
+    fn eval_bsd_compare(&self, lhs: &str, rhs: &str, op: &str) -> Result<bool, MakeError> {
+        let (lval, lquoted) = self.bsd_operand(lhs)?;
+        let (rval, rquoted) = self.bsd_operand(rhs)?;
+        let lnum = (!lquoted).then(|| bsd_number(&lval)).flatten();
+        let rnum = (!rquoted).then(|| bsd_number(&rval)).flatten();
+
+        if op == "==" || op == "!=" {
+            let equal = match (lnum, rnum) {
+                (Some(a), Some(b)) => a == b,
+                _ => lval == rval,
+            };
+            return Ok(if op == "==" { equal } else { !equal });
+        }
+
+        let (a, b) = match (lnum, rnum) {
+            (Some(a), Some(b)) => (a, b),
+            _ => {
+                return Err(MakeError::new(
+                    &format!("Comparison `{op}` requires numeric operands."),
+                    self.context.clone(),
+                ));
+            }
+        };
+        Ok(match op {
+            "<" => a < b,
+            "<=" => a <= b,
+            ">" => a > b,
+            ">=" => a >= b,
+            _ => unreachable!("eval_bsd_expr only passes known comparison operators"),
+        })
+    }
+
+    /// Expand a BSD comparison operand, returning its value (quotes stripped) and whether it was
+    /// quoted (a quoted operand is always compared as a string).
+    fn bsd_operand(&self, operand: &str) -> Result<(String, bool), MakeError> {
+        let expanded = expand(operand.trim(), &self.vars)
+            .map_err(|e| MakeError::new(&e, self.context.clone()))?;
+        let trimmed = expanded.trim();
+        if let Some(inner) = trimmed.strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
+            return Ok((inner.to_string(), true));
+        }
+        Ok((trimmed.to_string(), false))
+    }
+
+    /// Handle a GNU `include`/`-include`/`sinclude` directive: expand the (whitespace-separated)
+    /// name list and parse each file. `include` errors on a missing file; the others ignore it.
     fn handle_include(&mut self, optional: bool, names: &str) -> Result<(), MakeError> {
+        let expanded =
+            expand(names, &self.vars).map_err(|e| MakeError::new(&e, self.context.clone()))?;
+
+        for name in expanded.split_whitespace() {
+            self.include_file(name, optional)?;
+        }
+
+        Ok(())
+    }
+
+    /// Parse a single named file into the current parser state. A missing file is an error unless
+    /// `optional`. The name is used verbatim (already expanded and, for BSD `.include`, unquoted),
+    /// so filenames may contain spaces.
+    fn include_file(&mut self, name: &str, optional: bool) -> Result<(), MakeError> {
         const INCLUDE_DEPTH_LIMIT: usize = 200;
         if self.include_depth >= INCLUDE_DEPTH_LIMIT {
             return Err(MakeError::new(
@@ -615,47 +809,40 @@ impl<L: Logger> Makefile<L> {
             ));
         }
 
-        let expanded =
-            expand(names, &self.vars).map_err(|e| MakeError::new(&e, self.context.clone()))?;
-
-        for name in expanded.split_whitespace() {
-            let file = match File::open(name) {
-                Ok(file) => file,
-                Err(e) => {
-                    if optional {
-                        continue;
-                    }
-                    return Err(MakeError::new(
-                        &format!("Could not include {name} ({e})."),
-                        self.context.clone(),
-                    ));
+        let file = match File::open(name) {
+            Ok(file) => file,
+            Err(e) => {
+                if optional {
+                    return Ok(());
                 }
-            };
-
-            // Parse the included file with its own context, restoring ours afterwards.
-            let cond_depth = self.cond_stack.len();
-            let saved = self.context.clone();
-            self.context = PathBuf::from(name).into();
-            self.include_depth += 1;
-            let result = self.parse_reader(BufReader::new(file));
-            self.include_depth -= 1;
-
-            // Conditionals may not cross a file boundary, so the stack must return to its prior
-            // depth. Report against the included file before restoring the parent's context.
-            if result.is_ok() && self.cond_stack.len() != cond_depth {
-                let err = MakeError::new(
-                    "Unbalanced conditional (`ifeq`/`endif`) in included file.",
+                return Err(MakeError::new(
+                    &format!("Could not include {name} ({e})."),
                     self.context.clone(),
-                );
-                self.context = saved;
-                return Err(err);
+                ));
             }
+        };
 
+        // Parse the included file with its own context, restoring ours afterwards.
+        let cond_depth = self.cond_stack.len();
+        let saved = self.context.clone();
+        self.context = PathBuf::from(name).into();
+        self.include_depth += 1;
+        let result = self.parse_reader(BufReader::new(file));
+        self.include_depth -= 1;
+
+        // Conditionals may not cross a file boundary, so the stack must return to its prior depth.
+        // Report against the included file before restoring the parent's context.
+        if result.is_ok() && self.cond_stack.len() != cond_depth {
+            let err = MakeError::new(
+                "Unbalanced conditional (`ifeq`/`endif`) in included file.",
+                self.context.clone(),
+            );
             self.context = saved;
-            result?;
+            return Err(err);
         }
 
-        Ok(())
+        self.context = saved;
+        result
     }
 
     /// Append a line to the in-progress `define` body, or finish it on the matching `endef`. Inner
@@ -986,6 +1173,64 @@ fn parse_include(trimmed: &str) -> Option<(bool, &str)> {
             && (rest.is_empty() || rest.starts_with([' ', '\t']))
         {
             return Some((optional, rest.trim()));
+        }
+    }
+    None
+}
+
+/// If `trimmed` is a BSD `.include "file"` / `.include <file>` directive (or the `.-include` /
+/// `.sinclude` optional variants), return whether missing files are tolerated and the (unexpanded)
+/// filename. The system-header `<...>` form is treated like the quoted form.
+fn parse_bsd_include(trimmed: &str) -> Option<(bool, &str)> {
+    for (kw, optional) in [
+        (".include", false),
+        (".-include", true),
+        (".sinclude", true),
+    ] {
+        if let Some(rest) = trimmed.strip_prefix(kw)
+            && (rest.is_empty() || rest.starts_with([' ', '\t']))
+        {
+            let rest = rest.trim();
+            let name = rest
+                .strip_prefix('"')
+                .and_then(|s| s.strip_suffix('"'))
+                .or_else(|| rest.strip_prefix('<').and_then(|s| s.strip_suffix('>')))?;
+            return Some((optional, name));
+        }
+    }
+    None
+}
+
+/// Parse a BSD numeric literal: decimal or float (`5`, `05`, `1.5`), or hex (`0x10`). Returns
+/// `None` for a non-number, which signals a string comparison.
+fn bsd_number(s: &str) -> Option<f64> {
+    let s = s.trim();
+    if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+        return i64::from_str_radix(hex, 16).ok().map(|n| n as f64);
+    }
+    s.parse::<f64>().ok()
+}
+
+/// If `trimmed` is a BSD conditional directive, return its canonical keyword and the (unexpanded)
+/// argument. BSD allows whitespace after the leading dot to indent nested conditionals
+/// (e.g. `.  ifdef`), so the dot and keyword are matched separately.
+fn bsd_cond_keyword(trimmed: &str) -> Option<(&'static str, &str)> {
+    let body = trimmed.strip_prefix('.')?.trim_start();
+    // Longest-first so `ifdef` is not shadowed by `if`, `elifdef` not by `elif`, etc.
+    for (canonical, kw) in [
+        (".ifndef", "ifndef"),
+        (".ifdef", "ifdef"),
+        (".elifndef", "elifndef"),
+        (".elifdef", "elifdef"),
+        (".elif", "elif"),
+        (".endif", "endif"),
+        (".else", "else"),
+        (".if", "if"),
+    ] {
+        if body == kw
+            || (body.starts_with(kw) && body[kw.len()..].starts_with([' ', '\t', '(', '!']))
+        {
+            return Some((canonical, body[kw.len()..].trim()));
         }
     }
     None
