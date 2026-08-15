@@ -69,25 +69,49 @@ fn expand_inner(s: &str, vars: &Vars, expanding: &mut Vec<String>) -> Result<Str
                         if (c == '}' && f.opening_delimiter == '{')
                             || (c == ')' && f.opening_delimiter == '(')
                         {
-                            // Expression terminated, so expand.
-                            let name = current_buffer.trim().to_string();
+                            // Expression terminated, so expand. A substitution reference is
+                            // `NAME:FROM=TO` (a `:` is otherwise an invalid character in a name, so
+                            // it only appears here for a substitution). `FROM=TO` supports both the
+                            // suffix form (`.c=.o`) and the pattern form (`%.c=%.o`).
+                            let content = current_buffer.trim();
+                            let (name, subst) = match content.split_once(':') {
+                                Some((n, s)) if s.contains('=') => {
+                                    let (from, to) = s.split_once('=').unwrap();
+                                    (
+                                        n.trim().to_string(),
+                                        Some((from.to_string(), to.to_string())),
+                                    )
+                                }
+                                _ => (content.to_string(), None),
+                            };
+
                             let var = vars.get(&name);
                             let recursive_result: String;
 
                             // Handle recursive variable expansion, guarding against a cycle.
-                            let result = if var.recursive {
+                            let value = if var.recursive {
                                 if expanding.contains(&name) {
                                     return Err(format!(
                                         "Recursive variable '{name}' references itself."
                                     ));
                                 }
-                                expanding.push(name);
+                                expanding.push(name.clone());
                                 recursive_result =
                                     expand_inner(var.value.as_str(), vars, expanding)?;
                                 expanding.pop();
                                 &recursive_result
                             } else {
                                 &var.value
+                            };
+
+                            // Apply the substitution reference to the resolved value, if present.
+                            let substituted: String;
+                            let result: &str = match &subst {
+                                Some((from, to)) => {
+                                    substituted = substitute_ref(value, from, to);
+                                    &substituted
+                                }
+                                None => value,
                             };
 
                             // This `unwrap()` is safe because we checked that the stack contains a
@@ -131,6 +155,42 @@ fn expand_inner(s: &str, vars: &Vars, expanding: &mut Vec<String>) -> Result<Str
             "Unclosed variable: {}{}",
             frame.opening_delimiter, frame.previous_buffer
         )),
+    }
+}
+
+/// Apply a substitution reference (`$(VAR:FROM=TO)`) to each whitespace-separated word of `value`.
+fn substitute_ref(value: &str, from: &str, to: &str) -> String {
+    value
+        .split_whitespace()
+        .map(|word| substitute_word(word, from, to))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Substitute one word. If `from` contains `%`, it is a pattern (prefix `%` suffix) whose stem is
+/// substituted into `to`'s `%`; otherwise `from` is a suffix replaced by `to`. A word that does not
+/// match is returned unchanged.
+fn substitute_word(word: &str, from: &str, to: &str) -> String {
+    match from.find('%') {
+        Some(pct) => {
+            let (prefix, suffix) = (&from[..pct], &from[pct + 1..]);
+            if word.len() >= prefix.len() + suffix.len()
+                && word.starts_with(prefix)
+                && word.ends_with(suffix)
+            {
+                let stem = &word[prefix.len()..word.len() - suffix.len()];
+                match to.find('%') {
+                    Some(tpct) => format!("{}{stem}{}", &to[..tpct], &to[tpct + 1..]),
+                    None => to.to_string(),
+                }
+            } else {
+                word.to_string()
+            }
+        }
+        None => match word.strip_suffix(from) {
+            Some(prefix) => format!("{prefix}{to}"),
+            None => word.to_string(),
+        },
     }
 }
 
@@ -272,6 +332,24 @@ mod tests {
         let vars = Vars::new([("A", "VALUE A")]);
         assert_eq!(expand("$)A", &vars).unwrap(), ")A");
         assert_eq!(expand("$}A", &vars).unwrap(), "}A");
+    }
+
+    #[test]
+    fn test_substitution_reference() {
+        let vars = Vars::new([("SRCS", "a.c b.c dir/c.c"), ("MIX", "a.c b.h")]);
+        // Suffix form.
+        assert_eq!(expand("$(SRCS:.c=.o)", &vars).unwrap(), "a.o b.o dir/c.o");
+        assert_eq!(expand("${SRCS:.c=.o}", &vars).unwrap(), "a.o b.o dir/c.o");
+        // Empty replacement strips the suffix.
+        assert_eq!(expand("$(SRCS:.c=)", &vars).unwrap(), "a b dir/c");
+        // Non-matching words are unchanged.
+        assert_eq!(expand("$(MIX:.c=.o)", &vars).unwrap(), "a.o b.h");
+        // Pattern form.
+        assert_eq!(expand("$(SRCS:%.c=%.o)", &vars).unwrap(), "a.o b.o dir/c.o");
+        assert_eq!(
+            expand("$(SRCS:%.c=obj/%.o)", &vars).unwrap(),
+            "obj/a.o obj/b.o obj/dir/c.o"
+        );
     }
 
     #[test]

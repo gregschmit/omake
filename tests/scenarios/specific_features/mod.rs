@@ -18,6 +18,7 @@ mod t25_keep_going;
 mod t26_define;
 mod t27_vpath;
 mod t28_makeflags;
+mod t29_substitution;
 mod t2_always_make;
 mod t3_old_files;
 mod t4_just_print;
