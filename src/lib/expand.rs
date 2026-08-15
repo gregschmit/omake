@@ -69,11 +69,25 @@ fn expand_inner(s: &str, vars: &Vars, expanding: &mut Vec<String>) -> Result<Str
                         if (c == '}' && f.opening_delimiter == '{')
                             || (c == ')' && f.opening_delimiter == '(')
                         {
-                            // Expression terminated, so expand. A substitution reference is
-                            // `NAME:FROM=TO` (a `:` is otherwise an invalid character in a name, so
-                            // it only appears here for a substitution). `FROM=TO` supports both the
-                            // suffix form (`.c=.o`) and the pattern form (`%.c=%.o`).
+                            // Expression terminated, so expand.
                             let content = current_buffer.trim();
+
+                            // A function call is `$(name args)`: a known function name followed by
+                            // whitespace. Arguments are already expanded (nested `$(...)` resolved
+                            // as we parsed). Unknown names fall through to variable handling.
+                            if let Some((func, args)) = content.split_once(char::is_whitespace)
+                                && let Some(result) = call_function(func, args.trim())
+                            {
+                                current_buffer = stack.pop().unwrap().previous_buffer;
+                                current_buffer.push_str(&result);
+                                hit_variable = false;
+                                continue;
+                            }
+
+                            // A substitution reference is `NAME:FROM=TO` (a `:` is otherwise an
+                            // invalid character in a name, so it only appears here for a
+                            // substitution). `FROM=TO` supports both the suffix form (`.c=.o`) and
+                            // the pattern form (`%.c=%.o`).
                             let (name, subst) = match content.split_once(':') {
                                 Some((n, s)) if s.contains('=') => {
                                     let (from, to) = s.split_once('=').unwrap();
@@ -156,6 +170,24 @@ fn expand_inner(s: &str, vars: &Vars, expanding: &mut Vec<String>) -> Result<Str
             frame.opening_delimiter, frame.previous_buffer
         )),
     }
+}
+
+/// Dispatch a make function call. Returns `None` if `name` is not a known function (so the caller
+/// falls back to treating the expression as a variable reference). Arguments arrive expanded.
+fn call_function(name: &str, args: &str) -> Option<String> {
+    match name {
+        "wildcard" => Some(wildcard(args)),
+        _ => None,
+    }
+}
+
+/// `$(wildcard PATTERN...)`: expand each whitespace-separated glob pattern against the filesystem,
+/// concatenating the (sorted, existing) matches. A pattern that matches nothing contributes nothing.
+fn wildcard(args: &str) -> String {
+    args.split_whitespace()
+        .flat_map(crate::glob::glob)
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Apply a substitution reference (`$(VAR:FROM=TO)`) to each whitespace-separated word of `value`.

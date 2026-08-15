@@ -4,6 +4,7 @@
 
 pub mod error;
 pub mod expand;
+pub mod glob;
 pub mod logger;
 pub mod makefile;
 pub mod vars;

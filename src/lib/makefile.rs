@@ -386,22 +386,19 @@ impl<L: Logger> Makefile<L> {
                 Some((n, o)) => (n, o),
                 None => (deps, ""),
             };
-            let expand_list = |s: &str| -> Result<Vec<String>, MakeError> {
-                Ok(expand(s, &self.vars)
-                    .map_err(|e| MakeError::new(&e, self.context.clone()))?
-                    .split_whitespace()
-                    .map(|s| s.to_string())
-                    .collect())
+            // Expand variables, split into words, then glob each word against the filesystem (a
+            // word with no match keeps its literal form, like GNU make). Wildcards resolve at
+            // parse time, so only files present when the makefile is read are matched.
+            let expand_words = |s: &str| -> Result<Vec<String>, MakeError> {
+                let expanded =
+                    expand(s, &self.vars).map_err(|e| MakeError::new(&e, self.context.clone()))?;
+                Ok(glob_words(expanded.split_whitespace().map(str::to_string)))
             };
 
             self.current_rule = Some(Rule {
-                targets: expand(targets, &self.vars)
-                    .map_err(|e| MakeError::new(&e, self.context.clone()))?
-                    .split_whitespace()
-                    .map(|s| s.to_string())
-                    .collect(),
-                prerequisites: expand_list(normal_deps)?,
-                order_only: expand_list(order_deps)?,
+                targets: expand_words(targets)?,
+                prerequisites: expand_words(normal_deps)?,
+                order_only: expand_words(order_deps)?,
                 recipe: vec![],
                 context: self.context.clone(),
                 double_colon,
@@ -824,8 +821,10 @@ impl<L: Logger> Makefile<L> {
         let expanded =
             expand(names, &self.vars).map_err(|e| MakeError::new(&e, self.context.clone()))?;
 
-        for name in expanded.split_whitespace() {
-            self.include_file(name, optional)?;
+        // Glob each operand; a pattern with no match keeps its literal form (so `include` still
+        // errors on it, while `-include`/`sinclude` stay silent), matching GNU make.
+        for name in glob_words(expanded.split_whitespace().map(str::to_string)) {
+            self.include_file(&name, optional)?;
         }
 
         Ok(())
@@ -1297,6 +1296,26 @@ fn strip_full_parens(expr: &str) -> Option<&str> {
         }
     }
     None
+}
+
+/// Expand any glob patterns among `words` against the filesystem. A word with a metacharacter is
+/// replaced by its (sorted) matches; if it matches nothing, the literal word is kept (matching GNU
+/// make). Words with no metacharacters pass through untouched.
+fn glob_words(words: impl IntoIterator<Item = String>) -> Vec<String> {
+    let mut out = Vec::new();
+    for word in words {
+        if crate::glob::has_glob_chars(&word) {
+            let matches = crate::glob::glob(&word);
+            if matches.is_empty() {
+                out.push(word);
+            } else {
+                out.extend(matches);
+            }
+        } else {
+            out.push(word);
+        }
+    }
+    out
 }
 
 /// Parse a BSD numeric literal: decimal or float (`5`, `05`, `1.5`), or hex (`0x10`). Returns

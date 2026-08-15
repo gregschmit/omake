@@ -8,3 +8,4 @@ mod t22_order_only;
 mod t23_export;
 mod t26_define;
 mod t27_vpath;
+mod t28_wildcard;
