@@ -39,6 +39,17 @@ pub struct SpecialTargets {
     default_recipe: Vec<String>,
 }
 
+/// One level of `ifeq`/`ifdef`/... nesting.
+#[derive(Debug)]
+struct CondState {
+    /// Whether the currently-selected branch is active (already accounts for enclosing levels).
+    active: bool,
+    /// Whether any branch at this level has been active (so `else` knows not to re-activate).
+    taken: bool,
+    /// Whether the enclosing context was active when this conditional began.
+    parent_active: bool,
+}
+
 /// The primary interface for reading, parsing, and executing a makefile.
 #[derive(Debug)]
 pub struct Makefile<L: Logger> {
@@ -53,6 +64,7 @@ pub struct Makefile<L: Logger> {
     pub vars: Vars,
     current_rule: Option<Rule>,
     context: Context,
+    cond_stack: Vec<CondState>,
 }
 
 impl<L: Logger> Makefile<L> {
@@ -68,6 +80,7 @@ impl<L: Logger> Makefile<L> {
             vars,
             current_rule: None,
             context: path.clone().into(),
+            cond_stack: Vec::new(),
         };
 
         // Open the makefile and run it through the parser.
@@ -161,6 +174,10 @@ impl<L: Logger> Makefile<L> {
         self.parse_line("".to_string())?;
         self.parse_line("".to_string())?;
 
+        if !self.cond_stack.is_empty() {
+            return Err(MakeError::new("Missing `endif`.", self.context.clone()));
+        }
+
         Ok(())
     }
 
@@ -169,8 +186,27 @@ impl<L: Logger> Makefile<L> {
     /// newlines and semicolons, and also managing state, such as variable assignments and
     /// annotating when the parser moves in-to and out-of a rule definition.
     fn parse_line(&mut self, line: String) -> Result<(), MakeError> {
+        let recipe_prefix = self.vars.get(".RECIPEPREFIX").value.to_string();
+
+        // A line beginning with the recipe prefix is a recipe (or a "recipe without rule" error),
+        // never a directive. Any other line is checked for conditional directives first — even
+        // inside an inactive branch — so the conditional stack stays balanced. Comments are stripped
+        // here so directives like `ifeq (a,b) # note` parse correctly.
+        if !line.starts_with(&recipe_prefix) {
+            let stripped = strip_inline_comment(&line);
+            let trimmed = stripped.trim();
+            if directive_keyword(trimmed).is_some() {
+                return self.handle_conditional(trimmed);
+            }
+        }
+
+        // Skip everything else while inside an inactive conditional branch.
+        if !self.cond_active() {
+            return Ok(());
+        }
+
         // Handle recipe lines.
-        let recipe_prefix = &self.vars.get(".RECIPEPREFIX").value;
+        let recipe_prefix = &recipe_prefix;
         if line.starts_with(recipe_prefix) {
             // If line starts with the recipe prefix, then push it to the current rule.
             match &mut self.current_rule {
@@ -375,6 +411,96 @@ impl<L: Logger> Makefile<L> {
         self.rule_map.execute(self, &targets)
     }
 
+    /// Whether the parser is currently in an active (non-skipped) conditional branch.
+    fn cond_active(&self) -> bool {
+        self.cond_stack.last().is_none_or(|c| c.active)
+    }
+
+    /// Handle a conditional directive line (`ifeq`/`ifneq`/`ifdef`/`ifndef`/`else`/`endif`).
+    fn handle_conditional(&mut self, trimmed: &str) -> Result<(), MakeError> {
+        let kw = directive_keyword(trimmed).expect("caller checked this is a directive");
+        let rest = trimmed[kw.len()..].trim();
+
+        match kw {
+            "ifeq" | "ifneq" | "ifdef" | "ifndef" => {
+                let parent_active = self.cond_active();
+                // Only evaluate the condition when the enclosing context is active.
+                let cond = parent_active && self.eval_condition(kw, rest)?;
+                self.cond_stack.push(CondState {
+                    active: cond,
+                    taken: cond,
+                    parent_active,
+                });
+            }
+            "else" => {
+                let (parent_active, already_taken) = match self.cond_stack.last() {
+                    Some(s) => (s.parent_active, s.taken),
+                    None => {
+                        return Err(MakeError::new(
+                            "`else` without conditional.",
+                            self.context.clone(),
+                        ));
+                    }
+                };
+
+                // `else` may be followed by another condition (`else ifeq (...)`), but only by an
+                // `if*` directive — not another `else`/`endif`.
+                let activate = if rest.is_empty() {
+                    parent_active && !already_taken
+                } else {
+                    let follow = directive_keyword(rest)
+                        .filter(|k| matches!(*k, "ifeq" | "ifneq" | "ifdef" | "ifndef"));
+                    let Some(follow) = follow else {
+                        return Err(MakeError::new(
+                            "Extraneous text after `else`.",
+                            self.context.clone(),
+                        ));
+                    };
+                    let can_take = parent_active && !already_taken;
+                    can_take && self.eval_condition(follow, rest[follow.len()..].trim())?
+                };
+
+                let state = self.cond_stack.last_mut().unwrap();
+                state.active = activate;
+                state.taken = state.taken || activate;
+            }
+            "endif" => {
+                if self.cond_stack.pop().is_none() {
+                    return Err(MakeError::new(
+                        "`endif` without conditional.",
+                        self.context.clone(),
+                    ));
+                }
+            }
+            _ => unreachable!("directive_keyword only returns known directives"),
+        }
+
+        Ok(())
+    }
+
+    /// Evaluate an `ifeq`/`ifneq`/`ifdef`/`ifndef` condition.
+    fn eval_condition(&self, kw: &str, rest: &str) -> Result<bool, MakeError> {
+        let err = |e: String| MakeError::new(&e, self.context.clone());
+        match kw {
+            "ifeq" | "ifneq" => {
+                let (a, b) = parse_ifeq_args(rest).ok_or_else(|| {
+                    MakeError::new("Malformed `ifeq`/`ifneq` arguments.", self.context.clone())
+                })?;
+                let equal =
+                    expand(&a, &self.vars).map_err(err)? == expand(&b, &self.vars).map_err(err)?;
+                Ok(if kw == "ifeq" { equal } else { !equal })
+            }
+            "ifdef" | "ifndef" => {
+                // The name is expanded; the variable is "defined" if its (unexpanded) value is
+                // non-empty, matching GNU make.
+                let name = expand(rest, &self.vars).map_err(err)?;
+                let defined = !self.vars.get(name.trim()).value.is_empty();
+                Ok(if kw == "ifdef" { defined } else { !defined })
+            }
+            _ => unreachable!(),
+        }
+    }
+
     /// Record `.PHONY`, `.SILENT`, `.IGNORE`, and `.DEFAULT` directives from a parsed rule.
     fn collect_special_targets(&mut self, rule: &Rule) {
         for target in &rule.targets {
@@ -465,6 +591,61 @@ struct PendingLine {
     recipe_prefix: String,
     /// The accumulated logical line so far.
     accum: String,
+}
+
+/// If `trimmed` begins with a conditional directive keyword (as a whole word), return it.
+fn directive_keyword(trimmed: &str) -> Option<&'static str> {
+    for kw in ["ifeq", "ifneq", "ifdef", "ifndef", "else", "endif"] {
+        if trimmed == kw
+            || (trimmed.starts_with(kw) && trimmed[kw.len()..].starts_with([' ', '\t', '(']))
+        {
+            return Some(kw);
+        }
+    }
+    None
+}
+
+/// Parse the two arguments of an `ifeq`/`ifneq`, in either `(a,b)` or `'a' 'b'` / `"a" "b"` form.
+fn parse_ifeq_args(rest: &str) -> Option<(String, String)> {
+    let rest = rest.trim();
+
+    if let Some(inner) = rest.strip_prefix('(').and_then(|s| s.strip_suffix(')')) {
+        let comma = top_level_comma(inner)?;
+        return Some((
+            inner[..comma].trim().to_string(),
+            inner[comma + 1..].trim().to_string(),
+        ));
+    }
+
+    let (a, remainder) = parse_quoted(rest)?;
+    let (b, _) = parse_quoted(remainder.trim_start())?;
+    Some((a, b))
+}
+
+/// Index of the first top-level comma (ignoring commas nested inside `(...)`/`{...}`).
+fn top_level_comma(s: &str) -> Option<usize> {
+    let mut depth: usize = 0;
+    for (i, c) in s.char_indices() {
+        match c {
+            '(' | '{' => depth += 1,
+            ')' | '}' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => return Some(i),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Parse a single-quoted or double-quoted string from the start of `s`, returning it (without the
+/// quotes) and the remainder of the input.
+fn parse_quoted(s: &str) -> Option<(String, &str)> {
+    let quote = s.chars().next()?;
+    if quote != '\'' && quote != '"' {
+        return None;
+    }
+    let after = &s[quote.len_utf8()..];
+    let end = after.find(quote)?;
+    Some((after[..end].to_string(), &after[end + quote.len_utf8()..]))
 }
 
 /// Whether `line` ends with an odd number of backslashes, i.e. it continues onto the next line (an

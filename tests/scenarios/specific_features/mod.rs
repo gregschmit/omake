@@ -9,6 +9,7 @@ mod t17_phony;
 mod t18_pattern_rule;
 mod t19_pattern_chain;
 mod t1_custom_recipe_prefix;
+mod t20_conditionals;
 mod t2_always_make;
 mod t3_old_files;
 mod t4_just_print;
