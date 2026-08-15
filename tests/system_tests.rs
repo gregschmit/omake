@@ -53,10 +53,13 @@ impl SystemTestCase {
         // built first, so we don't have to hand-compute a `target/<profile>` path.
         let omake_path = env!("CARGO_BIN_EXE_omake");
 
-        // Run `omake` inside the system test directory.
+        // Run `omake` inside the system test directory. Clear inherited make state so scenarios see
+        // a clean environment regardless of how the test suite itself was invoked.
         let output = Command::new(omake_path)
             .args(&self.args)
             .current_dir(self.relative_path(&"".to_string()))
+            .env_remove("MAKEFLAGS")
+            .env_remove("MAKELEVEL")
             .output()
             .unwrap_or_else(|e| panic!("failed to run omake at {omake_path}: {e}"));
 

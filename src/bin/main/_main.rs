@@ -13,7 +13,7 @@ use clap::Parser;
 
 use args::Args;
 
-use omake::{Context, DefaultLogger, Env, Logger, Makefile, Vars};
+use omake::{Context, DefaultLogger, Env, Logger, Makefile, Opts, Vars};
 
 /// An ordered list of filenames used to search for a makefile.
 const MAKEFILE_SEARCH: [&str; 6] = [
@@ -89,6 +89,43 @@ fn resolve_make_path() -> String {
     argv0
 }
 
+/// Apply single-letter flags inherited from a parent make's `MAKEFLAGS` to `opts`. Only the leading
+/// short-flag word is scanned; it is bare (no leading dash), so a token starting with `-` is a long
+/// option (e.g. `--no-print-directory`) and must not be read character-by-character.
+fn apply_makeflags(opts: &mut Opts, makeflags: &str) {
+    let short = makeflags.split_whitespace().next().unwrap_or("");
+    if short.starts_with('-') {
+        return;
+    }
+    for c in short.chars() {
+        match c {
+            'k' => opts.keep_going = true,
+            'n' => opts.just_print = true,
+            'i' => opts.ignore_errors = true,
+            'B' => opts.always_make = true,
+            _ => {}
+        }
+    }
+}
+
+/// Encode the effective single-letter flags as `MAKEFLAGS` for sub-makes (e.g. `-k -n` -> "kn").
+fn encode_makeflags(opts: &Opts) -> String {
+    let mut flags = String::new();
+    if opts.ignore_errors {
+        flags.push('i');
+    }
+    if opts.keep_going {
+        flags.push('k');
+    }
+    if opts.just_print {
+        flags.push('n');
+    }
+    if opts.always_make {
+        flags.push('B');
+    }
+    flags
+}
+
 /// Print an error message and exit with code 2.
 fn exit_with(logger: &DefaultLogger, msg: &str, context: Option<Context>) -> ! {
     logger.error(msg, context.as_ref());
@@ -134,12 +171,31 @@ fn main() {
         Some(ref file) => PathBuf::from(file),
     };
 
-    // Define `MAKE` so recipes can recurse (e.g. `$(MAKE) -C subdir`).
+    // Merge flags inherited from a parent make (via `MAKEFLAGS`), then re-encode the effective
+    // flags for sub-makes. `MAKELEVEL` tracks the recursion depth.
+    let mut opts: Opts = args.clone().into();
+    apply_makeflags(&mut opts, &env::var("MAKEFLAGS").unwrap_or_default());
+    let level: u32 = env::var("MAKELEVEL")
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(0);
+    let makeflags = encode_makeflags(&opts);
+
+    // Export MAKEFLAGS/MAKELEVEL to recipe children (and thus sub-makes). This runs once, at
+    // startup on the main thread, before anything reads the environment concurrently.
+    unsafe {
+        env::set_var("MAKEFLAGS", &makeflags);
+        env::set_var("MAKELEVEL", (level + 1).to_string());
+    }
+
+    // Build variables from the (updated) environment, then define `MAKE` (for `$(MAKE) -C subdir`)
+    // and set `MAKELEVEL` to this level (children see it incremented, via the exported env above).
     let mut vars: Vars = env::vars().collect::<Env>().into();
     let _ = vars.set("MAKE", make_path.as_str(), false);
+    let _ = vars.set("MAKELEVEL", level.to_string().as_str(), false);
 
     // Parse the makefile.
-    let makefile = match Makefile::new(makefile_fn, args.clone().into(), vars, DefaultLogger {}) {
+    let makefile = match Makefile::new(makefile_fn, opts, vars, DefaultLogger {}) {
         Err(e) => exit_with(&logger, &e.msg, Some(e.context)),
         Ok(m) => m,
     };
