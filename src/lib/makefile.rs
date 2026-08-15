@@ -8,7 +8,7 @@ use opts::Opts;
 
 use std::collections::HashSet;
 use std::io::{BufRead, BufReader};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{fs, fs::File};
@@ -77,6 +77,8 @@ pub struct Makefile<L: Logger> {
     exported: HashSet<String>,
     /// Names marked `unexport` — removed from recipe child environments (even if inherited).
     unexported: HashSet<String>,
+    /// `vpath PATTERN DIRS` directives: directories to search for files matching each pattern.
+    vpaths: Vec<(String, Vec<String>)>,
 
     // Parser state.
     pub vars: Vars,
@@ -99,6 +101,7 @@ impl<L: Logger> Makefile<L> {
             special: SpecialTargets::default(),
             exported: HashSet::new(),
             unexported: HashSet::new(),
+            vpaths: Vec::new(),
             vars,
             current_rule: None,
             context: path.clone().into(),
@@ -306,6 +309,11 @@ impl<L: Logger> Makefile<L> {
         // Handle `export` / `unexport` directives.
         if let Some((export, rest)) = parse_export(trimmed_line) {
             return self.handle_export(export, rest);
+        }
+
+        // Handle `vpath` directives.
+        if let Some(rest) = parse_vpath(trimmed_line) {
+            return self.handle_vpath(rest);
         }
 
         // Handle `define NAME [op]` — begin capturing a multi-line variable.
@@ -713,6 +721,59 @@ impl<L: Logger> Makefile<L> {
         (adds, removes)
     }
 
+    /// Handle a `vpath` directive: `vpath PATTERN DIRS` adds a search path, `vpath PATTERN` clears
+    /// the paths for that pattern, and a bare `vpath` clears them all.
+    fn handle_vpath(&mut self, rest: &str) -> Result<(), MakeError> {
+        let expanded =
+            expand(rest, &self.vars).map_err(|e| MakeError::new(&e, self.context.clone()))?;
+        let rest = expanded.trim();
+
+        if rest.is_empty() {
+            self.vpaths.clear();
+            return Ok(());
+        }
+
+        let mut parts = rest.splitn(2, char::is_whitespace);
+        let pattern = parts.next().unwrap().to_string();
+        match parts.next() {
+            None => self.vpaths.retain(|(p, _)| p != &pattern),
+            Some(dirs) => {
+                let dirs = split_path_list(dirs);
+                self.vpaths.push((pattern, dirs));
+            }
+        }
+        Ok(())
+    }
+
+    /// Find `name` on disk, searching the current directory first and then the `VPATH` variable and
+    /// any matching `vpath` directories. Returns the path where it was found, or `None`.
+    fn find_file(&self, name: &str) -> Option<String> {
+        if Path::new(name).exists() {
+            return Some(name.to_string());
+        }
+        for dir in self.search_dirs(name) {
+            let candidate = Path::new(&dir).join(name);
+            if candidate.exists() {
+                return Some(candidate.to_string_lossy().into_owned());
+            }
+        }
+        None
+    }
+
+    /// The directories to search for `name`. Pattern-specific `vpath` directives take precedence
+    /// over the general `VPATH` variable (which is expanded, as it may be a recursive variable).
+    fn search_dirs(&self, name: &str) -> Vec<String> {
+        let mut dirs = Vec::new();
+        for (pattern, pdirs) in &self.vpaths {
+            if vpath_matches(pattern, name) {
+                dirs.extend(pdirs.iter().cloned());
+            }
+        }
+        let vpath = expand(&self.vars.get("VPATH").value, &self.vars).unwrap_or_default();
+        dirs.extend(split_path_list(&vpath));
+        dirs
+    }
+
     /// Record `.PHONY`, `.SILENT`, `.IGNORE`, and `.DEFAULT` directives from a parsed rule.
     fn collect_special_targets(&mut self, rule: &Rule) {
         for target in &rule.targets {
@@ -777,7 +838,10 @@ impl<L: Logger> Makefile<L> {
             return None;
         }
 
-        match fs::metadata(file) {
+        // Resolve through `VPATH`/`vpath` so a file found in a search directory counts as existing.
+        let path = self.find_file(file)?;
+
+        match fs::metadata(&path) {
             Ok(metadata) => {
                 if self.opts.old_file.iter().any(|f| f == file) {
                     Some(UNIX_EPOCH)
@@ -803,6 +867,38 @@ struct PendingLine {
     recipe_prefix: String,
     /// The accumulated logical line so far.
     accum: String,
+}
+
+/// If `trimmed` is a `vpath` directive, return the part after `vpath`.
+fn parse_vpath(trimmed: &str) -> Option<&str> {
+    if let Some(rest) = trimmed.strip_prefix("vpath")
+        && (rest.is_empty() || rest.starts_with([' ', '\t']))
+    {
+        return Some(rest.trim());
+    }
+    None
+}
+
+/// Split a directory list separated by colons or whitespace (as in `VPATH`/`vpath`).
+fn split_path_list(list: &str) -> Vec<String> {
+    list.split([':', ' ', '\t'])
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .collect()
+}
+
+/// Whether a `vpath` pattern matches `name`. A pattern with `%` matches on prefix/suffix; without
+/// `%` it must equal `name`.
+fn vpath_matches(pattern: &str, name: &str) -> bool {
+    match pattern.find('%') {
+        Some(pct) => {
+            let (prefix, suffix) = (&pattern[..pct], &pattern[pct + 1..]);
+            name.len() >= prefix.len() + suffix.len()
+                && name.starts_with(prefix)
+                && name.ends_with(suffix)
+        }
+        None => pattern == name,
+    }
 }
 
 /// If `trimmed` is a `define NAME [op]` directive, return the part after `define`.

@@ -138,14 +138,21 @@ impl Rule {
         // `$@`: the target being built.
         let _ = vars.set("@", target, false);
 
+        // Resolve each prerequisite through `VPATH`/`vpath`, so automatic variables use the path
+        // where the file was actually found (falling back to the plain name).
+        let resolved: Vec<String> = self
+            .prerequisites
+            .iter()
+            .map(|p| makefile.find_file(p).unwrap_or_else(|| p.clone()))
+            .collect();
+
         // `$<`: the first prerequisite.
-        let first = self.prerequisites.first().map(String::as_str).unwrap_or("");
+        let first = resolved.first().map(String::as_str).unwrap_or("");
         let _ = vars.set("<", first, false);
 
         // `$^`: all prerequisites, de-duplicated with order preserved.
         let mut seen = HashSet::new();
-        let deduped = self
-            .prerequisites
+        let deduped = resolved
             .iter()
             .filter(|p| seen.insert(p.as_str()))
             .map(String::as_str)
@@ -154,7 +161,7 @@ impl Rule {
         let _ = vars.set("^", deduped.as_str(), false);
 
         // `$+`: all prerequisites, keeping duplicates.
-        let all = self.prerequisites.join(" ");
+        let all = resolved.join(" ");
         let _ = vars.set("+", all.as_str(), false);
 
         // `$?`: prerequisites newer than the target, de-duplicated. If the target is absent, every
@@ -162,8 +169,7 @@ impl Rule {
         // when it has no file (phony / just-rebuilt prerequisites are treated as newer).
         let target_mtime = makefile.get_mtime(target);
         let mut seen_newer = HashSet::new();
-        let newer = self
-            .prerequisites
+        let newer = resolved
             .iter()
             .filter(|p| match target_mtime {
                 None => true,
