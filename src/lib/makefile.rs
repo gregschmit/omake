@@ -39,6 +39,19 @@ pub struct SpecialTargets {
     default_recipe: Vec<String>,
 }
 
+/// State for a `define ... endef` multi-line variable being captured.
+#[derive(Debug)]
+struct DefineCapture {
+    /// Variable name being defined.
+    name: String,
+    /// Assignment flavor from the `define` line (`define X :=`, etc.); default is recursive.
+    op: AssignOp,
+    /// Body lines collected so far (verbatim).
+    body: Vec<String>,
+    /// Nesting depth of inner `define`/`endef` pairs within the body.
+    depth: usize,
+}
+
 /// One level of `ifeq`/`ifdef`/... nesting.
 #[derive(Debug)]
 struct CondState {
@@ -70,6 +83,7 @@ pub struct Makefile<L: Logger> {
     current_rule: Option<Rule>,
     context: Context,
     cond_stack: Vec<CondState>,
+    defining: Option<DefineCapture>,
     include_depth: usize,
 }
 
@@ -89,6 +103,7 @@ impl<L: Logger> Makefile<L> {
             current_rule: None,
             context: path.clone().into(),
             cond_stack: Vec::new(),
+            defining: None,
             include_depth: 0,
         };
 
@@ -115,6 +130,10 @@ impl<L: Logger> Makefile<L> {
 
         if !self.cond_stack.is_empty() {
             return Err(MakeError::new("Missing `endif`.", self.context.clone()));
+        }
+
+        if self.defining.is_some() {
+            return Err(MakeError::new("Missing `endef`.", self.context.clone()));
         }
 
         Ok(())
@@ -204,6 +223,11 @@ impl<L: Logger> Makefile<L> {
     /// newlines and semicolons, and also managing state, such as variable assignments and
     /// annotating when the parser moves in-to and out-of a rule definition.
     fn parse_line(&mut self, line: String) -> Result<(), MakeError> {
+        // While capturing a `define` body, everything is verbatim until the matching `endef`.
+        if self.defining.is_some() {
+            return self.capture_define_line(line);
+        }
+
         let recipe_prefix = self.vars.get(".RECIPEPREFIX").value.to_string();
 
         // A line beginning with the recipe prefix is a recipe (or a "recipe without rule" error),
@@ -284,6 +308,21 @@ impl<L: Logger> Makefile<L> {
             return self.handle_export(export, rest);
         }
 
+        // Handle `define NAME [op]` — begin capturing a multi-line variable.
+        if let Some(rest) = parse_define(trimmed_line) {
+            let (name, op) = match parse_assignment(rest) {
+                Some((key, op, _)) => (key.trim().to_string(), op),
+                None => (rest.trim().to_string(), AssignOp::Recursive),
+            };
+            self.defining = Some(DefineCapture {
+                name,
+                op,
+                body: Vec::new(),
+                depth: 0,
+            });
+            return Ok(());
+        }
+
         // Handle variable assignments. This must run before rule detection so operators like `:=`,
         // `?=`, and `+=` are not mistaken for a rule colon.
         if let Some((key, op, value)) = parse_assignment(&line) {
@@ -347,14 +386,19 @@ impl<L: Logger> Makefile<L> {
         Err(MakeError::new("Invalid line type.", self.context.clone()))
     }
 
-    /// Apply a variable assignment with the semantics of its operator.
+    /// Apply a variable assignment with the semantics of its operator, stripping the leading
+    /// whitespace that follows the operator (`FOO =   value`).
     fn handle_assignment(&mut self, key: &str, op: AssignOp, value: &str) -> Result<(), MakeError> {
+        self.assign(key, op, value.trim_start())
+    }
+
+    /// Apply an assignment with `value` used verbatim (no leading-whitespace trimming). Used for
+    /// `define` bodies, where leading whitespace is significant.
+    fn assign(&mut self, key: &str, op: AssignOp, value: &str) -> Result<(), MakeError> {
         if key.trim().is_empty() {
             return Err(MakeError::new("Empty variable name.", self.context.clone()));
         }
 
-        // make strips leading whitespace after the operator; the rest of the value is significant.
-        let value = value.trim_start();
         let err = |e: String| MakeError::new(&e, self.context.clone());
 
         match op {
@@ -593,6 +637,33 @@ impl<L: Logger> Makefile<L> {
         Ok(())
     }
 
+    /// Append a line to the in-progress `define` body, or finish it on the matching `endef`. Inner
+    /// `define`/`endef` pairs nest and are part of the body. A recipe-prefixed (tab) line is literal
+    /// body content, never a `define`/`endef` directive.
+    fn capture_define_line(&mut self, line: String) -> Result<(), MakeError> {
+        let recipe_prefix = self.vars.get(".RECIPEPREFIX").value.to_string();
+        let is_directive = !line.starts_with(&recipe_prefix);
+        let trimmed = line.trim();
+        let starts_define = is_directive && parse_define(trimmed).is_some();
+        let is_endef = is_directive && trimmed == "endef";
+
+        // Finish the outermost define on `endef` at nesting depth 0.
+        if is_endef && self.defining.as_ref().unwrap().depth == 0 {
+            let capture = self.defining.take().unwrap();
+            // The body is assigned verbatim (leading whitespace within it is significant).
+            return self.assign(&capture.name, capture.op, &capture.body.join("\n"));
+        }
+
+        let capture = self.defining.as_mut().unwrap();
+        if starts_define {
+            capture.depth += 1;
+        } else if is_endef {
+            capture.depth -= 1;
+        }
+        capture.body.push(line);
+        Ok(())
+    }
+
     /// Handle an `export`/`unexport` directive. `rest` may be empty, a list of variable names, or
     /// (for `export`) an assignment (`export NAME = value`), which both assigns and exports.
     fn handle_export(&mut self, export: bool, rest: &str) -> Result<(), MakeError> {
@@ -732,6 +803,16 @@ struct PendingLine {
     recipe_prefix: String,
     /// The accumulated logical line so far.
     accum: String,
+}
+
+/// If `trimmed` is a `define NAME [op]` directive, return the part after `define`.
+fn parse_define(trimmed: &str) -> Option<&str> {
+    if let Some(rest) = trimmed.strip_prefix("define")
+        && (rest.is_empty() || rest.starts_with([' ', '\t']))
+    {
+        return Some(rest.trim());
+    }
+    None
 }
 
 /// If `trimmed` is an `export`/`unexport` directive, return whether it exports (vs unexports) and

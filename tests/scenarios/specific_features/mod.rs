@@ -15,6 +15,7 @@ mod t22_order_only;
 mod t23_export;
 mod t24_submake;
 mod t25_keep_going;
+mod t26_define;
 mod t2_always_make;
 mod t3_old_files;
 mod t4_just_print;

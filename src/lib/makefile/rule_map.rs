@@ -56,65 +56,70 @@ impl Rule {
             // Expand the recipe line now, at execution time. This resolves variables defined after
             // the rule, automatic variables, and cases where a variable expands to a command
             // modifier (e.g. the kernel's `$(Q)` = `@` pattern), which must be recognized below.
-            let line = expand(raw, &vars).map_err(|e| MakeError::new(&e, self.context.clone()))?;
+            let expanded =
+                expand(raw, &vars).map_err(|e| MakeError::new(&e, self.context.clone()))?;
 
-            // Strip leading command modifiers: `@` (silence echo), `-` (ignore errors), and `+`
-            // (run even under `--just-print`). They may be combined in any order and separated by
-            // whitespace (e.g. `@-` or `- @`), and must be removed before the command is echoed or
-            // handed to the shell; only the remainder is a real command.
-            let mut silent = false;
-            let mut ignore_errors = false;
-            let mut force = false;
-            let mut command = line.as_str();
-            loop {
-                command = command.trim_start();
-                match command.chars().next() {
-                    Some('@') => silent = true,
-                    Some('-') => ignore_errors = true,
-                    Some('+') => force = true,
-                    _ => break,
-                }
-                command = &command[1..];
-            }
-
-            // A recipe consisting only of modifiers (e.g. `@`) is a no-op.
-            if command.is_empty() {
-                continue;
-            }
-
-            // Echo the command to stdout, unless silenced. `--just-print` always echoes.
-            if (!silent && !silent_target) || makefile.opts.just_print {
-                println!("{command}");
-            }
-
-            // Under `--just-print` we only echo and move on, except `+` commands always run.
-            if makefile.opts.just_print && !force {
-                continue;
-            }
-
-            // Execute the recipe line.
-            let mut cmd = Command::new(&shell);
-            cmd.args(&shell_flags)
-                .arg(command)
-                .envs(env_adds.iter().map(|(k, v)| (k, v)));
-            for name in &env_removes {
-                cmd.env_remove(name);
-            }
-            let res = cmd
-                .status()
-                .map_err(|e| MakeError::new(&e.to_string(), self.context.clone()))?;
-
-            // Check for command errors, unless directed to ignore them.
-            if !ignore_errors && !ignore_target && !makefile.opts.ignore_errors {
-                match res.code() {
-                    Some(0) => {}
-                    Some(code) => {
-                        return Err(MakeError::new(
-                            &format!("Failed with code {code}."),
-                            self.context.clone(),
-                        ));
+            // A recipe line may expand to several lines — e.g. a `define` used as a canned recipe —
+            // and each becomes its own command. A backslash-newline is a continuation, not a split.
+            for line in split_recipe_lines(&expanded) {
+                // Strip leading command modifiers: `@` (silence echo), `-` (ignore errors), and `+`
+                // (run even under `--just-print`). They may be combined in any order and separated
+                // by whitespace (e.g. `@-` or `- @`), and must be removed before the command is
+                // echoed or handed to the shell; only the remainder is a real command.
+                let mut silent = false;
+                let mut ignore_errors = false;
+                let mut force = false;
+                let mut command = line.as_str();
+                loop {
+                    command = command.trim_start();
+                    match command.chars().next() {
+                        Some('@') => silent = true,
+                        Some('-') => ignore_errors = true,
+                        Some('+') => force = true,
+                        _ => break,
                     }
-                    None => return Err(MakeError::new("Killed.", self.context.clone())),
+                    command = &command[1..];
+                }
+
+                // A recipe consisting only of modifiers (e.g. `@`) is a no-op.
+                if command.is_empty() {
+                    continue;
+                }
+
+                // Echo the command to stdout, unless silenced. `--just-print` always echoes.
+                if (!silent && !silent_target) || makefile.opts.just_print {
+                    println!("{command}");
+                }
+
+                // Under `--just-print` we only echo and move on, except `+` commands always run.
+                if makefile.opts.just_print && !force {
+                    continue;
+                }
+
+                // Execute the recipe line.
+                let mut cmd = Command::new(&shell);
+                cmd.args(&shell_flags)
+                    .arg(command)
+                    .envs(env_adds.iter().map(|(k, v)| (k, v)));
+                for name in &env_removes {
+                    cmd.env_remove(name);
+                }
+                let res = cmd
+                    .status()
+                    .map_err(|e| MakeError::new(&e.to_string(), self.context.clone()))?;
+
+                // Check for command errors, unless directed to ignore them.
+                if !ignore_errors && !ignore_target && !makefile.opts.ignore_errors {
+                    match res.code() {
+                        Some(0) => {}
+                        Some(code) => {
+                            return Err(MakeError::new(
+                                &format!("Failed with code {code}."),
+                                self.context.clone(),
+                            ));
+                        }
+                        None => return Err(MakeError::new("Killed.", self.context.clone())),
+                    }
                 }
             }
         }
@@ -185,6 +190,32 @@ impl Rule {
         let _ = vars.set("<D", lt_dir.as_str(), false);
         let _ = vars.set("<F", lt_file.as_str(), false);
     }
+}
+
+/// Split an expanded recipe into individual command lines. A newline preceded by an odd number of
+/// backslashes is a continuation and is kept within the command (the shell handles it); any other
+/// newline separates commands (as with a `define` used as a canned recipe).
+fn split_recipe_lines(expanded: &str) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut current = String::new();
+
+    for c in expanded.chars() {
+        if c == '\n' {
+            let backslashes = current.chars().rev().take_while(|&b| b == '\\').count();
+            if backslashes % 2 == 1 {
+                current.push('\n');
+            } else {
+                lines.push(std::mem::take(&mut current));
+            }
+        } else {
+            current.push(c);
+        }
+    }
+    if !current.is_empty() {
+        lines.push(current);
+    }
+
+    lines
 }
 
 /// Split a path into its directory part (`.` when there is no slash, trailing slash removed) and its
