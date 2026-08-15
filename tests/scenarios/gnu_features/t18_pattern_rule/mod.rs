@@ -6,9 +6,9 @@ crate::system_test_cases!({
     expected_stderr: "",
     expected_files: &[],
     pre_hook: {
-        std::fs::write("tests/scenarios/features/t18_pattern_rule/foo.c", "").unwrap();
+        std::fs::write("tests/scenarios/gnu_features/t18_pattern_rule/foo.c", "").unwrap();
     },
     post_hook: {
-        let _ = std::fs::remove_file("tests/scenarios/features/t18_pattern_rule/foo.c");
+        let _ = std::fs::remove_file("tests/scenarios/gnu_features/t18_pattern_rule/foo.c");
     },
 });
