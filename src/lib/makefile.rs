@@ -699,15 +699,49 @@ impl<L: Logger> Makefile<L> {
         Ok(self.vars.is_set(name.trim()))
     }
 
-    /// Evaluate a BSD `.if` expression. Supports `!expr`, `defined(x)`/`empty(x)`, comparisons
-    /// (`==`/`!=`/`<`/`<=`/`>`/`>=`), and a bare value (true when non-empty and not `0`). Logical
-    /// `&&`/`||` operators are not yet supported.
+    /// Evaluate a BSD `.if` expression. A recursive-descent evaluator with `||` (lowest), then
+    /// `&&`, then a primary (`!`, parentheses, `defined()`/`empty()`, comparisons, bare value).
     fn eval_bsd_expr(&self, expr: &str) -> Result<bool, MakeError> {
+        self.eval_bsd_or(expr.trim())
+    }
+
+    /// `||` level (lowest precedence), short-circuiting.
+    fn eval_bsd_or(&self, expr: &str) -> Result<bool, MakeError> {
+        if let Some(parts) = split_logical(expr, "||") {
+            for part in parts {
+                if self.eval_bsd_and(part.trim())? {
+                    return Ok(true);
+                }
+            }
+            return Ok(false);
+        }
+        self.eval_bsd_and(expr)
+    }
+
+    /// `&&` level, short-circuiting.
+    fn eval_bsd_and(&self, expr: &str) -> Result<bool, MakeError> {
+        if let Some(parts) = split_logical(expr, "&&") {
+            for part in parts {
+                if !self.eval_bsd_primary(part.trim())? {
+                    return Ok(false);
+                }
+            }
+            return Ok(true);
+        }
+        self.eval_bsd_primary(expr)
+    }
+
+    /// A primary term: `!expr`, `(expr)`, `defined(x)`/`empty(x)`, a comparison, or a bare value
+    /// (true when it expands to a non-empty, non-zero string).
+    fn eval_bsd_primary(&self, expr: &str) -> Result<bool, MakeError> {
         let expr = expr.trim();
         let err = |e: String| MakeError::new(&e, self.context.clone());
 
+        if let Some(inner) = strip_full_parens(expr) {
+            return self.eval_bsd_or(inner.trim());
+        }
         if let Some(rest) = expr.strip_prefix('!') {
-            return Ok(!self.eval_bsd_expr(rest)?);
+            return Ok(!self.eval_bsd_primary(rest)?);
         }
         if let Some(inner) = expr
             .strip_prefix("defined(")
@@ -1196,6 +1230,70 @@ fn parse_bsd_include(trimmed: &str) -> Option<(bool, &str)> {
                 .and_then(|s| s.strip_suffix('"'))
                 .or_else(|| rest.strip_prefix('<').and_then(|s| s.strip_suffix('>')))?;
             return Some((optional, name));
+        }
+    }
+    None
+}
+
+/// Split a BSD `.if` expression on top-level occurrences of the logical operator `op` (`&&`/`||`),
+/// ignoring operators inside parentheses. To match bmake, the operator is only recognized when
+/// preceded by whitespace or a closing paren — so a run like `1&&0` stays a single bare term.
+/// Returns `None` if the operator does not appear at top level.
+fn split_logical<'a>(expr: &'a str, op: &str) -> Option<Vec<&'a str>> {
+    let bytes = expr.as_bytes();
+    let mut depth: i32 = 0;
+    let mut in_quote = false;
+    let mut segments = Vec::new();
+    let mut start = 0;
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'"' => in_quote = !in_quote,
+            _ if in_quote => {}
+            b'(' => depth += 1,
+            b')' => depth -= 1,
+            _ if depth == 0
+                && i > 0
+                && matches!(bytes[i - 1], b' ' | b'\t' | b')')
+                && expr[i..].starts_with(op) =>
+            {
+                segments.push(&expr[start..i]);
+                i += op.len();
+                start = i;
+                continue;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    if segments.is_empty() {
+        return None;
+    }
+    segments.push(&expr[start..]);
+    Some(segments)
+}
+
+/// If `expr` is a single parenthesized group wrapping the whole string (`(...)`), return the inner
+/// text. Returns `None` when the leading `(` closes before the end (e.g. `(a) && (b)`).
+fn strip_full_parens(expr: &str) -> Option<&str> {
+    if !expr.starts_with('(') {
+        return None;
+    }
+    let bytes = expr.as_bytes();
+    let mut depth: i32 = 0;
+    let mut in_quote = false;
+    for (i, &c) in bytes.iter().enumerate() {
+        match c {
+            b'"' => in_quote = !in_quote,
+            _ if in_quote => {}
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return (i == bytes.len() - 1).then(|| &expr[1..i]);
+                }
+            }
+            _ => {}
         }
     }
     None
