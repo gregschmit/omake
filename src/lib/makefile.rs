@@ -122,6 +122,9 @@ impl<L: Logger> Makefile<L> {
         })?;
         makefile.parse(BufReader::new(file))?;
 
+        // Built-in implicit rules are appended after the user's rules so they take lower priority.
+        makefile.rule_map.register_builtins();
+
         Ok(makefile)
     }
 

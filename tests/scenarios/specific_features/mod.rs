@@ -21,6 +21,7 @@ mod t28_makeflags;
 mod t29_substitution;
 mod t2_always_make;
 mod t30_suffix_rule;
+mod t31_builtin_rule;
 mod t3_old_files;
 mod t4_just_print;
 mod t5_silent;

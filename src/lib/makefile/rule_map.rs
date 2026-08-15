@@ -10,6 +10,18 @@ use crate::vars::Vars;
 /// Maximum length of a chained implicit-rule search (e.g. `%.o: %.c` then `%.c: %.y`).
 const PATTERN_CHAIN_LIMIT: usize = 16;
 
+/// Built-in implicit pattern rules (GNU make defaults), registered after the makefile is parsed so
+/// that user rules take precedence. Recipes reference the standard `COMPILE.*`/`LINK.*` variables.
+const BUILTIN_RULES: &[(&str, &[&str], &str)] = &[
+    ("%.o", &["%.c"], "$(COMPILE.c) $(OUTPUT_OPTION) $<"),
+    ("%.o", &["%.cc"], "$(COMPILE.cc) $(OUTPUT_OPTION) $<"),
+    ("%.o", &["%.cpp"], "$(COMPILE.cpp) $(OUTPUT_OPTION) $<"),
+    ("%.o", &["%.C"], "$(COMPILE.C) $(OUTPUT_OPTION) $<"),
+    ("%", &["%.c"], "$(LINK.c) $^ $(LOADLIBES) $(LDLIBS) -o $@"),
+    ("%", &["%.cc"], "$(LINK.cc) $^ $(LOADLIBES) $(LDLIBS) -o $@"),
+    ("%", &["%.o"], "$(LINK.o) $^ $(LOADLIBES) $(LDLIBS) -o $@"),
+];
+
 /// A parsed rule from a makefile.
 #[derive(Debug, Clone)]
 pub struct Rule {
@@ -307,6 +319,30 @@ impl RuleMap {
         }
     }
 
+    /// Append the built-in implicit pattern rules (unless a user rule already defines the same
+    /// pattern). Call after parsing so user rules are matched first.
+    pub fn register_builtins(&mut self) {
+        for (target, prereqs, recipe) in BUILTIN_RULES {
+            let pct = target.find('%').expect("built-in target contains %");
+            let prereq_patterns: Vec<String> = prereqs.iter().map(|s| s.to_string()).collect();
+            let already_defined = self.pattern_rules.iter().any(|p| {
+                p.target_prefix == target[..pct]
+                    && p.target_suffix == target[pct + 1..]
+                    && p.prereq_patterns == prereq_patterns
+            });
+            if !already_defined {
+                self.pattern_rules.push(PatternRule {
+                    target_prefix: target[..pct].to_string(),
+                    target_suffix: target[pct + 1..].to_string(),
+                    prereq_patterns,
+                    order_only_patterns: vec![],
+                    recipe: vec![recipe.to_string()],
+                    context: Context::new(),
+                });
+            }
+        }
+    }
+
     /// Insert a rule, update the `by_target` hashmap, and validate the rule.
     pub fn insert<L: Logger>(&mut self, rule: Rule, logger: &L) -> Result<(), MakeError> {
         // A rule with a `%` target is a pattern rule, stored separately from exact-match rules.
@@ -590,15 +626,21 @@ impl RuleMap {
         if depth == 0 {
             return false;
         }
-        self.pattern_rules
-            .iter()
-            .any(|prule| match prule.match_stem(name) {
+        self.pattern_rules.iter().any(|prule| {
+            // Skip match-anything rules (target `%`) when chaining: they match every name and would
+            // grow prerequisites forever (`x.c.c.c…`). GNU make also does not use match-anything
+            // rules to build the prerequisites of another implicit rule.
+            if prule.target_prefix.is_empty() && prule.target_suffix.is_empty() {
+                return false;
+            }
+            match prule.match_stem(name) {
                 Some(stem) => prule
                     .prerequisites(stem)
                     .iter()
                     .all(|p| self.can_be_made(makefile, p, depth - 1)),
                 None => false,
-            })
+            }
+        })
     }
 
     /// Build `target` using the pattern rule at `idx` with the given `stem`.
