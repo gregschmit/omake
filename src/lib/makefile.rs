@@ -60,6 +60,11 @@ pub struct Makefile<L: Logger> {
     default_target: Option<String>,
     special: SpecialTargets,
 
+    /// Names of variables marked for `export` into recipe child environments.
+    exported: HashSet<String>,
+    /// Names marked `unexport` — removed from recipe child environments (even if inherited).
+    unexported: HashSet<String>,
+
     // Parser state.
     pub vars: Vars,
     current_rule: Option<Rule>,
@@ -78,6 +83,8 @@ impl<L: Logger> Makefile<L> {
             rule_map: RuleMap::new(),
             default_target: None,
             special: SpecialTargets::default(),
+            exported: HashSet::new(),
+            unexported: HashSet::new(),
             vars,
             current_rule: None,
             context: path.clone().into(),
@@ -270,6 +277,11 @@ impl<L: Logger> Makefile<L> {
         // Handle `include` / `-include` / `sinclude` directives.
         if let Some((optional, names)) = parse_include(trimmed_line) {
             return self.handle_include(optional, names);
+        }
+
+        // Handle `export` / `unexport` directives.
+        if let Some((export, rest)) = parse_export(trimmed_line) {
+            return self.handle_export(export, rest);
         }
 
         // Handle variable assignments. This must run before rule detection so operators like `:=`,
@@ -581,6 +593,55 @@ impl<L: Logger> Makefile<L> {
         Ok(())
     }
 
+    /// Handle an `export`/`unexport` directive. `rest` may be empty, a list of variable names, or
+    /// (for `export`) an assignment (`export NAME = value`), which both assigns and exports.
+    fn handle_export(&mut self, export: bool, rest: &str) -> Result<(), MakeError> {
+        let rest = rest.trim();
+
+        // `export NAME = value` — perform the assignment, then export the (literal) name.
+        if export && let Some((key, op, value)) = parse_assignment(rest) {
+            self.handle_assignment(key, op, value)?;
+            self.set_exported(key.trim(), true);
+            return Ok(());
+        }
+
+        // Otherwise a (possibly empty, possibly computed) list of names. A bare `export`/`unexport`
+        // affecting all variables is not supported yet; treat it as a no-op.
+        let expanded =
+            expand(rest, &self.vars).map_err(|e| MakeError::new(&e, self.context.clone()))?;
+        for name in expanded.split_whitespace() {
+            self.set_exported(name, export);
+        }
+        Ok(())
+    }
+
+    /// Mark `name` as exported (or, if `export` is false, unexported), keeping the two sets disjoint.
+    fn set_exported(&mut self, name: &str, export: bool) {
+        if export {
+            self.unexported.remove(name);
+            self.exported.insert(name.to_string());
+        } else {
+            self.exported.remove(name);
+            self.unexported.insert(name.to_string());
+        }
+    }
+
+    /// The environment changes for a recipe child: variables to add (as `NAME=value`) and names to
+    /// remove (so `unexport` also drops inherited environment variables).
+    fn exported_env(&self, vars: &Vars) -> (Vec<(String, String)>, Vec<String>) {
+        let adds = self
+            .exported
+            .iter()
+            .filter_map(|name| {
+                expand(&vars.get(name).value, vars)
+                    .ok()
+                    .map(|value| (name.clone(), value))
+            })
+            .collect();
+        let removes = self.unexported.iter().cloned().collect();
+        (adds, removes)
+    }
+
     /// Record `.PHONY`, `.SILENT`, `.IGNORE`, and `.DEFAULT` directives from a parsed rule.
     fn collect_special_targets(&mut self, rule: &Rule) {
         for target in &rule.targets {
@@ -671,6 +732,19 @@ struct PendingLine {
     recipe_prefix: String,
     /// The accumulated logical line so far.
     accum: String,
+}
+
+/// If `trimmed` is an `export`/`unexport` directive, return whether it exports (vs unexports) and
+/// the remainder of the line.
+fn parse_export(trimmed: &str) -> Option<(bool, &str)> {
+    for (kw, export) in [("export", true), ("unexport", false)] {
+        if let Some(rest) = trimmed.strip_prefix(kw)
+            && (rest.is_empty() || rest.starts_with([' ', '\t']))
+        {
+            return Some((export, rest));
+        }
+    }
+    None
 }
 
 /// If `trimmed` is an `include`/`-include`/`sinclude` directive, return whether missing files are

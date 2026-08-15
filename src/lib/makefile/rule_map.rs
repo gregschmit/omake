@@ -48,6 +48,10 @@ impl Rule {
         let silent_target = makefile.is_silent(target);
         let ignore_target = makefile.is_ignored(target);
 
+        // `export`ed variables are added to each recipe's child environment; `unexport`ed names are
+        // removed (even if inherited from omake's own environment).
+        let (env_adds, env_removes) = makefile.exported_env(&vars);
+
         for raw in self.recipe.iter() {
             // Expand the recipe line now, at execution time. This resolves variables defined after
             // the rule, automatic variables, and cases where a variable expands to a command
@@ -89,9 +93,14 @@ impl Rule {
             }
 
             // Execute the recipe line.
-            let res = Command::new(&shell)
-                .args(&shell_flags)
+            let mut cmd = Command::new(&shell);
+            cmd.args(&shell_flags)
                 .arg(command)
+                .envs(env_adds.iter().map(|(k, v)| (k, v)));
+            for name in &env_removes {
+                cmd.env_remove(name);
+            }
+            let res = cmd
                 .status()
                 .map_err(|e| MakeError::new(&e.to_string(), self.context.clone()))?;
 
