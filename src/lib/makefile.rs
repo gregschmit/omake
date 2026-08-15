@@ -65,6 +65,7 @@ pub struct Makefile<L: Logger> {
     current_rule: Option<Rule>,
     context: Context,
     cond_stack: Vec<CondState>,
+    include_depth: usize,
 }
 
 impl<L: Logger> Makefile<L> {
@@ -81,6 +82,7 @@ impl<L: Logger> Makefile<L> {
             current_rule: None,
             context: path.clone().into(),
             cond_stack: Vec::new(),
+            include_depth: 0,
         };
 
         // Open the makefile and run it through the parser.
@@ -97,6 +99,24 @@ impl<L: Logger> Makefile<L> {
     fn parse<R: BufRead>(&mut self, input: R) -> Result<(), MakeError> {
         self.current_rule = None;
 
+        self.parse_reader(input)?;
+
+        // Always push two blank lines at the end to terminate trailing rules, even if the last rule
+        // contained a trailing backslash.
+        self.parse_line("".to_string())?;
+        self.parse_line("".to_string())?;
+
+        if !self.cond_stack.is_empty() {
+            return Err(MakeError::new("Missing `endif`.", self.context.clone()));
+        }
+
+        Ok(())
+    }
+
+    /// Read `input`, join continued physical lines into logical lines, and hand each to
+    /// `parse_line`. Shared by the top-level parse and by `include` handling (which reuses the
+    /// current parser state).
+    fn parse_reader<R: BufRead>(&mut self, input: R) -> Result<(), MakeError> {
         // Join physical lines ending in an unescaped backslash into logical lines. A non-recipe
         // continuation collapses the backslash/newline (and surrounding whitespace) into a single
         // space; a recipe continuation keeps the backslash and newline (so the shell sees the
@@ -167,15 +187,6 @@ impl<L: Logger> Makefile<L> {
             self.context.line_index = Some(p.start_index);
             self.context.content = Some(p.accum.clone());
             self.parse_line(p.accum)?;
-        }
-
-        // Always push two blank lines at the end to terminate trailing rules, even if the last rule
-        // contained a trailing backslash.
-        self.parse_line("".to_string())?;
-        self.parse_line("".to_string())?;
-
-        if !self.cond_stack.is_empty() {
-            return Err(MakeError::new("Missing `endif`.", self.context.clone()));
         }
 
         Ok(())
@@ -254,6 +265,11 @@ impl<L: Logger> Makefile<L> {
         let trimmed_line = line.trim();
         if trimmed_line.starts_with(COMMENT_INDICATOR) || trimmed_line.is_empty() {
             return Ok(());
+        }
+
+        // Handle `include` / `-include` / `sinclude` directives.
+        if let Some((optional, names)) = parse_include(trimmed_line) {
+            return self.handle_include(optional, names);
         }
 
         // Handle variable assignments. This must run before rule detection so operators like `:=`,
@@ -501,6 +517,60 @@ impl<L: Logger> Makefile<L> {
         }
     }
 
+    /// Handle an `include`/`-include`/`sinclude` directive: parse each named file into the current
+    /// parser state. `include` errors on a missing file; the others silently ignore it.
+    fn handle_include(&mut self, optional: bool, names: &str) -> Result<(), MakeError> {
+        const INCLUDE_DEPTH_LIMIT: usize = 200;
+        if self.include_depth >= INCLUDE_DEPTH_LIMIT {
+            return Err(MakeError::new(
+                "`include` nested too deeply (recursive include?).",
+                self.context.clone(),
+            ));
+        }
+
+        let expanded =
+            expand(names, &self.vars).map_err(|e| MakeError::new(&e, self.context.clone()))?;
+
+        for name in expanded.split_whitespace() {
+            let file = match File::open(name) {
+                Ok(file) => file,
+                Err(e) => {
+                    if optional {
+                        continue;
+                    }
+                    return Err(MakeError::new(
+                        &format!("Could not include {name} ({e})."),
+                        self.context.clone(),
+                    ));
+                }
+            };
+
+            // Parse the included file with its own context, restoring ours afterwards.
+            let cond_depth = self.cond_stack.len();
+            let saved = self.context.clone();
+            self.context = PathBuf::from(name).into();
+            self.include_depth += 1;
+            let result = self.parse_reader(BufReader::new(file));
+            self.include_depth -= 1;
+
+            // Conditionals may not cross a file boundary, so the stack must return to its prior
+            // depth. Report against the included file before restoring the parent's context.
+            if result.is_ok() && self.cond_stack.len() != cond_depth {
+                let err = MakeError::new(
+                    "Unbalanced conditional (`ifeq`/`endif`) in included file.",
+                    self.context.clone(),
+                );
+                self.context = saved;
+                return Err(err);
+            }
+
+            self.context = saved;
+            result?;
+        }
+
+        Ok(())
+    }
+
     /// Record `.PHONY`, `.SILENT`, `.IGNORE`, and `.DEFAULT` directives from a parsed rule.
     fn collect_special_targets(&mut self, rule: &Rule) {
         for target in &rule.targets {
@@ -591,6 +661,19 @@ struct PendingLine {
     recipe_prefix: String,
     /// The accumulated logical line so far.
     accum: String,
+}
+
+/// If `trimmed` is an `include`/`-include`/`sinclude` directive, return whether missing files are
+/// tolerated and the (unexpanded) filename list.
+fn parse_include(trimmed: &str) -> Option<(bool, &str)> {
+    for (kw, optional) in [("include", false), ("-include", true), ("sinclude", true)] {
+        if let Some(rest) = trimmed.strip_prefix(kw)
+            && (rest.is_empty() || rest.starts_with([' ', '\t']))
+        {
+            return Some((optional, rest.trim()));
+        }
+    }
+    None
 }
 
 /// If `trimmed` begins with a conditional directive keyword (as a whole word), return it.
