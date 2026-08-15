@@ -2,7 +2,7 @@
 name = "omake"
 version = "0.1.6"
 edition = "2024"
-description = "A Rust implementation of make."
+description = "An open implementation of make."
 authors = ["Gregory N. Schmit <schmitgreg@gmail.com>"]
 license = "MIT"
 repository = "https://github.com/gregschmit/omake"

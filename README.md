@@ -1,6 +1,6 @@
 # Oxidized Make (omake)
 
-This is a Rust implementation of `make`, striving to be simple, portable, and fast.
+This is an open implementation of `make`, striving to be simple, portable, and fast.
 
 To avoid clashing with your system's `make`, this project is built as `omake` by default, but if
 this project is ever used as the default implementation of `make` in a system, then it should be
