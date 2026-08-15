@@ -6,11 +6,11 @@ crate::system_test_cases!(
         // Don't add `b` otherwise it will be removed afterwards and it's a checked-in file.
         expected_files: &[],
         pre_hook: {
-            std::fs::write("tests/scenarios/specific_features/t3_old_files/a", "a\n").unwrap();
+            std::fs::write("tests/scenarios/features/t3_old_files/a", "a\n").unwrap();
         },
         post_hook: {
             // Cleanup should never panic over the real assertion, so ignore errors.
-            let _ = std::fs::remove_file("tests/scenarios/specific_features/t3_old_files/a");
+            let _ = std::fs::remove_file("tests/scenarios/features/t3_old_files/a");
         },
     },
     {
@@ -19,11 +19,11 @@ crate::system_test_cases!(
         expected_stderr: "make: INFO  | Target 'b' is up to date (old).\n",
         expected_files: &[],
         pre_hook: {
-            std::fs::write("tests/scenarios/specific_features/t3_old_files/a", "a\n").unwrap();
+            std::fs::write("tests/scenarios/features/t3_old_files/a", "a\n").unwrap();
         },
         post_hook: {
             // Cleanup should never panic over the real assertion, so ignore errors.
-            let _ = std::fs::remove_file("tests/scenarios/specific_features/t3_old_files/a");
+            let _ = std::fs::remove_file("tests/scenarios/features/t3_old_files/a");
         },
     },
 );

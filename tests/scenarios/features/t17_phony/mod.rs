@@ -8,10 +8,10 @@ crate::system_test_cases!(
         expected_stderr: "",
         expected_files: &[],
         pre_hook: {
-            std::fs::write("tests/scenarios/specific_features/t17_phony/clean", "").unwrap();
+            std::fs::write("tests/scenarios/features/t17_phony/clean", "").unwrap();
         },
         post_hook: {
-            let _ = std::fs::remove_file("tests/scenarios/specific_features/t17_phony/clean");
+            let _ = std::fs::remove_file("tests/scenarios/features/t17_phony/clean");
         },
     },
     {
