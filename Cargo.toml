@@ -6,7 +6,7 @@ description = "An open implementation of make."
 authors = ["Gregory N. Schmit <schmitgreg@gmail.com>"]
 license = "MIT"
 repository = "https://github.com/gregschmit/omake"
-keywords = ["make", "oxidized", "development", "build"]
+keywords = ["make", "development", "build"]
 categories = ["command-line-utilities", "development-tools", "development-tools::build-utils"]
 
 [dependencies]

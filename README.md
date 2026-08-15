@@ -1,4 +1,4 @@
-# Oxidized Make (omake)
+# Open Make (omake)
 
 This is an open implementation of `make`, striving to be simple, portable, and fast.
 

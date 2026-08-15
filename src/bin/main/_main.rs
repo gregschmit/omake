@@ -1,4 +1,4 @@
-//! # omake (Oxidized Make)
+//! # omake
 //!
 //! This is an implementation of `make`, written in Rust. The goal is to provide an implementation
 //! of `make` that can be used to process both BSD and GNU makefiles.

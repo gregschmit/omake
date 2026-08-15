@@ -1,4 +1,4 @@
-//! # omake (Oxidized Make)
+//! # omake
 //!
 //! This is the library component of the project, responsible for parsing and executing makefiles.
 
