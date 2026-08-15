@@ -27,7 +27,8 @@ const BUILTIN_RULES: &[(&str, &[&str], &str)] = &[
 pub struct Rule {
     pub targets: Vec<String>,
     pub prerequisites: Vec<String>,
-    /// Order-only prerequisites (after `|`): made if missing, but their mtime never forces a rebuild.
+    /// Order-only prerequisites (after `|`): made if missing, but their mtime never forces a
+    /// rebuild.
     pub order_only: Vec<String>,
     pub recipe: Vec<String>,
     pub context: Context,
@@ -177,8 +178,8 @@ impl Rule {
         let _ = vars.set("+", all.as_str(), false);
 
         // `$?`: prerequisites newer than the target, de-duplicated. If the target is absent, every
-        // prerequisite counts; if the target exists, a prerequisite counts when its file is newer or
-        // when it has no file (phony / just-rebuilt prerequisites are treated as newer).
+        // prerequisite counts; if the target exists, a prerequisite counts when its file is newer
+        // or when it has no file (phony / just-rebuilt prerequisites are treated as newer).
         let target_mtime = makefile.get_mtime(target);
         let mut seen_newer = HashSet::new();
         let newer = resolved
@@ -236,8 +237,8 @@ fn split_recipe_lines(expanded: &str) -> Vec<String> {
     lines
 }
 
-/// Split a path into its directory part (`.` when there is no slash, trailing slash removed) and its
-/// file part, matching make's `$(@D)`/`$(@F)`.
+/// Split a path into its directory part (`.` when there is no slash, trailing slash removed) and
+/// its file part, matching make's `$(@D)`/`$(@F)`.
 fn split_dir_file(path: &str) -> (String, String) {
     match path.rfind('/') {
         Some(i) => (path[..i].to_string(), path[i + 1..].to_string()),
@@ -554,8 +555,8 @@ impl RuleMap {
                     }
                 }
 
-                // Under `--keep-going`, a failed prerequisite is recorded rather than propagated, so
-                // check for it here — this target can't be built if any prerequisite failed.
+                // Under `--keep-going`, a failed prerequisite is recorded rather than propagated,
+                // so check for it here — this target can't be built if any prerequisite failed.
                 if state.failed.contains(prereq) {
                     prereq_failed = true;
                 }
@@ -615,7 +616,8 @@ impl RuleMap {
 
     /// Whether `name` can serve as a prerequisite when choosing a pattern rule: it already exists,
     /// has an explicit rule, is phony, or can be produced by another pattern rule (chained implicit
-    /// rules, e.g. `%.o: %.c` with `%.c: %.y`). `depth` bounds the chain to avoid infinite recursion.
+    /// rules, e.g. `%.o: %.c` with `%.c: %.y`). `depth` bounds the chain to avoid infinite
+    /// recursion.
     fn can_be_made<L: Logger>(&self, makefile: &Makefile<L>, name: &str, depth: usize) -> bool {
         if makefile.get_mtime(name).is_some()
             || self.by_target.contains_key(name)

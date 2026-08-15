@@ -244,8 +244,8 @@ impl<L: Logger> Makefile<L> {
 
         // A line beginning with the recipe prefix is a recipe (or a "recipe without rule" error),
         // never a directive. Any other line is checked for conditional directives first — even
-        // inside an inactive branch — so the conditional stack stays balanced. Comments are stripped
-        // here so directives like `ifeq (a,b) # note` parse correctly.
+        // inside an inactive branch — so the conditional stack stays balanced. Comments are
+        // stripped here so directives like `ifeq (a,b) # note` parse correctly.
         if !line.starts_with(&recipe_prefix) {
             let stripped = strip_inline_comment(&line);
             let trimmed = stripped.trim();
@@ -879,8 +879,8 @@ impl<L: Logger> Makefile<L> {
     }
 
     /// Append a line to the in-progress `define` body, or finish it on the matching `endef`. Inner
-    /// `define`/`endef` pairs nest and are part of the body. A recipe-prefixed (tab) line is literal
-    /// body content, never a `define`/`endef` directive.
+    /// `define`/`endef` pairs nest and are part of the body. A recipe-prefixed (tab) line is
+    /// literal body content, never a `define`/`endef` directive.
     fn capture_define_line(&mut self, line: String) -> Result<(), MakeError> {
         let recipe_prefix = self.vars.get(".RECIPEPREFIX").value.to_string();
         let is_directive = !line.starts_with(&recipe_prefix);
@@ -927,7 +927,8 @@ impl<L: Logger> Makefile<L> {
         Ok(())
     }
 
-    /// Mark `name` as exported (or, if `export` is false, unexported), keeping the two sets disjoint.
+    /// Mark `name` as exported (or, if `export` is false, unexported), keeping the two sets
+    /// disjoint.
     fn set_exported(&mut self, name: &str, export: bool) {
         if export {
             self.unexported.remove(name);
@@ -1117,7 +1118,8 @@ impl<L: Logger> Makefile<L> {
 struct PendingLine {
     /// Index of the first physical line (for context/error reporting).
     start_index: usize,
-    /// Whether the logical line is a recipe (the first physical line starts with the recipe prefix).
+    /// Whether the logical line is a recipe (the first physical line starts with the recipe
+    /// prefix).
     is_recipe: bool,
     /// The recipe prefix in effect when this logical line began.
     recipe_prefix: String,
@@ -1461,10 +1463,11 @@ enum AssignOp {
     Shell,
 }
 
-/// Detect a top-level variable assignment in `line`, returning `(key, op, value)`, or `None` if the
-/// line is not an assignment (e.g. it is a rule). The operator is found before any rule colon: a `:`
-/// that is not part of `:=`/`::=` means the line is a rule. Text inside `$(...)`/`${...}` is skipped
-/// so operators there are not mistaken for the assignment. `key`/`value` are not trimmed here.
+/// Detect a top-level variable assignment in `line`, returning `(key, op, value)`, or `None` if
+/// the line is not an assignment (e.g. it is a rule). The operator is found before any rule colon:
+/// a `:` that is not part of `:=`/`::=` means the line is a rule. Text inside `$(...)`/`${...}` is
+/// skipped so operators there are not mistaken for the assignment. `key`/`value` are not trimmed
+/// here.
 fn parse_assignment(line: &str) -> Option<(&str, AssignOp, &str)> {
     let bytes = line.as_bytes();
     let mut depth: usize = 0;
@@ -1472,8 +1475,8 @@ fn parse_assignment(line: &str) -> Option<(&str, AssignOp, &str)> {
     for i in 0..bytes.len() {
         let c = bytes[i];
 
-        // Inside a `$(...)`/`${...}` reference we only balance delimiters; operators there belong to
-        // the reference, not the assignment.
+        // Inside a `$(...)`/`${...}` reference we only balance delimiters; operators there belong
+        // to the reference, not the assignment.
         if depth > 0 {
             match c {
                 b'(' | b'{' => depth += 1,

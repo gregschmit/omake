@@ -9,3 +9,4 @@ mod t23_export;
 mod t26_define;
 mod t27_vpath;
 mod t28_wildcard;
+mod t29_functions;

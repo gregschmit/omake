@@ -9,6 +9,13 @@ struct Frame {
     pub previous_buffer: String,
     /// Which character opened this stack frame (parenthesis or brace)?
     pub opening_delimiter: char,
+    /// Byte offset into the original input where this expression's content starts (just after the
+    /// opening delimiter). Used to recover the *raw*, unexpanded text — needed so a function splits
+    /// its arguments before they are expanded (e.g. `$(subst $(comma),X,a,b)`).
+    pub raw_start: usize,
+    /// Nesting depth of matching literal `(`/`{` inside this expression, so a later literal
+    /// close is not mistaken for the end of the expression (`$(subst (a,b),Z,text)`).
+    pub paren_depth: u32,
 }
 
 /// Run variable expansion on an input string, given a collection of `vars`.
@@ -33,7 +40,7 @@ fn expand_inner(s: &str, vars: &Vars, expanding: &mut Vec<String>) -> Result<Str
     let mut current_buffer: String = String::with_capacity(s.len());
     let mut hit_variable: bool = false;
 
-    for c in s.chars() {
+    for (i, c) in s.char_indices() {
         match c {
             '$' => {
                 hit_variable = !hit_variable;
@@ -44,106 +51,122 @@ fn expand_inner(s: &str, vars: &Vars, expanding: &mut Vec<String>) -> Result<Str
                 }
             }
             '(' | '{' => {
-                // If we haven't hit a variable, consider this a normal char.
+                // If we haven't hit a variable, this is a literal delimiter. A literal `(`/`{` that
+                // matches the enclosing expression's opener nests one level, so its later close is
+                // treated as literal too (e.g. `$(subst (a,b),Z,text)`).
                 if !hit_variable {
+                    if let Some(frame) = stack.last_mut()
+                        && c == frame.opening_delimiter
+                    {
+                        frame.paren_depth += 1;
+                    }
                     current_buffer.push(c);
                     continue;
                 }
 
-                // Otherwise, push a frame onto the stack to begin processing this expression.
+                // `$(` / `${` opens a frame. `raw_start` is the byte just after the delimiter.
                 stack.push(Frame {
                     previous_buffer: current_buffer,
                     opening_delimiter: c,
+                    raw_start: i + 1,
+                    paren_depth: 0,
                 });
-                current_buffer = "".to_string();
+                current_buffer = String::new();
                 hit_variable = false;
             }
             ')' | '}' => {
-                match stack.last() {
-                    None => {
-                        current_buffer.push(c);
-                        hit_variable = false;
-                    }
-                    Some(f) => {
-                        // Test if this character matches the opening delimiter.
-                        if (c == '}' && f.opening_delimiter == '{')
-                            || (c == ')' && f.opening_delimiter == '(')
-                        {
-                            // Expression terminated, so expand.
-                            let content = current_buffer.trim();
+                let Some(f) = stack.last() else {
+                    current_buffer.push(c);
+                    hit_variable = false;
+                    continue;
+                };
+                let matches_closer = (c == '}' && f.opening_delimiter == '{')
+                    || (c == ')' && f.opening_delimiter == '(');
 
-                            // A function call is `$(name args)`: a known function name followed by
-                            // whitespace. Arguments are already expanded (nested `$(...)` resolved
-                            // as we parsed). Unknown names fall through to variable handling.
-                            if let Some((func, args)) = content.split_once(char::is_whitespace)
-                                && let Some(result) = call_function(func, args.trim())
-                            {
-                                current_buffer = stack.pop().unwrap().previous_buffer;
-                                current_buffer.push_str(&result);
-                                hit_variable = false;
-                                continue;
-                            }
-
-                            // A substitution reference is `NAME:FROM=TO` (a `:` is otherwise an
-                            // invalid character in a name, so it only appears here for a
-                            // substitution). `FROM=TO` supports both the suffix form (`.c=.o`) and
-                            // the pattern form (`%.c=%.o`).
-                            let (name, subst) = match content.split_once(':') {
-                                Some((n, s)) if s.contains('=') => {
-                                    let (from, to) = s.split_once('=').unwrap();
-                                    (
-                                        n.trim().to_string(),
-                                        Some((from.to_string(), to.to_string())),
-                                    )
-                                }
-                                _ => (content.to_string(), None),
-                            };
-
-                            let var = vars.get(&name);
-                            let recursive_result: String;
-
-                            // Handle recursive variable expansion, guarding against a cycle.
-                            let value = if var.recursive {
-                                if expanding.contains(&name) {
-                                    return Err(format!(
-                                        "Recursive variable '{name}' references itself."
-                                    ));
-                                }
-                                expanding.push(name.clone());
-                                recursive_result =
-                                    expand_inner(var.value.as_str(), vars, expanding)?;
-                                expanding.pop();
-                                &recursive_result
-                            } else {
-                                &var.value
-                            };
-
-                            // Apply the substitution reference to the resolved value, if present.
-                            let substituted: String;
-                            let result: &str = match &subst {
-                                Some((from, to)) => {
-                                    substituted = substitute_ref(value, from, to);
-                                    &substituted
-                                }
-                                None => value,
-                            };
-
-                            // This `unwrap()` is safe because we checked that the stack contains a
-                            // `last()` element, so it cannot be empty.
-                            current_buffer = stack.pop().unwrap().previous_buffer;
-                            current_buffer.push_str(result);
-                            hit_variable = false;
-                            continue;
-                        }
-
-                        // Not the right trailing delimiter, so consider it just a char.
-                        current_buffer.push(c);
-                        hit_variable = false;
-                    }
+                // A close that matches a nested literal open is itself literal.
+                if matches_closer && f.paren_depth > 0 {
+                    stack.last_mut().unwrap().paren_depth -= 1;
+                    current_buffer.push(c);
+                    hit_variable = false;
+                    continue;
                 }
+                if !matches_closer {
+                    // Wrong delimiter (e.g. `}` inside `$(...)`): a literal char.
+                    current_buffer.push(c);
+                    hit_variable = false;
+                    continue;
+                }
+
+                // The expression is terminated. Its raw (unexpanded) text lets a function split its
+                // arguments before expanding them.
+                let raw = &s[f.raw_start..i];
+
+                // A function call is `$(name args)`: a known function name followed by whitespace.
+                // Each argument is split from the raw text (commas inside `$(...)` / `(...)` are
+                // protected) and expanded independently. Unknown names fall through to a variable.
+                if let Some((func, raw_args)) = raw.trim_start().split_once(char::is_whitespace)
+                    && let Some(arity) = function_arity(func)
+                {
+                    let mut args = Vec::with_capacity(arity);
+                    for part in split_function_args(raw_args.trim_start(), arity) {
+                        args.push(expand_inner(part, vars, expanding)?);
+                    }
+                    let result = call_function(func, &args)?;
+                    current_buffer = stack.pop().unwrap().previous_buffer;
+                    current_buffer.push_str(&result);
+                    hit_variable = false;
+                    continue;
+                }
+
+                // A substitution reference is `NAME:FROM=TO` (a `:` is otherwise an invalid
+                // character in a name, so it only appears here for a substitution). `FROM=TO`
+                // supports both the suffix form (`.c=.o`) and the pattern form (`%.c=%.o`). The
+                // name uses the inline-expanded buffer (so computed names like `$($(X))` resolve).
+                let content = current_buffer.trim();
+                let (name, subst) = match content.split_once(':') {
+                    Some((n, s)) if s.contains('=') => {
+                        let (from, to) = s.split_once('=').unwrap();
+                        (
+                            n.trim().to_string(),
+                            Some((from.to_string(), to.to_string())),
+                        )
+                    }
+                    _ => (content.to_string(), None),
+                };
+
+                let var = vars.get(&name);
+                let recursive_result: String;
+
+                // Handle recursive variable expansion, guarding against a cycle.
+                let value = if var.recursive {
+                    if expanding.contains(&name) {
+                        return Err(format!("Recursive variable '{name}' references itself."));
+                    }
+                    expanding.push(name.clone());
+                    recursive_result = expand_inner(var.value.as_str(), vars, expanding)?;
+                    expanding.pop();
+                    &recursive_result
+                } else {
+                    &var.value
+                };
+
+                // Apply the substitution reference to the resolved value, if present.
+                let substituted: String;
+                let result: &str = match &subst {
+                    Some((from, to)) => {
+                        substituted = substitute_ref(value, from, to);
+                        &substituted
+                    }
+                    None => value,
+                };
+
+                current_buffer = stack.pop().unwrap().previous_buffer;
+                current_buffer.push_str(result);
+                hit_variable = false;
             }
             _ => {
-                // If we hit the variable indicator, then inline expansion since nesting is impossible.
+                // If we hit the variable indicator, then inline expansion since nesting is
+                // impossible.
                 if hit_variable {
                     let eval = &vars.get(c.to_string()).value;
                     current_buffer.push_str(eval);
@@ -172,19 +195,52 @@ fn expand_inner(s: &str, vars: &Vars, expanding: &mut Vec<String>) -> Result<Str
     }
 }
 
-/// Dispatch a make function call. Returns `None` if `name` is not a known function (so the caller
-/// falls back to treating the expression as a variable reference). Arguments arrive expanded.
-fn call_function(name: &str, args: &str) -> Option<String> {
-    match name {
-        "wildcard" => Some(wildcard(args)),
-        _ => None,
-    }
+/// The number of comma-separated arguments a function takes, or `None` if `name` is not a known
+/// function (so the caller falls back to a variable reference). The last argument absorbs any
+/// extra commas.
+fn function_arity(name: &str) -> Option<usize> {
+    Some(match name {
+        "subst" | "patsubst" | "wordlist" => 3,
+        "filter" | "filter-out" | "word" | "addprefix" | "addsuffix" | "join" => 2,
+        "wildcard" | "strip" | "sort" | "words" | "firstword" | "lastword" | "dir" | "notdir"
+        | "basename" | "suffix" => 1,
+        _ => return None,
+    })
+}
+
+/// Dispatch a make function on its already-split, already-expanded arguments. `name` must be a
+/// known function (see `function_arity`). Errors on invalid input (e.g. a bad `word` index).
+fn call_function(name: &str, args: &[String]) -> Result<String, String> {
+    Ok(match name {
+        "word" => return func_word(args),
+        "wordlist" => return func_wordlist(args),
+        "wildcard" => wildcard(arg(args, 0)),
+        "subst" => func_subst(args),
+        "patsubst" => func_patsubst(args),
+        "strip" => func_strip(arg(args, 0)),
+        "sort" => func_sort(arg(args, 0)),
+        "filter" => func_filter(args, false),
+        "filter-out" => func_filter(args, true),
+        "words" => func_words(arg(args, 0)),
+        "firstword" => func_firstword(arg(args, 0)),
+        "lastword" => func_lastword(arg(args, 0)),
+        "dir" => func_dir(arg(args, 0)),
+        "notdir" => func_notdir(arg(args, 0)),
+        "basename" => func_basename(arg(args, 0)),
+        "suffix" => func_suffix(arg(args, 0)),
+        "addprefix" => func_addprefix(args),
+        "addsuffix" => func_addsuffix(args),
+        "join" => func_join(args),
+        _ => unreachable!("call_function is only invoked for a known function"),
+    })
 }
 
 /// `$(wildcard PATTERN...)`: expand each whitespace-separated glob pattern against the filesystem,
-/// concatenating the (sorted, existing) matches. A pattern that matches nothing contributes nothing.
-fn wildcard(args: &str) -> String {
-    args.split_whitespace()
+/// concatenating the (sorted, existing) matches. A pattern that matches nothing contributes
+/// nothing.
+fn wildcard(patterns: &str) -> String {
+    patterns
+        .split_whitespace()
         .flat_map(crate::glob::glob)
         .collect::<Vec<_>>()
         .join(" ")
@@ -199,31 +255,253 @@ fn substitute_ref(value: &str, from: &str, to: &str) -> String {
         .join(" ")
 }
 
-/// Substitute one word. If `from` contains `%`, it is a pattern (prefix `%` suffix) whose stem is
-/// substituted into `to`'s `%`; otherwise `from` is a suffix replaced by `to`. A word that does not
-/// match is returned unchanged.
+/// Substitute one word for a substitution reference. If `from` contains `%`, it is a pattern whose
+/// stem is substituted into `to`'s `%`; otherwise `from` is a suffix replaced by `to`. A word that
+/// does not match is returned unchanged.
 fn substitute_word(word: &str, from: &str, to: &str) -> String {
-    match from.find('%') {
-        Some(pct) => {
-            let (prefix, suffix) = (&from[..pct], &from[pct + 1..]);
-            if word.len() >= prefix.len() + suffix.len()
-                && word.starts_with(prefix)
-                && word.ends_with(suffix)
-            {
-                let stem = &word[prefix.len()..word.len() - suffix.len()];
-                match to.find('%') {
-                    Some(tpct) => format!("{}{stem}{}", &to[..tpct], &to[tpct + 1..]),
-                    None => to.to_string(),
-                }
-            } else {
-                word.to_string()
-            }
+    if from.contains('%') {
+        match pattern_stem(from, word) {
+            Some(stem) => subst_stem(to, stem),
+            None => word.to_string(),
         }
-        None => match word.strip_suffix(from) {
+    } else {
+        match word.strip_suffix(from) {
             Some(prefix) => format!("{prefix}{to}"),
             None => word.to_string(),
-        },
+        }
     }
+}
+
+/// If `word` matches the `%` pattern `pat` (which must contain a `%`), return the matched stem.
+fn pattern_stem<'a>(pat: &str, word: &'a str) -> Option<&'a str> {
+    let pct = pat.find('%')?;
+    let (prefix, suffix) = (&pat[..pct], &pat[pct + 1..]);
+    if word.len() >= prefix.len() + suffix.len()
+        && word.starts_with(prefix)
+        && word.ends_with(suffix)
+    {
+        Some(&word[prefix.len()..word.len() - suffix.len()])
+    } else {
+        None
+    }
+}
+
+/// Substitute `stem` into the `%` of `to` (or return `to` unchanged when it has no `%`).
+fn subst_stem(to: &str, stem: &str) -> String {
+    match to.find('%') {
+        Some(tpct) => format!("{}{stem}{}", &to[..tpct], &to[tpct + 1..]),
+        None => to.to_string(),
+    }
+}
+
+/// Whether `word` matches `pattern`: a `%` pattern (any stem) or, without `%`, an exact match.
+fn word_matches(pattern: &str, word: &str) -> bool {
+    if pattern.contains('%') {
+        pattern_stem(pattern, word).is_some()
+    } else {
+        pattern == word
+    }
+}
+
+/// Split `s` into at most `max` comma-separated arguments, ignoring commas nested inside
+/// `(...)`/`{...}`. The final argument keeps any remaining commas (matching GNU make).
+fn split_function_args(s: &str, max: usize) -> Vec<&str> {
+    let mut args = Vec::new();
+    let mut depth: i32 = 0;
+    let mut start = 0;
+    for (i, c) in s.char_indices() {
+        if args.len() + 1 == max {
+            break;
+        }
+        match c {
+            '(' | '{' => depth += 1,
+            ')' | '}' => depth -= 1,
+            ',' if depth == 0 => {
+                args.push(&s[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    args.push(&s[start..]);
+    args
+}
+
+/// Fetch argument `i` (0-based) from a split argument list, or `""` if absent.
+fn arg(args: &[String], i: usize) -> &str {
+    args.get(i).map(String::as_str).unwrap_or("")
+}
+
+/// `$(subst FROM,TO,TEXT)`: replace every occurrence of the literal `FROM` with `TO`.
+fn func_subst(args: &[String]) -> String {
+    let (from, to, text) = (arg(args, 0), arg(args, 1), arg(args, 2));
+    if from.is_empty() {
+        // GNU appends `to` once when `from` is empty (rather than inserting between every char).
+        format!("{text}{to}")
+    } else {
+        text.replace(from, to)
+    }
+}
+
+/// `$(patsubst PATTERN,REPLACEMENT,TEXT)`: per word, replace a match of `PATTERN` (with `%`, else
+/// an exact word) by `REPLACEMENT`.
+fn func_patsubst(args: &[String]) -> String {
+    let (pattern, replacement, text) = (arg(args, 0), arg(args, 1), arg(args, 2));
+    map_words(text, |word| {
+        if pattern.contains('%') {
+            match pattern_stem(pattern, word) {
+                Some(stem) => subst_stem(replacement, stem),
+                None => word.to_string(),
+            }
+        } else if word == pattern {
+            replacement.to_string()
+        } else {
+            word.to_string()
+        }
+    })
+}
+
+/// `$(strip TEXT)`: collapse runs of whitespace to a single space and trim the ends.
+fn func_strip(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// `$(sort LIST)`: sort words and remove duplicates.
+fn func_sort(list: &str) -> String {
+    let mut words: Vec<&str> = list.split_whitespace().collect();
+    words.sort_unstable();
+    words.dedup();
+    words.join(" ")
+}
+
+/// `$(filter PATTERNS,TEXT)` / `$(filter-out PATTERNS,TEXT)`: keep (or drop) words matching any
+/// pattern.
+fn func_filter(args: &[String], out: bool) -> String {
+    let (patterns, text) = (arg(args, 0), arg(args, 1));
+    let patterns: Vec<&str> = patterns.split_whitespace().collect();
+    text.split_whitespace()
+        .filter(|word| patterns.iter().any(|p| word_matches(p, word)) != out)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// `$(words TEXT)`: the number of words.
+fn func_words(text: &str) -> String {
+    text.split_whitespace().count().to_string()
+}
+
+/// `$(word N,TEXT)`: the Nth word (1-based). Errors on a non-numeric or zero index, like GNU make.
+fn func_word(args: &[String]) -> Result<String, String> {
+    let n = word_index("word", arg(args, 0))?;
+    Ok(arg(args, 1)
+        .split_whitespace()
+        .nth(n - 1)
+        .unwrap_or("")
+        .to_string())
+}
+
+/// `$(wordlist S,E,TEXT)`: words S through E inclusive (1-based). `E` before `S` yields nothing.
+fn func_wordlist(args: &[String]) -> Result<String, String> {
+    let start = word_index("wordlist", arg(args, 0))?;
+    let end = word_index("wordlist", arg(args, 1))?;
+    if end < start {
+        return Ok(String::new());
+    }
+    Ok(arg(args, 2)
+        .split_whitespace()
+        .skip(start - 1)
+        .take(end - start + 1)
+        .collect::<Vec<_>>()
+        .join(" "))
+}
+
+/// Parse a 1-based word index for `word`/`wordlist`, erroring on a non-numeric or zero value.
+fn word_index(func: &str, value: &str) -> Result<usize, String> {
+    let value = value.trim();
+    let n: usize = value
+        .parse()
+        .map_err(|_| format!("invalid first argument to '{func}' function: '{value}'."))?;
+    if n == 0 {
+        return Err(format!(
+            "first argument to '{func}' function must be greater than 0."
+        ));
+    }
+    Ok(n)
+}
+
+/// `$(firstword TEXT)` / `$(lastword TEXT)`.
+fn func_firstword(text: &str) -> String {
+    text.split_whitespace().next().unwrap_or("").to_string()
+}
+fn func_lastword(text: &str) -> String {
+    text.split_whitespace()
+        .next_back()
+        .unwrap_or("")
+        .to_string()
+}
+
+/// `$(dir NAMES)`: the directory part of each word (up to and including the last `/`), or `./`.
+fn func_dir(args: &str) -> String {
+    map_words(args, |word| match word.rfind('/') {
+        Some(i) => word[..=i].to_string(),
+        None => "./".to_string(),
+    })
+}
+
+/// `$(notdir NAMES)`: the part of each word after the last `/`.
+fn func_notdir(args: &str) -> String {
+    map_words(args, |word| match word.rfind('/') {
+        Some(i) => word[i + 1..].to_string(),
+        None => word.to_string(),
+    })
+}
+
+/// `$(basename NAMES)`: each word without its suffix (the last `.` in the final path component).
+fn func_basename(args: &str) -> String {
+    map_words(args, |word| {
+        let base = word.rfind('/').map_or(0, |i| i + 1);
+        match word[base..].rfind('.') {
+            Some(dot) => word[..base + dot].to_string(),
+            None => word.to_string(),
+        }
+    })
+}
+
+/// `$(suffix NAMES)`: the suffix of each word (from the last `.`); words with no suffix contribute
+/// nothing.
+fn func_suffix(args: &str) -> String {
+    args.split_whitespace()
+        .filter_map(|word| {
+            let base = word.rfind('/').map_or(0, |i| i + 1);
+            word[base..].rfind('.').map(|dot| &word[base + dot..])
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// `$(addprefix PREFIX,NAMES)` / `$(addsuffix SUFFIX,NAMES)`.
+fn func_addprefix(args: &[String]) -> String {
+    let prefix = arg(args, 0);
+    map_words(arg(args, 1), |word| format!("{prefix}{word}"))
+}
+fn func_addsuffix(args: &[String]) -> String {
+    let suffix = arg(args, 0);
+    map_words(arg(args, 1), |word| format!("{word}{suffix}"))
+}
+
+/// `$(join LIST1,LIST2)`: concatenate the two lists word by word; extra words pass through.
+fn func_join(args: &[String]) -> String {
+    let w1: Vec<&str> = arg(args, 0).split_whitespace().collect();
+    let w2: Vec<&str> = arg(args, 1).split_whitespace().collect();
+    (0..w1.len().max(w2.len()))
+        .map(|i| format!("{}{}", w1.get(i).unwrap_or(&""), w2.get(i).unwrap_or(&"")))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Apply `f` to each whitespace-separated word of `text`, joining the results with a single space.
+fn map_words(text: &str, f: impl Fn(&str) -> String) -> String {
+    text.split_whitespace().map(f).collect::<Vec<_>>().join(" ")
 }
 
 #[cfg(test)]
@@ -396,5 +674,67 @@ mod tests {
         vars.set("B", "$(C)", true).unwrap();
         vars.set("C", "$(B)", true).unwrap();
         assert!(expand("$(B)", &vars).is_err());
+    }
+
+    #[test]
+    fn test_text_functions() {
+        let vars = Vars::new([("SRCS", "a.c b.c c.h")]);
+        let e = |s: &str| expand(s, &vars).unwrap();
+
+        assert_eq!(e("$(subst ee,EE,feet street)"), "fEEt strEEt");
+        assert_eq!(e("$(subst ,X,abc)"), "abcX");
+        assert_eq!(e("$(patsubst %.c,%.o,a.c b.c c.h)"), "a.o b.o c.h");
+        assert_eq!(e("$(patsubst foo,bar,foo baz)"), "bar baz");
+        assert_eq!(e("$(strip   a   b  )"), "a b");
+        assert_eq!(e("$(sort foo bar foo baz)"), "bar baz foo");
+        assert_eq!(e("$(filter %.c,$(SRCS))"), "a.c b.c");
+        assert_eq!(e("$(filter-out %.c,$(SRCS))"), "c.h");
+        assert_eq!(e("$(words $(SRCS))"), "3");
+        assert_eq!(e("$(word 2,a b c)"), "b");
+        assert_eq!(e("$(word 9,a b c)"), "");
+        assert_eq!(e("$(wordlist 2,3,a b c d)"), "b c");
+        assert_eq!(e("$(firstword $(SRCS))"), "a.c");
+        assert_eq!(e("$(lastword $(SRCS))"), "c.h");
+        assert_eq!(e("$(dir src/x.c y.c)"), "src/ ./");
+        assert_eq!(e("$(notdir src/x.c y.c)"), "x.c y.c");
+        assert_eq!(e("$(basename src/x.tar.gz y)"), "src/x.tar y");
+        assert_eq!(e("$(suffix src/x.c y)"), ".c");
+        assert_eq!(e("$(addprefix -I,inc lib)"), "-Iinc -Ilib");
+        assert_eq!(e("$(addsuffix .o,a b)"), "a.o b.o");
+        assert_eq!(e("$(join a b c,1 2)"), "a1 b2 c");
+    }
+
+    #[test]
+    fn test_nested_functions() {
+        let vars = Vars::new([("SRCS", "src/a.c src/b.c inc/c.h")]);
+        // Functions compose: filter the .c sources, then map them to .o via patsubst.
+        assert_eq!(
+            expand("$(patsubst %.c,%.o,$(filter %.c,$(SRCS)))", &vars).unwrap(),
+            "src/a.o src/b.o"
+        );
+        // An unknown "function" name falls back to a (here empty) variable reference.
+        assert_eq!(expand("$(notafunc a b)", &vars).unwrap(), "");
+    }
+
+    #[test]
+    fn test_function_argument_parsing() {
+        // A comma produced by expansion is NOT an argument separator: arguments are split from the
+        // raw text before expansion (the classic `$(comma)` idiom).
+        let vars = Vars::new([("comma", ",")]);
+        assert_eq!(expand("$(subst $(comma),X,a,b)", &vars).unwrap(), "aXb");
+
+        // Literal parentheses protect their commas and do not end the expression early.
+        let vars = Vars::new([]);
+        assert_eq!(expand("$(subst (a,b),Z,x(a,b)y)", &vars).unwrap(), "xZy");
+
+        // Trailing whitespace in the last argument is significant.
+        assert_eq!(expand("$(subst a,b,a )", &vars).unwrap(), "b ");
+
+        // `word`/`wordlist` abort on a non-numeric or zero index (like GNU make).
+        assert!(expand("$(word 0,a b)", &vars).is_err());
+        assert!(expand("$(word x,a b)", &vars).is_err());
+        assert!(expand("$(wordlist 0,2,a b)", &vars).is_err());
+        // A valid but out-of-range index is empty, not an error.
+        assert_eq!(expand("$(word 9,a b)", &vars).unwrap(), "");
     }
 }
