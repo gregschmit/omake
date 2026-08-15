@@ -11,6 +11,9 @@ pub struct Opts {
     /// Don't execute recipes; just print them.
     pub just_print: bool,
 
+    /// Continue building unrelated targets after a recipe fails (`-k`).
+    pub keep_going: bool,
+
     /// Consider FILE to be very old and do not remake it.
     pub old_file: Vec<String>,
 

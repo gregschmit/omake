@@ -334,6 +334,14 @@ impl RuleMap {
             // Top-level targets have no parent edge (they cannot be circular on first entry).
             self.execute_target(makefile, target, "", &mut state)?;
         }
+
+        // Under `--keep-going` failures are recorded rather than propagated, so report them now.
+        if !state.failed.is_empty() {
+            return Err(MakeError::new(
+                "Some targets were not remade because of errors.",
+                Context::new(),
+            ));
+        }
         Ok(())
     }
 
@@ -364,10 +372,20 @@ impl RuleMap {
         let result = self.build_target(makefile, target, state);
 
         state.in_progress.remove(target);
-        if result.is_ok() {
-            state.done.insert(target.to_string());
+        match result {
+            Ok(()) => {
+                state.done.insert(target.to_string());
+                Ok(())
+            }
+            // Under `--keep-going`, report the failure but continue building unrelated targets.
+            Err(e) if makefile.opts.keep_going => {
+                makefile.logger.error(&e.msg, Some(&e.context));
+                state.failed.insert(target.to_string());
+                state.done.insert(target.to_string());
+                Ok(())
+            }
+            Err(e) => Err(e),
         }
-        result
     }
 
     /// The core build logic for one target: resolve prerequisites, then run recipes if out of date.
@@ -424,6 +442,7 @@ impl RuleMap {
             // earlier rule for the same target.
             let target_mtime_opt = makefile.get_mtime(target);
             let mut should_execute = makefile.opts.always_make;
+            let mut prereq_failed = false;
 
             // Check (and possibly execute) prereqs.
             for prereq in &rule.prerequisites {
@@ -448,10 +467,26 @@ impl RuleMap {
                         }
                     }
                 }
+
+                // Under `--keep-going`, a failed prerequisite is recorded rather than propagated, so
+                // check for it here — this target can't be built if any prerequisite failed.
+                if state.failed.contains(prereq) {
+                    prereq_failed = true;
+                }
             }
 
             // Order-only prerequisites are made if missing but never force a rebuild.
             self.make_order_only(makefile, &rule.order_only, target, state)?;
+            if rule.order_only.iter().any(|p| state.failed.contains(p)) {
+                prereq_failed = true;
+            }
+
+            if prereq_failed {
+                return Err(MakeError::new(
+                    &format!("Target '{target}' not remade because of errors."),
+                    Context::new(),
+                ));
+            }
 
             if target_mtime_opt.is_none() || should_execute {
                 rule.execute(makefile, target, "")?;
@@ -553,6 +588,19 @@ impl RuleMap {
 
         self.make_order_only(makefile, &order_only, target, state)?;
 
+        // Under `--keep-going`, a failed prerequisite is recorded rather than propagated, so this
+        // target must not be built if any (normal or order-only) prerequisite failed.
+        if prereqs
+            .iter()
+            .chain(&order_only)
+            .any(|p| state.failed.contains(p))
+        {
+            return Err(MakeError::new(
+                &format!("Target '{target}' not remade because of errors."),
+                Context::new(),
+            ));
+        }
+
         if target_mtime.is_none() || should_execute {
             let rule = Rule {
                 targets: vec![target.to_string()],
@@ -592,4 +640,6 @@ struct ExecState {
     in_progress: HashSet<String>,
     /// Targets already resolved this run, so a shared prerequisite is built at most once.
     done: HashSet<String>,
+    /// Targets that failed to build (only used under `--keep-going`, which continues past errors).
+    failed: HashSet<String>,
 }

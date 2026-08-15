@@ -45,6 +45,10 @@ pub struct Args {
     #[arg(short, long)]
     pub ignore_errors: bool,
 
+    /// Continue as much as possible after an error.
+    #[arg(short, long)]
+    pub keep_going: bool,
+
     /// Don't execute recipes; just print them.
     #[arg(
         short = 'n',
@@ -79,6 +83,7 @@ impl From<Args> for Opts {
             always_make: args.always_make,
             ignore_errors: args.ignore_errors,
             just_print: args.just_print,
+            keep_going: args.keep_going,
             old_file: args.old_file,
             new_file: args.new_file,
         }
