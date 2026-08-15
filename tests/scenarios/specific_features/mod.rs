@@ -6,6 +6,8 @@ mod t14_circular;
 mod t15_silent_ignore;
 mod t16_default;
 mod t17_phony;
+mod t18_pattern_rule;
+mod t19_pattern_chain;
 mod t1_custom_recipe_prefix;
 mod t2_always_make;
 mod t3_old_files;

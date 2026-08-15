@@ -7,6 +7,9 @@ use super::{Context, Logger, MakeError, Makefile};
 use crate::expand::expand;
 use crate::vars::Vars;
 
+/// Maximum length of a chained implicit-rule search (e.g. `%.o: %.c` then `%.c: %.y`).
+const PATTERN_CHAIN_LIMIT: usize = 16;
+
 /// A parsed rule from a makefile.
 #[derive(Debug, Clone)]
 pub struct Rule {
@@ -19,15 +22,17 @@ pub struct Rule {
 
 impl Rule {
     /// Execute this rule's recipe for a specific `target` (one rule may have several targets, and
-    /// automatic variables like `$@` depend on which one is being built).
+    /// automatic variables like `$@` depend on which one is being built). `stem` is the `%` match
+    /// for a pattern rule (used for `$*`); it is empty for explicit rules.
     pub fn execute<L: Logger>(
         &self,
         makefile: &Makefile<L>,
         target: &str,
+        stem: &str,
     ) -> Result<(), MakeError> {
         // Build a per-target variable scope: the makefile's variables plus automatic variables.
         let mut vars = makefile.vars.clone();
-        self.set_automatic_vars(&mut vars, makefile, target);
+        self.set_automatic_vars(&mut vars, makefile, target, stem);
 
         let shell = vars.get("SHELL").value.clone();
         let shell_flags = vars
@@ -106,8 +111,14 @@ impl Rule {
         Ok(())
     }
 
-    /// Populate `vars` with the automatic variables for building `target`.
-    fn set_automatic_vars<L: Logger>(&self, vars: &mut Vars, makefile: &Makefile<L>, target: &str) {
+    /// Populate `vars` with the automatic variables for building `target` (with `stem` as `$*`).
+    fn set_automatic_vars<L: Logger>(
+        &self,
+        vars: &mut Vars,
+        makefile: &Makefile<L>,
+        target: &str,
+        stem: &str,
+    ) {
         // `$@`: the target being built.
         let _ = vars.set("@", target, false);
 
@@ -148,9 +159,8 @@ impl Rule {
             .join(" ");
         let _ = vars.set("?", newer.as_str(), false);
 
-        // `$*`: the stem. Only meaningful for pattern/suffix rules (not yet implemented), so it is
-        // left empty for explicit rules.
-        let _ = vars.set("*", "", false);
+        // `$*`: the stem matched by a pattern rule's `%` (empty for explicit rules).
+        let _ = vars.set("*", stem, false);
 
         // Directory/file parts of `$@` and `$<`.
         let (at_dir, at_file) = split_dir_file(target);
@@ -171,6 +181,38 @@ fn split_dir_file(path: &str) -> (String, String) {
     }
 }
 
+/// A pattern rule (e.g. `%.o: %.c`). The target pattern is split around its single `%` into a
+/// prefix and suffix; the stem is whatever `%` matched.
+#[derive(Debug, Clone)]
+struct PatternRule {
+    target_prefix: String,
+    target_suffix: String,
+    /// Prerequisite patterns; a `%` in one is replaced by the matched stem.
+    prereq_patterns: Vec<String>,
+    recipe: Vec<String>,
+    context: Context,
+}
+
+impl PatternRule {
+    /// If `target` matches this rule's target pattern, return the stem that `%` matched.
+    fn match_stem<'a>(&self, target: &'a str) -> Option<&'a str> {
+        if target.len() < self.target_prefix.len() + self.target_suffix.len() {
+            return None;
+        }
+        target
+            .strip_prefix(&self.target_prefix)?
+            .strip_suffix(&self.target_suffix)
+    }
+
+    /// The concrete prerequisites for a given `stem`.
+    fn prerequisites(&self, stem: &str) -> Vec<String> {
+        self.prereq_patterns
+            .iter()
+            .map(|p| p.replace('%', stem))
+            .collect()
+    }
+}
+
 /// Wrapper for a mapping of targets to rules, and with a facility to execute targets.
 #[derive(Debug)]
 pub struct RuleMap {
@@ -180,6 +222,9 @@ pub struct RuleMap {
 
     /// Map targets (strings) to the rules which reference them by index into `self.rules`.
     by_target: HashMap<String, Vec<usize>>,
+
+    /// Pattern rules (targets containing `%`), tried in order when no explicit rule matches.
+    pattern_rules: Vec<PatternRule>,
 }
 
 /// Note that methods on `RuleMap` MUST ensure that only new entries are added to either `rules` or
@@ -196,11 +241,28 @@ impl RuleMap {
         Self {
             rules: vec![],
             by_target: HashMap::new(),
+            pattern_rules: vec![],
         }
     }
 
     /// Insert a rule, update the `by_target` hashmap, and validate the rule.
     pub fn insert<L: Logger>(&mut self, rule: Rule, logger: &L) -> Result<(), MakeError> {
+        // A rule with a `%` target is a pattern rule, stored separately from exact-match rules.
+        if rule.targets.iter().any(|t| t.contains('%')) {
+            for target in &rule.targets {
+                if let Some(pct) = target.find('%') {
+                    self.pattern_rules.push(PatternRule {
+                        target_prefix: target[..pct].to_string(),
+                        target_suffix: target[pct + 1..].to_string(),
+                        prereq_patterns: rule.prerequisites.clone(),
+                        recipe: rule.recipe.clone(),
+                        context: rule.context.clone(),
+                    });
+                }
+            }
+            return Ok(());
+        }
+
         // Load rule into the storage vector and get a reference to it and the insertion index.
         let index = self.rules.len();
         self.rules.push(rule);
@@ -292,9 +354,13 @@ impl RuleMap {
         let rule_indices = match self.by_target.get(target) {
             Some(indices) => indices,
             None => {
-                // No explicit rule. An existing file is a source and is up to date; a target
-                // declared only via `.PHONY` is a valid empty target; otherwise fall back to the
-                // `.DEFAULT` recipe, or error if there is none.
+                // No explicit rule. Try pattern rules first (they can rebuild an existing target
+                // when a prerequisite is newer).
+                if let Some((idx, stem)) = self.match_pattern_rule(makefile, target) {
+                    return self.build_from_pattern(makefile, target, idx, &stem, state);
+                }
+                // An existing file is a source and is up to date; a target declared only via
+                // `.PHONY` is a valid empty target; otherwise fall back to `.DEFAULT`, or error.
                 if makefile.get_mtime(target).is_some() || makefile.is_phony(target) {
                     return Ok(());
                 }
@@ -307,7 +373,7 @@ impl RuleMap {
                         context: Context::new(),
                         double_colon: false,
                     };
-                    return rule.execute(makefile, target);
+                    return rule.execute(makefile, target, "");
                 }
                 return Err(MakeError::new(
                     &format!("No rule to make target '{target}'."),
@@ -358,7 +424,7 @@ impl RuleMap {
             }
 
             if target_mtime_opt.is_none() || should_execute {
-                rule.execute(makefile, target)?;
+                rule.execute(makefile, target, "")?;
                 executed = true;
             }
         }
@@ -368,6 +434,99 @@ impl RuleMap {
                 &format!("Target '{target}' is up to date."),
                 Some(&Context::new()),
             );
+        }
+
+        Ok(())
+    }
+
+    /// Find the first pattern rule whose target pattern matches `target` and whose (stem-expanded)
+    /// prerequisites can all be made. Returns the rule's index and the matched stem.
+    fn match_pattern_rule<L: Logger>(
+        &self,
+        makefile: &Makefile<L>,
+        target: &str,
+    ) -> Option<(usize, String)> {
+        for (idx, prule) in self.pattern_rules.iter().enumerate() {
+            if let Some(stem) = prule.match_stem(target) {
+                let prereqs = prule.prerequisites(stem);
+                if prereqs
+                    .iter()
+                    .all(|p| self.can_be_made(makefile, p, PATTERN_CHAIN_LIMIT))
+                {
+                    return Some((idx, stem.to_string()));
+                }
+            }
+        }
+        None
+    }
+
+    /// Whether `name` can serve as a prerequisite when choosing a pattern rule: it already exists,
+    /// has an explicit rule, is phony, or can be produced by another pattern rule (chained implicit
+    /// rules, e.g. `%.o: %.c` with `%.c: %.y`). `depth` bounds the chain to avoid infinite recursion.
+    fn can_be_made<L: Logger>(&self, makefile: &Makefile<L>, name: &str, depth: usize) -> bool {
+        if makefile.get_mtime(name).is_some()
+            || self.by_target.contains_key(name)
+            || makefile.is_phony(name)
+        {
+            return true;
+        }
+        if depth == 0 {
+            return false;
+        }
+        self.pattern_rules
+            .iter()
+            .any(|prule| match prule.match_stem(name) {
+                Some(stem) => prule
+                    .prerequisites(stem)
+                    .iter()
+                    .all(|p| self.can_be_made(makefile, p, depth - 1)),
+                None => false,
+            })
+    }
+
+    /// Build `target` using the pattern rule at `idx` with the given `stem`.
+    fn build_from_pattern<L: Logger>(
+        &self,
+        makefile: &Makefile<L>,
+        target: &str,
+        idx: usize,
+        stem: &str,
+        state: &mut ExecState,
+    ) -> Result<(), MakeError> {
+        let prule = &self.pattern_rules[idx];
+        let prereqs = prule.prerequisites(stem);
+        let target_mtime = makefile.get_mtime(target);
+        let mut should_execute = makefile.opts.always_make;
+
+        for prereq in &prereqs {
+            if makefile.opts.always_make {
+                self.execute_target(makefile, prereq, target, state)?;
+            } else {
+                match makefile.get_mtime(prereq) {
+                    None => {
+                        self.execute_target(makefile, prereq, target, state)?;
+                        should_execute = true;
+                    }
+                    Some(prereq_mtime) => {
+                        if let Some(tm) = target_mtime
+                            && prereq_mtime > tm
+                        {
+                            should_execute = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        if target_mtime.is_none() || should_execute {
+            let rule = Rule {
+                targets: vec![target.to_string()],
+                prerequisites: prereqs,
+                recipe: prule.recipe.clone(),
+                context: prule.context.clone(),
+                double_colon: false,
+            };
+            rule.execute(makefile, target, stem)?;
         }
 
         Ok(())
