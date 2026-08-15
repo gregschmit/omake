@@ -15,6 +15,8 @@ const PATTERN_CHAIN_LIMIT: usize = 16;
 pub struct Rule {
     pub targets: Vec<String>,
     pub prerequisites: Vec<String>,
+    /// Order-only prerequisites (after `|`): made if missing, but their mtime never forces a rebuild.
+    pub order_only: Vec<String>,
     pub recipe: Vec<String>,
     pub context: Context,
     pub double_colon: bool,
@@ -159,6 +161,10 @@ impl Rule {
             .join(" ");
         let _ = vars.set("?", newer.as_str(), false);
 
+        // `$|`: the order-only prerequisites.
+        let order_only = self.order_only.join(" ");
+        let _ = vars.set("|", order_only.as_str(), false);
+
         // `$*`: the stem matched by a pattern rule's `%` (empty for explicit rules).
         let _ = vars.set("*", stem, false);
 
@@ -189,6 +195,8 @@ struct PatternRule {
     target_suffix: String,
     /// Prerequisite patterns; a `%` in one is replaced by the matched stem.
     prereq_patterns: Vec<String>,
+    /// Order-only prerequisite patterns.
+    order_only_patterns: Vec<String>,
     recipe: Vec<String>,
     context: Context,
 }
@@ -207,6 +215,14 @@ impl PatternRule {
     /// The concrete prerequisites for a given `stem`.
     fn prerequisites(&self, stem: &str) -> Vec<String> {
         self.prereq_patterns
+            .iter()
+            .map(|p| p.replace('%', stem))
+            .collect()
+    }
+
+    /// The concrete order-only prerequisites for a given `stem`.
+    fn order_only(&self, stem: &str) -> Vec<String> {
+        self.order_only_patterns
             .iter()
             .map(|p| p.replace('%', stem))
             .collect()
@@ -255,6 +271,7 @@ impl RuleMap {
                         target_prefix: target[..pct].to_string(),
                         target_suffix: target[pct + 1..].to_string(),
                         prereq_patterns: rule.prerequisites.clone(),
+                        order_only_patterns: rule.order_only.clone(),
                         recipe: rule.recipe.clone(),
                         context: rule.context.clone(),
                     });
@@ -369,6 +386,7 @@ impl RuleMap {
                     let rule = Rule {
                         targets: vec![target.to_string()],
                         prerequisites: vec![],
+                        order_only: vec![],
                         recipe: default.to_vec(),
                         context: Context::new(),
                         double_colon: false,
@@ -423,6 +441,9 @@ impl RuleMap {
                 }
             }
 
+            // Order-only prerequisites are made if missing but never force a rebuild.
+            self.make_order_only(makefile, &rule.order_only, target, state)?;
+
             if target_mtime_opt.is_none() || should_execute {
                 rule.execute(makefile, target, "")?;
                 executed = true;
@@ -449,8 +470,10 @@ impl RuleMap {
         for (idx, prule) in self.pattern_rules.iter().enumerate() {
             if let Some(stem) = prule.match_stem(target) {
                 let prereqs = prule.prerequisites(stem);
+                let order_only = prule.order_only(stem);
                 if prereqs
                     .iter()
+                    .chain(&order_only)
                     .all(|p| self.can_be_made(makefile, p, PATTERN_CHAIN_LIMIT))
                 {
                     return Some((idx, stem.to_string()));
@@ -495,6 +518,7 @@ impl RuleMap {
     ) -> Result<(), MakeError> {
         let prule = &self.pattern_rules[idx];
         let prereqs = prule.prerequisites(stem);
+        let order_only = prule.order_only(stem);
         let target_mtime = makefile.get_mtime(target);
         let mut should_execute = makefile.opts.always_make;
 
@@ -518,10 +542,13 @@ impl RuleMap {
             }
         }
 
+        self.make_order_only(makefile, &order_only, target, state)?;
+
         if target_mtime.is_none() || should_execute {
             let rule = Rule {
                 targets: vec![target.to_string()],
                 prerequisites: prereqs,
+                order_only,
                 recipe: prule.recipe.clone(),
                 context: prule.context.clone(),
                 double_colon: false,
@@ -529,6 +556,22 @@ impl RuleMap {
             rule.execute(makefile, target, stem)?;
         }
 
+        Ok(())
+    }
+
+    /// Bring order-only prerequisites up to date. They are resolved like any other prerequisite;
+    /// "order-only" only means their timestamp does not force the parent target to rebuild (handled
+    /// by the caller not consulting their mtime).
+    fn make_order_only<L: Logger>(
+        &self,
+        makefile: &Makefile<L>,
+        order_only: &[String],
+        parent: &str,
+        state: &mut ExecState,
+    ) -> Result<(), MakeError> {
+        for prereq in order_only {
+            self.execute_target(makefile, prereq, parent, state)?;
+        }
         Ok(())
     }
 }

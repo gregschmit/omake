@@ -297,17 +297,27 @@ impl<L: Logger> Makefile<L> {
                 r
             });
 
+            // A `|` separates normal prerequisites from order-only ones.
+            let (normal_deps, order_deps) = match deps.split_once('|') {
+                Some((n, o)) => (n, o),
+                None => (deps, ""),
+            };
+            let expand_list = |s: &str| -> Result<Vec<String>, MakeError> {
+                Ok(expand(s, &self.vars)
+                    .map_err(|e| MakeError::new(&e, self.context.clone()))?
+                    .split_whitespace()
+                    .map(|s| s.to_string())
+                    .collect())
+            };
+
             self.current_rule = Some(Rule {
                 targets: expand(targets, &self.vars)
                     .map_err(|e| MakeError::new(&e, self.context.clone()))?
                     .split_whitespace()
                     .map(|s| s.to_string())
                     .collect(),
-                prerequisites: expand(deps, &self.vars)
-                    .map_err(|e| MakeError::new(&e, self.context.clone()))?
-                    .split_whitespace()
-                    .map(|s| s.to_string())
-                    .collect(),
+                prerequisites: expand_list(normal_deps)?,
+                order_only: expand_list(order_deps)?,
                 recipe: vec![],
                 context: self.context.clone(),
                 double_colon,
