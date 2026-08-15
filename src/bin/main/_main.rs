@@ -13,7 +13,7 @@ use clap::Parser;
 
 use args::Args;
 
-use omake::{Context, DefaultLogger, Env, Logger, Makefile};
+use omake::{Context, DefaultLogger, Env, Logger, Makefile, Vars};
 
 /// An ordered list of filenames used to search for a makefile.
 const MAKEFILE_SEARCH: [&str; 6] = [
@@ -72,6 +72,23 @@ fn find_makefile() -> Option<PathBuf> {
     None
 }
 
+/// The program's own invocation path, for `$(MAKE)`. A relative path that contains a separator is
+/// made absolute against the current directory (so it survives a later `-C` chdir); a bare
+/// PATH-resolved name (e.g. `omake`) is left as-is. We avoid `current_exe` because, at least on
+/// Linux, it resolves symlinks, which is not what we want.
+fn resolve_make_path() -> String {
+    let argv0 = env::args().next().unwrap_or_else(|| "omake".to_string());
+    let path = PathBuf::from(&argv0);
+
+    if path.is_relative()
+        && argv0.contains(std::path::MAIN_SEPARATOR)
+        && let Ok(cwd) = env::current_dir()
+    {
+        return cwd.join(path).to_string_lossy().into_owned();
+    }
+    argv0
+}
+
 /// Print an error message and exit with code 2.
 fn exit_with(logger: &DefaultLogger, msg: &str, context: Option<Context>) -> ! {
     logger.error(msg, context.as_ref());
@@ -86,6 +103,10 @@ fn main() {
         println!("{LICENSE}");
         return;
     }
+
+    // Resolve the program's own path for `$(MAKE)` before any `-C` chdir, so a relative invocation
+    // path stays valid when a recipe recurses from another directory.
+    let make_path = resolve_make_path();
 
     // Change to another directory, if specified by the arguments.
     let original_dir = if args.directory.is_empty() {
@@ -113,25 +134,12 @@ fn main() {
         Some(ref file) => PathBuf::from(file),
     };
 
-    // TODO: Use `make_path` for sub-make invocations. Use `make_name` for logging rather than the
-    // hardcoded `make`.
-    //
-    // // Determine how the current program was invoked. Note that we do not use `current_exe` because,
-    // // at least on Linux, that would resolve symlinks, which is not what we want.
-    // let make_path: String = env::args().next().unwrap();
-    // let make_name: String = PathBuf::from(&make_path)
-    //     .file_name()
-    //     .unwrap()
-    //     .to_string_lossy()
-    //     .into();
+    // Define `MAKE` so recipes can recurse (e.g. `$(MAKE) -C subdir`).
+    let mut vars: Vars = env::vars().collect::<Env>().into();
+    let _ = vars.set("MAKE", make_path.as_str(), false);
 
     // Parse the makefile.
-    let makefile = match Makefile::new(
-        makefile_fn,
-        args.clone().into(),
-        env::vars().collect::<Env>().into(),
-        DefaultLogger {},
-    ) {
+    let makefile = match Makefile::new(makefile_fn, args.clone().into(), vars, DefaultLogger {}) {
         Err(e) => exit_with(&logger, &e.msg, Some(e.context)),
         Ok(m) => m,
     };
