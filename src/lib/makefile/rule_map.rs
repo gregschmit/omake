@@ -313,14 +313,27 @@ impl RuleMap {
         if rule.targets.iter().any(|t| t.contains('%')) {
             for target in &rule.targets {
                 if let Some(pct) = target.find('%') {
-                    self.pattern_rules.push(PatternRule {
+                    let new = PatternRule {
                         target_prefix: target[..pct].to_string(),
                         target_suffix: target[pct + 1..].to_string(),
                         prereq_patterns: rule.prerequisites.clone(),
                         order_only_patterns: rule.order_only.clone(),
                         recipe: rule.recipe.clone(),
                         context: rule.context.clone(),
-                    });
+                    };
+
+                    // A later definition of the same pattern (target + prerequisites) replaces the
+                    // earlier one (GNU: last wins), but a definition with no recipe does not
+                    // override an existing rule.
+                    match self.pattern_rules.iter_mut().find(|p| {
+                        p.target_prefix == new.target_prefix
+                            && p.target_suffix == new.target_suffix
+                            && p.prereq_patterns == new.prereq_patterns
+                    }) {
+                        Some(existing) if !new.recipe.is_empty() => *existing = new,
+                        Some(_) => {}
+                        None => self.pattern_rules.push(new),
+                    }
                 }
             }
             return Ok(());

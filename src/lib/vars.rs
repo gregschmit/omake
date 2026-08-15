@@ -10,8 +10,11 @@
 use std::collections::HashMap;
 
 pub const BAD_VARIABLE_CHARS: [char; 3] = [':', '#', '='];
-pub const DEFAULT_SUFFIXES: [&str; 13] = [
-    ".C", ".F", ".S", ".c", ".cc", ".cpp", ".def", ".f", ".m", ".mod", ".p", ".r", ".s",
+// Target-side suffixes (`.out`, `.a`, `.o`, ...) come first, then source suffixes, matching the
+// conventional default `.SUFFIXES` order used by POSIX/GNU/BSD make.
+pub const DEFAULT_SUFFIXES: [&str; 20] = [
+    ".out", ".a", ".ln", ".o", ".C", ".F", ".S", ".c", ".cc", ".cpp", ".def", ".f", ".m", ".mod",
+    ".p", ".r", ".s", ".y", ".l", ".h",
 ];
 
 /// List of variables where setting the value to blank means to reset it to the default value. All

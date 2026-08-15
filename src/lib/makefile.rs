@@ -79,6 +79,8 @@ pub struct Makefile<L: Logger> {
     unexported: HashSet<String>,
     /// `vpath PATTERN DIRS` directives: directories to search for files matching each pattern.
     vpaths: Vec<(String, Vec<String>)>,
+    /// Known suffixes (from `.SUFFIXES`), used to recognize suffix rules like `.c.o:`.
+    suffixes: Vec<String>,
 
     // Parser state.
     pub vars: Vars,
@@ -102,6 +104,10 @@ impl<L: Logger> Makefile<L> {
             exported: HashSet::new(),
             unexported: HashSet::new(),
             vpaths: Vec::new(),
+            suffixes: crate::vars::DEFAULT_SUFFIXES
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
             vars,
             current_rule: None,
             context: path.clone().into(),
@@ -277,9 +283,13 @@ impl<L: Logger> Makefile<L> {
         let line = strip_inline_comment(&line);
 
         // Anything other than recipe lines terminate a rule definition.
-        if let Some(rule) = self.current_rule.take() {
-            // Collect any special dot-target directives from this rule.
+        if let Some(mut rule) = self.current_rule.take() {
+            // Collect any special dot-target directives from this rule (this may update the suffix
+            // list via `.SUFFIXES`, which the suffix-rule rewrite below then uses).
             self.collect_special_targets(&rule);
+
+            // Rewrite a suffix rule (e.g. `.c.o:`) into the equivalent pattern rule (`%.o: %.c`).
+            self.rewrite_suffix_rule(&mut rule);
 
             // If there is no default target, see if we can assign one.
             if self.default_target.is_none() {
@@ -774,6 +784,21 @@ impl<L: Logger> Makefile<L> {
         dirs
     }
 
+    /// If `rule` is a suffix rule (a single target made of known suffixes, with no prerequisites),
+    /// rewrite it in place to the equivalent pattern rule so the pattern-rule machinery handles it.
+    fn rewrite_suffix_rule(&self, rule: &mut Rule) {
+        if rule.targets.len() != 1 || !rule.prerequisites.is_empty() || !rule.order_only.is_empty()
+        {
+            return;
+        }
+        if let Some((target_pattern, prereq_pattern)) =
+            suffix_rule_patterns(&rule.targets[0], &self.suffixes)
+        {
+            rule.targets = vec![target_pattern];
+            rule.prerequisites = vec![prereq_pattern];
+        }
+    }
+
     /// Record `.PHONY`, `.SILENT`, `.IGNORE`, and `.DEFAULT` directives from a parsed rule.
     fn collect_special_targets(&mut self, rule: &Rule) {
         for target in &rule.targets {
@@ -801,6 +826,14 @@ impl<L: Logger> Makefile<L> {
                     }
                 }
                 ".DEFAULT" => self.special.default_recipe = rule.recipe.clone(),
+                // `.SUFFIXES:` with no prerequisites clears the suffix list; otherwise it appends.
+                ".SUFFIXES" => {
+                    if rule.prerequisites.is_empty() {
+                        self.suffixes.clear();
+                    } else {
+                        self.suffixes.extend(rule.prerequisites.iter().cloned());
+                    }
+                }
                 _ => {}
             }
         }
@@ -867,6 +900,24 @@ struct PendingLine {
     recipe_prefix: String,
     /// The accumulated logical line so far.
     accum: String,
+}
+
+/// If `target` names a suffix rule (`.s2` single-suffix or `.s1.s2` double-suffix, where each `.sN`
+/// is a known suffix), return the equivalent pattern rule as `(target_pattern, prereq_pattern)`.
+fn suffix_rule_patterns(target: &str, suffixes: &[String]) -> Option<(String, String)> {
+    // Single-suffix rule `.c`: build `%` from `%.c`.
+    if suffixes.iter().any(|s| s == target) {
+        return Some(("%".to_string(), format!("%{target}")));
+    }
+    // Double-suffix rule `.c.o`: source suffix `.c`, target suffix `.o` -> `%.o: %.c`.
+    for source in suffixes {
+        if let Some(rest) = target.strip_prefix(source.as_str())
+            && suffixes.iter().any(|t| t == rest)
+        {
+            return Some((format!("%{rest}"), format!("%{source}")));
+        }
+    }
+    None
 }
 
 /// If `trimmed` is a `vpath` directive, return the part after `vpath`.
