@@ -37,6 +37,10 @@ impl Rule {
             .map(|s| s.to_string())
             .collect::<Vec<_>>();
 
+        // `.SILENT`/`.IGNORE` apply to every recipe line of the target.
+        let silent_target = makefile.is_silent(target);
+        let ignore_target = makefile.is_ignored(target);
+
         for raw in self.recipe.iter() {
             // Expand the recipe line now, at execution time. This resolves variables defined after
             // the rule, automatic variables, and cases where a variable expands to a command
@@ -68,7 +72,7 @@ impl Rule {
             }
 
             // Echo the command to stdout, unless silenced. `--just-print` always echoes.
-            if !silent || makefile.opts.just_print {
+            if (!silent && !silent_target) || makefile.opts.just_print {
                 println!("{command}");
             }
 
@@ -85,7 +89,7 @@ impl Rule {
                 .map_err(|e| MakeError::new(&e.to_string(), self.context.clone()))?;
 
             // Check for command errors, unless directed to ignore them.
-            if !ignore_errors && !makefile.opts.ignore_errors {
+            if !ignore_errors && !ignore_target && !makefile.opts.ignore_errors {
                 match res.code() {
                     Some(0) => {}
                     Some(code) => {
@@ -285,12 +289,32 @@ impl RuleMap {
         target: &str,
         state: &mut ExecState,
     ) -> Result<(), MakeError> {
-        let rule_indices = self.by_target.get(target).ok_or_else(|| {
-            MakeError::new(
-                &format!("No rule to make target '{target}'."),
-                Context::new(),
-            )
-        })?;
+        let rule_indices = match self.by_target.get(target) {
+            Some(indices) => indices,
+            None => {
+                // No explicit rule. An existing file is a source and is up to date; a target
+                // declared only via `.PHONY` is a valid empty target; otherwise fall back to the
+                // `.DEFAULT` recipe, or error if there is none.
+                if makefile.get_mtime(target).is_some() || makefile.is_phony(target) {
+                    return Ok(());
+                }
+                let default = makefile.default_recipe();
+                if !default.is_empty() {
+                    let rule = Rule {
+                        targets: vec![target.to_string()],
+                        prerequisites: vec![],
+                        recipe: default.to_vec(),
+                        context: Context::new(),
+                        double_colon: false,
+                    };
+                    return rule.execute(makefile, target);
+                }
+                return Err(MakeError::new(
+                    &format!("No rule to make target '{target}'."),
+                    Context::new(),
+                ));
+            }
+        };
 
         // Old files have their rules ignored.
         if makefile.opts.old_file.iter().any(|f| f == target) {

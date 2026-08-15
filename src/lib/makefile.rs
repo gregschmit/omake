@@ -6,6 +6,7 @@ pub mod rule_map;
 
 use opts::Opts;
 
+use std::collections::HashSet;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::Command;
@@ -21,6 +22,23 @@ use rule_map::{Rule, RuleMap};
 
 const COMMENT_INDICATOR: char = '#';
 
+/// Data collected from special dot-targets (`.PHONY`, `.SILENT`, ...).
+#[derive(Debug, Default)]
+pub struct SpecialTargets {
+    /// Targets that are always considered out of date (their recipes always run).
+    phony: HashSet<String>,
+    /// Targets whose recipes are not echoed.
+    silent: HashSet<String>,
+    /// Whether every recipe is silenced (`.SILENT` with no prerequisites).
+    silent_all: bool,
+    /// Targets whose recipe errors are ignored.
+    ignore: HashSet<String>,
+    /// Whether errors are ignored for every recipe (`.IGNORE` with no prerequisites).
+    ignore_all: bool,
+    /// Recipe for `.DEFAULT`, used for targets that have no rule of their own.
+    default_recipe: Vec<String>,
+}
+
 /// The primary interface for reading, parsing, and executing a makefile.
 #[derive(Debug)]
 pub struct Makefile<L: Logger> {
@@ -29,6 +47,7 @@ pub struct Makefile<L: Logger> {
 
     rule_map: RuleMap,
     default_target: Option<String>,
+    special: SpecialTargets,
 
     // Parser state.
     pub vars: Vars,
@@ -45,6 +64,7 @@ impl<L: Logger> Makefile<L> {
             logger: Box::new(logger),
             rule_map: RuleMap::new(),
             default_target: None,
+            special: SpecialTargets::default(),
             vars,
             current_rule: None,
             context: path.clone().into(),
@@ -177,6 +197,9 @@ impl<L: Logger> Makefile<L> {
 
         // Anything other than recipe lines terminate a rule definition.
         if let Some(rule) = self.current_rule.take() {
+            // Collect any special dot-target directives from this rule.
+            self.collect_special_targets(&rule);
+
             // If there is no default target, see if we can assign one.
             if self.default_target.is_none() {
                 for target in rule.targets.iter() {
@@ -352,6 +375,58 @@ impl<L: Logger> Makefile<L> {
         self.rule_map.execute(self, &targets)
     }
 
+    /// Record `.PHONY`, `.SILENT`, `.IGNORE`, and `.DEFAULT` directives from a parsed rule.
+    fn collect_special_targets(&mut self, rule: &Rule) {
+        for target in &rule.targets {
+            match target.as_str() {
+                ".PHONY" => self
+                    .special
+                    .phony
+                    .extend(rule.prerequisites.iter().cloned()),
+                ".SILENT" => {
+                    if rule.prerequisites.is_empty() {
+                        self.special.silent_all = true;
+                    } else {
+                        self.special
+                            .silent
+                            .extend(rule.prerequisites.iter().cloned());
+                    }
+                }
+                ".IGNORE" => {
+                    if rule.prerequisites.is_empty() {
+                        self.special.ignore_all = true;
+                    } else {
+                        self.special
+                            .ignore
+                            .extend(rule.prerequisites.iter().cloned());
+                    }
+                }
+                ".DEFAULT" => self.special.default_recipe = rule.recipe.clone(),
+                _ => {}
+            }
+        }
+    }
+
+    /// Whether `target` is `.PHONY` (always considered out of date).
+    fn is_phony(&self, target: &str) -> bool {
+        self.special.phony.contains(target)
+    }
+
+    /// Whether `target`'s recipes should not be echoed (via `.SILENT`).
+    fn is_silent(&self, target: &str) -> bool {
+        self.special.silent_all || self.special.silent.contains(target)
+    }
+
+    /// Whether recipe errors for `target` should be ignored (via `.IGNORE`).
+    fn is_ignored(&self, target: &str) -> bool {
+        self.special.ignore_all || self.special.ignore.contains(target)
+    }
+
+    /// The recipe defined by `.DEFAULT`, used for targets that have no rule of their own.
+    fn default_recipe(&self) -> &[String] {
+        &self.special.default_recipe
+    }
+
     /// Get the `mtime` of a file. Note that the return value also signals whether or not the file
     /// is accessible, so a `None` value represents either the file not existing or the current user
     /// not having the appropriate permissions to access the file.
@@ -359,6 +434,11 @@ impl<L: Logger> Makefile<L> {
     /// TODO: Consider bailing on a file permissions issue? Not sure if POSIX specifies some
     /// behavior here or if the major implementations halt execution on a permissions error.
     fn get_mtime(&self, file: &str) -> Option<SystemTime> {
+        // Phony targets are never up to date, so their recipes always run.
+        if self.is_phony(file) {
+            return None;
+        }
+
         match fs::metadata(file) {
             Ok(metadata) => {
                 if self.opts.old_file.iter().any(|f| f == file) {
