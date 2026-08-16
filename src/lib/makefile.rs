@@ -388,6 +388,20 @@ impl<L: Logger> Makefile<L> {
             return self.include_file(expanded.trim(), optional);
         }
 
+        // Handle BSD `.error MSG` (fatal) / `.warning MSG` / `.info MSG` (non-fatal) directives. The
+        // message is variable-expanded, and (like the conditionals above) only fires in an active
+        // branch — reached here after the `cond_active()` guard.
+        if let Some((kind, message)) = parse_bsd_message(trimmed_line) {
+            let msg = expand(message, &self.vars)
+                .map_err(|e| MakeError::new(&e, self.context.clone()))?;
+            match kind {
+                BsdMessage::Error => return Err(MakeError::new(&msg, self.context.clone())),
+                BsdMessage::Warning => self.logger.warn(&msg, Some(&self.context)),
+                BsdMessage::Info => self.logger.info(&msg, Some(&self.context)),
+            }
+            return Ok(());
+        }
+
         // Handle `export` / `unexport` directives.
         if let Some((export, rest)) = parse_export(trimmed_line) {
             return self.handle_export(export, rest);
@@ -1705,6 +1719,30 @@ fn parse_bsd_include(trimmed: &str) -> Option<(bool, &str)> {
                 .and_then(|s| s.strip_suffix('"'))
                 .or_else(|| rest.strip_prefix('<').and_then(|s| s.strip_suffix('>')))?;
             return Some((optional, name));
+        }
+    }
+    None
+}
+
+/// A BSD diagnostic directive: `.error` aborts, `.warning`/`.info` are non-fatal.
+enum BsdMessage {
+    Error,
+    Warning,
+    Info,
+}
+
+/// If `trimmed` is a BSD `.error`/`.warning`/`.info` directive, return the kind and the (unexpanded)
+/// message. A directive with a colon (`.error:`) is a rule, not a directive.
+fn parse_bsd_message(trimmed: &str) -> Option<(BsdMessage, &str)> {
+    for (kw, kind) in [
+        (".error", BsdMessage::Error),
+        (".warning", BsdMessage::Warning),
+        (".info", BsdMessage::Info),
+    ] {
+        if let Some(rest) = trimmed.strip_prefix(kw)
+            && (rest.is_empty() || rest.starts_with([' ', '\t']))
+        {
+            return Some((kind, rest.trim_start()));
         }
     }
     None
