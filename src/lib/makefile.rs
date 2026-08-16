@@ -73,6 +73,8 @@ struct TargetVar {
     value: String,
     /// `override` makes it beat a command-line variable (origin `Override` vs `File`).
     is_override: bool,
+    /// `export` also adds the variable to the target's (and its prerequisites') recipe environment.
+    is_export: bool,
 }
 
 /// Pattern-specific variable assignments (`%.o: VAR = value`): the assignments apply to every target
@@ -1180,7 +1182,8 @@ impl<L: Logger> Makefile<L> {
                     Origin::File | Origin::Environment | Origin::Override
                 )
                 && is_env_identifier(name);
-            if cmdline || by_all {
+            // A target-specific `export VAR = value` marks the variable exported in this scope.
+            if cmdline || by_all || var.exported {
                 names.insert(name);
             }
         }
@@ -2023,14 +2026,15 @@ fn parse_assignment(line: &str) -> Option<(&str, AssignOp, &str)> {
 fn parse_target_var(deps: &str) -> Option<TargetVar> {
     let mut rest = deps.trim_start();
     let mut is_override = false;
-    // Strip leading modifier keywords (whole words). `export` (also export to the recipe env) and
-    // `private` (scope the variable to the target, not its prerequisites) are recognized but their
-    // extra effects are not yet modeled — only the value assignment is applied.
+    let mut is_export = false;
+    // Strip leading modifier keywords (whole words). `private` (scope the variable to the target,
+    // not its prerequisites) is recognized but not yet modeled — only the value assignment applies.
     loop {
         let word = rest.split_whitespace().next().unwrap_or("");
         match word {
             "override" => is_override = true,
-            "export" | "private" => {}
+            "export" => is_export = true,
+            "private" => {}
             _ => break,
         }
         rest = rest[word.len()..].trim_start();
@@ -2047,6 +2051,7 @@ fn parse_target_var(deps: &str) -> Option<TargetVar> {
         op,
         value: value.trim_start().to_string(),
         is_override,
+        is_export,
     })
 }
 
@@ -2122,6 +2127,9 @@ fn apply_target_var_to(
                 .unwrap_or_default();
             let _ = scope.set_origin(&tv.name, &result, true, origin);
         }
+    }
+    if tv.is_export {
+        scope.set_exported(&tv.name);
     }
     assigned.insert(tv.name.clone());
 }

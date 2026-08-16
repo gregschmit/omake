@@ -136,6 +136,9 @@ pub struct Var {
     pub value: String,
     pub recursive: bool,
     pub origin: Origin,
+    /// Whether the variable is exported into recipe child environments (set by a target-specific
+    /// `export VAR = value`); global exports are tracked separately on the `Makefile`.
+    pub exported: bool,
 }
 
 /// Wrap a [`HashMap`] and a default `blank` value, providing an easy way to get variables, handling
@@ -163,6 +166,7 @@ impl Vars {
                 value: "".to_string(),
                 recursive: false,
                 origin: Origin::File,
+                exported: false,
             },
             default_vars: HashMap::new(),
         };
@@ -275,15 +279,26 @@ impl Vars {
             v = self.default_vars.get(&k).unwrap().to_string();
         }
 
+        // Reassigning a variable keeps its exported flag (an exported variable stays exported).
+        let exported = self.map.get(&k).is_some_and(|existing| existing.exported);
         self.map.insert(
             k,
             Var {
                 value: v,
                 recursive,
                 origin,
+                exported,
             },
         );
         Ok(())
+    }
+
+    /// Mark a variable exported into recipe child environments (a target-specific `export VAR`). The
+    /// variable is expected to already exist; if not, this is a no-op.
+    pub fn set_exported(&mut self, k: impl AsRef<str>) {
+        if let Some(var) = self.map.get_mut(k.as_ref()) {
+            var.exported = true;
+        }
     }
 }
 

@@ -20,3 +20,4 @@ mod t36_static_pattern;
 mod t37_borrow_recipe;
 mod t38_target_vars;
 mod t39_intermediate;
+mod t40_target_export;
