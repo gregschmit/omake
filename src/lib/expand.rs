@@ -13,6 +13,9 @@ struct Expander {
     /// Text collected by `$(eval ...)`, to be parsed as makefile syntax by the caller once the
     /// expansion (and its borrow of the variables) finishes.
     evals: Vec<String>,
+    /// Exit status of the last `$(shell ...)` run during this expansion, written back to
+    /// `.SHELLSTATUS` by the caller (which holds `&mut Vars`). `None` if no shell ran.
+    shell_status: Option<i32>,
 }
 
 /// A stack frame used to track the previous buffer when expanding potentially nested expressions
@@ -50,16 +53,28 @@ struct Frame {
 ///     we hit a matching closing delimiter (tracked on the stack frame), we evaluate the buffer,
 ///     pop the previous buffer off the stack, join it with the evaluated value, and keep going.
 pub fn expand(s: &str, vars: &Vars) -> Result<String, String> {
-    Ok(expand_collect(s, vars)?.0)
+    Ok(expand_collect(s, vars)?.result)
 }
 
-/// Like [`expand`], but also returns the text collected by any `$(eval ...)` calls, for the caller
-/// (the makefile parser) to evaluate. Plain [`expand`] discards it, so `$(eval)` is a no-op in
-/// contexts that cannot process it (e.g. recipe expansion).
-pub fn expand_collect(s: &str, vars: &Vars) -> Result<(String, Vec<String>), String> {
+/// The result of an expansion plus its side channels: `$(eval ...)` text for the caller to parse,
+/// and the last `$(shell ...)` exit status for `.SHELLSTATUS`.
+pub struct Expansion {
+    pub result: String,
+    pub evals: Vec<String>,
+    pub shell_status: Option<i32>,
+}
+
+/// Like [`expand`], but also returns the side channels (see [`Expansion`]). Plain [`expand`]
+/// discards them, so `$(eval)` is a no-op in contexts that cannot process it (e.g. recipe
+/// expansion).
+pub fn expand_collect(s: &str, vars: &Vars) -> Result<Expansion, String> {
     let mut ctx = Expander::default();
     let result = expand_inner(s, vars, &mut ctx)?;
-    Ok((result, ctx.evals))
+    Ok(Expansion {
+        result,
+        evals: ctx.evals,
+        shell_status: ctx.shell_status,
+    })
 }
 
 /// Inner expansion that carries the [`Expander`] context (recursive-variable cycle guard and the
@@ -397,6 +412,10 @@ fn func_shell(raw_args: &str, vars: &Vars, ctx: &mut Expander) -> Result<String,
         .stderr(std::process::Stdio::inherit())
         .output()
         .map_err(|e| e.to_string())?;
+
+    // Record the exit code for `.SHELLSTATUS` (the shell reports 128+signal for a signalled command,
+    // so `code()` is normally `Some`).
+    ctx.shell_status = Some(output.status.code().unwrap_or(-1));
 
     let mut result = String::from_utf8_lossy(&output.stdout).into_owned();
     // A NUL byte truncates the captured output (make treats it as C-string data).
@@ -1702,9 +1721,9 @@ mod tests {
         assert_eq!(expand("$(origin FILEV )", &vars).unwrap(), "undefined");
 
         // `$(eval)` collects the expanded text (for the parser to evaluate) and expands to empty.
-        let (result, evals) = expand_collect("[$(eval X := 1)]", &vars).unwrap();
-        assert_eq!(result, "[]");
-        assert_eq!(evals, vec!["X := 1".to_string()]);
+        let expansion = expand_collect("[$(eval X := 1)]", &vars).unwrap();
+        assert_eq!(expansion.result, "[]");
+        assert_eq!(expansion.evals, vec!["X := 1".to_string()]);
     }
 
     #[test]

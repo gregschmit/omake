@@ -742,12 +742,18 @@ impl<L: Logger> Makefile<L> {
     /// is processed *after* expansion finishes (once the borrow of the variables is released), so a
     /// variable it defines is visible on later lines but not within the same expression.
     fn expand_str(&mut self, s: &str) -> Result<String, MakeError> {
-        let (result, evals) =
+        let expansion =
             expand_collect(s, &self.vars).map_err(|e| MakeError::new(&e, self.context.clone()))?;
-        for text in evals {
+        // A `$(shell ...)` records its exit code in `.SHELLSTATUS` for the next line to read.
+        if let Some(code) = expansion.shell_status {
+            let _ = self
+                .vars
+                .set(".SHELLSTATUS", code.to_string().as_str(), false);
+        }
+        for text in expansion.evals {
             self.eval_makefile_text(&text)?;
         }
-        Ok(result)
+        Ok(expansion.result)
     }
 
     /// Parse `text` (the already-expanded argument of a `$(eval ...)`) as makefile source, then

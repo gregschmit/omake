@@ -5,7 +5,7 @@ use std::process::Command;
 use std::time::SystemTime;
 
 use super::{Context, Logger, MakeError, Makefile};
-use crate::expand::expand;
+use crate::expand::expand_collect;
 use crate::vars::Vars;
 
 /// Maximum length of a chained implicit-rule search (e.g. `%.o: %.c` then `%.c: %.y`).
@@ -115,8 +115,14 @@ impl Rule {
             // Expand the recipe body now, at execution time. This resolves variables defined after
             // the rule, automatic variables, and cases where a variable expands to a command
             // modifier, which is recognized per line below.
-            let expanded =
-                expand(body, &vars).map_err(|e| MakeError::new(&e, self.context.clone()))?;
+            let expansion = expand_collect(body, &vars)
+                .map_err(|e| MakeError::new(&e, self.context.clone()))?;
+            // A `$(shell ...)` run while expanding this line records its exit code in `.SHELLSTATUS`
+            // for a later recipe line to read.
+            if let Some(code) = expansion.shell_status {
+                let _ = vars.set(".SHELLSTATUS", code.to_string().as_str(), false);
+            }
+            let expanded = expansion.result;
 
             // A recipe line may expand to several lines — e.g. a `define` used as a canned recipe —
             // and each becomes its own command. A backslash-newline is a continuation, not a split.
