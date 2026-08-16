@@ -304,11 +304,14 @@ impl<L: Logger> Makefile<L> {
         // Anything other than recipe lines terminate a rule definition.
         if let Some(mut rule) = self.current_rule.take() {
             // Collect any special dot-target directives from this rule (this may update the suffix
-            // list via `.SUFFIXES`, which the suffix-rule rewrite below then uses).
-            self.collect_special_targets(&rule);
+            // list via `.SUFFIXES`, which the suffix-rule rewrite below then uses). A static pattern
+            // rule is never a special/suffix rule, so skip both for it.
+            if rule.target_pattern.is_none() {
+                self.collect_special_targets(&rule);
 
-            // Rewrite a suffix rule (e.g. `.c.o:`) into the equivalent pattern rule (`%.o: %.c`).
-            self.rewrite_suffix_rule(&mut rule);
+                // Rewrite a suffix rule (e.g. `.c.o:`) into the equivalent pattern rule (`%.o: %.c`).
+                self.rewrite_suffix_rule(&mut rule);
+            }
 
             // If there is no default target, see if we can assign one. A dot-target (`.PHONY`) or a
             // `%` pattern rule is never the default goal, matching GNU make.
@@ -323,8 +326,12 @@ impl<L: Logger> Makefile<L> {
                 }
             }
 
-            // Add the rule to the `rule_map`.
-            self.rule_map.insert(rule, &*self.logger)?;
+            // A static pattern rule expands into one concrete rule per listed target; otherwise add
+            // the rule as-is.
+            match rule.target_pattern.take() {
+                Some(target_pattern) => self.insert_static_pattern(rule, &target_pattern)?,
+                None => self.rule_map.insert(rule, &*self.logger)?,
+            }
         }
 
         // Ignore pure comments and blank lines.
@@ -430,6 +437,27 @@ impl<L: Logger> Makefile<L> {
                 r
             });
 
+            // A second colon in the dependency part introduces a static pattern rule
+            // (`targets: target-pattern: prereq-patterns`). The `:` of a `:=`/`::=` target-specific
+            // assignment is not a separator (`parse_assignment` recognizes those), so it is skipped.
+            // GNU make requires the target pattern to contain `%` (fatal error otherwise); it is
+            // checked after expansion, so a variable target pattern (`$(P): %.c`) is still detected.
+            let target_pattern = if parse_assignment(deps).is_none()
+                && let Some((tpat, ppat)) = deps.split_once(':')
+            {
+                let expanded = self.expand_str(tpat)?;
+                if !expanded.contains('%') {
+                    return Err(MakeError::new(
+                        "target pattern contains no '%'.",
+                        self.context.clone(),
+                    ));
+                }
+                deps = ppat;
+                Some(expanded.trim().to_string())
+            } else {
+                None
+            };
+
             // A `|` separates normal prerequisites from order-only ones.
             let (normal_deps, order_deps) = match deps.split_once('|') {
                 Some((n, o)) => (n, o),
@@ -438,18 +466,36 @@ impl<L: Logger> Makefile<L> {
             // Expand variables (evaluating any `$(eval ...)`), split into words, then glob each
             // word against the filesystem (a word with no match keeps its literal form, like GNU
             // make). Wildcards resolve at parse time, so only files present when the makefile is
-            // read are matched.
+            // read are matched. In a static pattern rule the `%`-bearing prerequisite *patterns* are
+            // kept literal (the `%` is substituted per target at finalization); plain words still
+            // glob like ordinary prerequisites.
             let targets = self.expand_str(targets)?;
             let normal_deps = self.expand_str(normal_deps)?;
             let order_deps = self.expand_str(order_deps)?;
-            let glob = |s: &str| glob_words(s.split_whitespace().map(str::to_string));
+            let deps_list = |s: &str| {
+                if target_pattern.is_some() {
+                    s.split_whitespace()
+                        .flat_map(|w| {
+                            if w.contains('%') {
+                                vec![w.to_string()]
+                            } else {
+                                glob_words(std::iter::once(w.to_string()))
+                            }
+                        })
+                        .collect()
+                } else {
+                    glob_words(s.split_whitespace().map(str::to_string))
+                }
+            };
 
             self.current_rule = Some(Rule {
-                targets: glob(&targets),
-                prerequisites: glob(&normal_deps),
-                order_only: glob(&order_deps),
+                targets: glob_words(targets.split_whitespace().map(str::to_string)),
+                prerequisites: deps_list(&normal_deps),
+                order_only: deps_list(&order_deps),
                 recipe: vec![],
                 has_recipe: false,
+                stem: String::new(),
+                target_pattern,
                 context: self.context.clone(),
                 double_colon,
             });
@@ -1177,6 +1223,71 @@ impl<L: Logger> Makefile<L> {
         }
     }
 
+    /// Expand a static pattern rule (`targets: target-pattern: prereq-patterns`) into one concrete
+    /// rule per listed target: the target's stem (matched against the target pattern) substitutes
+    /// the first `%` in each prerequisite pattern, and is exposed as `$*`. A target that does not
+    /// match the pattern gets a non-fatal warning and a prereq-less rule with the whole target name
+    /// as its stem (matching GNU make). A `%` in the target *list* is the "mixed implicit and ..."
+    /// error/warning.
+    fn insert_static_pattern(&mut self, rule: Rule, target_pattern: &str) -> Result<(), MakeError> {
+        let (prefix, suffix) = target_pattern
+            .split_once('%')
+            .expect("static pattern target has a '%' (checked during parsing)");
+
+        // A `%` in the target list mixes implicit and static rules; GNU make rejects an all-pattern
+        // target list outright and deprecates a partial one (dropping the pattern targets).
+        if !rule.targets.is_empty() && rule.targets.iter().all(|t| t.contains('%')) {
+            return Err(MakeError::new(
+                "mixed implicit and static pattern rules.",
+                rule.context.clone(),
+            ));
+        }
+        if rule.targets.iter().any(|t| t.contains('%')) {
+            self.logger.warn(
+                "mixed implicit and normal rules: deprecated syntax",
+                Some(&rule.context),
+            );
+        }
+
+        for target in rule.targets.iter().filter(|t| !t.contains('%')) {
+            // A non-matching target still gets the recipe, but with no prerequisites; its stem
+            // ($*) is the whole target name, as in GNU make.
+            let (prerequisites, order_only, stem) = match pattern_stem(prefix, suffix, target) {
+                Some(stem) => (
+                    rule.prerequisites
+                        .iter()
+                        .map(|p| p.replacen('%', stem, 1))
+                        .collect(),
+                    rule.order_only
+                        .iter()
+                        .map(|p| p.replacen('%', stem, 1))
+                        .collect(),
+                    stem.to_string(),
+                ),
+                None => {
+                    self.logger.warn(
+                        &format!("target '{target}' doesn't match the target pattern"),
+                        Some(&rule.context),
+                    );
+                    (vec![], vec![], target.clone())
+                }
+            };
+            let concrete = Rule {
+                targets: vec![target.clone()],
+                prerequisites,
+                order_only,
+                recipe: rule.recipe.clone(),
+                has_recipe: rule.has_recipe,
+                stem,
+                target_pattern: None,
+                context: rule.context.clone(),
+                double_colon: rule.double_colon,
+            };
+            self.rule_map.insert(concrete, &*self.logger)?;
+        }
+        Ok(())
+    }
+
     /// Record `.PHONY`, `.SILENT`, `.IGNORE`, and `.DEFAULT` directives from a parsed rule.
     fn collect_special_targets(&mut self, rule: &Rule) {
         for target in &rule.targets {
@@ -1358,6 +1469,15 @@ fn vpath_matches(pattern: &str, name: &str) -> bool {
         }
         None => pattern == name,
     }
+}
+
+/// The stem that `%` matches when `target` fits a pattern split into `prefix`/`suffix` (the parts
+/// around its `%`). Returns `None` if the target does not match.
+fn pattern_stem<'a>(prefix: &str, suffix: &str, target: &'a str) -> Option<&'a str> {
+    if target.len() < prefix.len() + suffix.len() {
+        return None;
+    }
+    target.strip_prefix(prefix)?.strip_suffix(suffix)
 }
 
 /// Whether a `.PRECIOUS` pattern entry (which must contain `%`) matches `target`. A bare `%` matches

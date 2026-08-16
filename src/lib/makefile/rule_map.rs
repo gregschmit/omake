@@ -36,14 +36,21 @@ pub struct Rule {
     /// — it reports it up to date rather than "Nothing to be done" — so this is tracked separately
     /// from `recipe` being non-empty.
     pub has_recipe: bool,
+    /// The `%` stem for `$*`, set for a static pattern rule (`targets: %.o: %.c`); empty otherwise.
+    pub stem: String,
+    /// The target pattern of an unexpanded static pattern rule. Present only transiently during
+    /// parsing; each listed target is expanded into its own concrete rule (with `stem` filled in)
+    /// before insertion, so every stored rule has `None` here.
+    pub target_pattern: Option<String>,
     pub context: Context,
     pub double_colon: bool,
 }
 
 impl Rule {
     /// Execute this rule's recipe for a specific `target` (one rule may have several targets, and
-    /// automatic variables like `$@` depend on which one is being built). `stem` is the `%` match
-    /// for a pattern rule (used for `$*`); it is empty for explicit rules.
+    /// automatic variables like `$@` depend on which one is being built). `self.stem` is the `%`
+    /// match for `$*`. `pattern_build` is true only for a target built by an implicit pattern rule
+    /// (it scopes `.PRECIOUS` pattern entries, which do not protect static-pattern/explicit targets).
     /// Returns the number of command lines actually echoed or run (lines that were only command
     /// modifiers such as `@` execute nothing and are not counted). The caller uses this to decide
     /// whether any real work happened for the "up to date" / "Nothing to be done" summary.
@@ -51,11 +58,11 @@ impl Rule {
         &self,
         makefile: &Makefile<L>,
         target: &str,
-        stem: &str,
+        pattern_build: bool,
     ) -> Result<usize, MakeError> {
         // Build a per-target variable scope: the makefile's variables plus automatic variables.
         let mut vars = makefile.vars.clone();
-        self.set_automatic_vars(&mut vars, makefile, target, stem);
+        self.set_automatic_vars(&mut vars, makefile, target, &self.stem);
 
         let mut commands_run = 0;
 
@@ -147,7 +154,7 @@ impl Rule {
                         None => Some("Killed.".to_string()),
                     };
                     if let Some(msg) = error {
-                        self.remove_target_on_error(makefile, target, stem, mtime_before);
+                        self.remove_target_on_error(makefile, target, pattern_build, mtime_before);
                         return Err(MakeError::new(&msg, self.context.clone()));
                     }
                 }
@@ -159,17 +166,17 @@ impl Rule {
 
     /// Under `.DELETE_ON_ERROR:`, delete `target` if a failing recipe created or modified it (so a
     /// partial/corrupt file is not left looking up to date). `.PRECIOUS` and phony targets are
-    /// exempt. Matches GNU make, which only deletes a target the recipe actually touched. A
-    /// non-empty `stem` means this is a pattern-rule build, which lets `.PRECIOUS` pattern entries
-    /// (e.g. `%.o`) protect the target — gmake honors those only for implicitly-built targets.
+    /// exempt. Matches GNU make, which only deletes a target the recipe actually touched.
+    /// `pattern_build` (an implicit pattern-rule build) lets `.PRECIOUS` pattern entries (e.g.
+    /// `%.o`) protect the target — gmake honors those only for implicitly-built targets, not for
+    /// explicit or static-pattern rules.
     fn remove_target_on_error<L: Logger>(
         &self,
         makefile: &Makefile<L>,
         target: &str,
-        stem: &str,
+        pattern_build: bool,
         mtime_before: Option<std::time::SystemTime>,
     ) {
-        let pattern_build = !stem.is_empty();
         if !makefile.delete_on_error()
             || makefile.is_precious(target, pattern_build)
             || makefile.is_phony(target)
@@ -253,13 +260,16 @@ impl Rule {
         // `$*`: the stem matched by a pattern rule's `%` (empty for explicit rules).
         let _ = vars.set("*", stem, false);
 
-        // Directory/file parts of `$@` and `$<`.
+        // Directory/file parts of `$@`, `$<`, and `$*`.
         let (at_dir, at_file) = split_dir_file(target);
         let _ = vars.set("@D", at_dir.as_str(), false);
         let _ = vars.set("@F", at_file.as_str(), false);
         let (lt_dir, lt_file) = split_dir_file(first);
         let _ = vars.set("<D", lt_dir.as_str(), false);
         let _ = vars.set("<F", lt_file.as_str(), false);
+        let (star_dir, star_file) = split_dir_file(stem);
+        let _ = vars.set("*D", star_dir.as_str(), false);
+        let _ = vars.set("*F", star_file.as_str(), false);
     }
 }
 
@@ -323,11 +333,11 @@ impl PatternRule {
             .strip_suffix(&self.target_suffix)
     }
 
-    /// The concrete prerequisites for a given `stem`.
+    /// The concrete prerequisites for a given `stem` (only the first `%` per pattern is the stem).
     fn prerequisites(&self, stem: &str) -> Vec<String> {
         self.prereq_patterns
             .iter()
-            .map(|p| p.replace('%', stem))
+            .map(|p| p.replacen('%', stem, 1))
             .collect()
     }
 
@@ -335,7 +345,7 @@ impl PatternRule {
     fn order_only(&self, stem: &str) -> Vec<String> {
         self.order_only_patterns
             .iter()
-            .map(|p| p.replace('%', stem))
+            .map(|p| p.replacen('%', stem, 1))
             .collect()
     }
 }
@@ -567,10 +577,12 @@ impl RuleMap {
                         order_only: vec![],
                         recipe: default.to_vec(),
                         has_recipe: true,
+                        stem: String::new(),
+                        target_pattern: None,
                         context: Context::new(),
                         double_colon: false,
                     };
-                    state.recipes_run += rule.execute(makefile, target, "")?;
+                    state.recipes_run += rule.execute(makefile, target, false)?;
                     return Ok(());
                 }
                 return Err(MakeError::new(
@@ -643,7 +655,7 @@ impl RuleMap {
             }
 
             if target_mtime_opt.is_none() || should_execute {
-                state.recipes_run += rule.execute(makefile, target, "")?;
+                state.recipes_run += rule.execute(makefile, target, false)?;
             }
         }
 
@@ -790,10 +802,12 @@ impl RuleMap {
                 order_only,
                 has_recipe: !prule.recipe.is_empty(),
                 recipe: prule.recipe.clone(),
+                stem: stem.to_string(),
+                target_pattern: None,
                 context: prule.context.clone(),
                 double_colon: false,
             };
-            state.recipes_run += rule.execute(makefile, target, stem)?;
+            state.recipes_run += rule.execute(makefile, target, true)?;
         }
 
         Ok(())
