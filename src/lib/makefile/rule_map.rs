@@ -447,15 +447,15 @@ impl RuleMap {
                     };
 
                     // A later definition of the same pattern (target + prerequisites) replaces the
-                    // earlier one (GNU: last wins), but a definition with no recipe does not
-                    // override an existing rule.
+                    // earlier one. A definition with no recipe cancels the pattern (BSD make style):
+                    // it is stored as a recipe-less rule that `match_pattern_rule`/`can_be_made`
+                    // skip, and it suppresses the matching built-in (via `register_builtins`).
                     match self.pattern_rules.iter_mut().find(|p| {
                         p.target_prefix == new.target_prefix
                             && p.target_suffix == new.target_suffix
                             && p.prereq_patterns == new.prereq_patterns
                     }) {
-                        Some(existing) if !new.recipe.is_empty() => *existing = new,
-                        Some(_) => {}
+                        Some(existing) => *existing = new,
                         None => self.pattern_rules.push(new),
                     }
                 }
@@ -849,6 +849,10 @@ impl RuleMap {
         target: &str,
     ) -> Option<(usize, String)> {
         for (idx, prule) in self.pattern_rules.iter().enumerate() {
+            // A recipe-less pattern rule is a cancellation, not a buildable rule.
+            if prule.recipe.is_empty() {
+                continue;
+            }
             if let Some(stem) = prule.match_stem(target) {
                 let prereqs = prule.prerequisites(stem);
                 let order_only = prule.order_only(stem);
@@ -879,6 +883,10 @@ impl RuleMap {
             return false;
         }
         self.pattern_rules.iter().any(|prule| {
+            // A recipe-less pattern rule is a cancellation, so it produces nothing.
+            if prule.recipe.is_empty() {
+                return false;
+            }
             // Skip match-anything rules (target `%`) when chaining: they match every name and would
             // grow prerequisites forever (`x.c.c.c…`). GNU make also does not use match-anything
             // rules to build the prerequisites of another implicit rule.
