@@ -1029,27 +1029,73 @@ fn substitute_ref(value: &str, from: &str, to: &str) -> String {
         .join(" ")
 }
 
-/// Substitute one word for a substitution reference. If `from` contains `%`, it is a pattern whose
-/// stem is substituted into `to`'s `%`; otherwise `from` is a suffix replaced by `to`. A word that
-/// does not match is returned unchanged.
-fn substitute_word(word: &str, from: &str, to: &str) -> String {
-    if from.contains('%') {
-        match pattern_stem(from, word) {
-            Some(stem) => subst_stem(to, stem),
-            None => word.to_string(),
+/// A make `%`-pattern after backslash escapes are resolved: a wildcard pattern (split around the
+/// single unescaped `%`) or a literal string (every `%` was escaped, or there were none).
+enum Pattern {
+    Wildcard { prefix: String, suffix: String },
+    Literal(String),
+}
+
+/// Resolve `\%` escapes in a make pattern. A backslash quotes a following `%` (so `\%` is a literal
+/// percent and `\\%` is a literal backslash before the wildcard); the first *unescaped* `%` is the
+/// wildcard. Backslashes not before a `%` are kept verbatim, matching GNU make.
+fn parse_pattern(pat: &str) -> Pattern {
+    let mut text = String::with_capacity(pat.len());
+    let mut wildcard = None;
+    let mut backslashes = 0usize;
+    for c in pat.chars() {
+        match c {
+            '\\' => backslashes += 1,
+            '%' => {
+                // A run of N backslashes becomes N/2 literal backslashes; an odd one quotes the `%`.
+                for _ in 0..backslashes / 2 {
+                    text.push('\\');
+                }
+                if backslashes.is_multiple_of(2) && wildcard.is_none() {
+                    wildcard = Some(text.len());
+                }
+                backslashes = 0;
+                text.push('%');
+            }
+            _ => {
+                for _ in 0..backslashes {
+                    text.push('\\');
+                }
+                backslashes = 0;
+                text.push(c);
+            }
         }
-    } else {
-        match word.strip_suffix(from) {
-            Some(prefix) => format!("{prefix}{to}"),
-            None => word.to_string(),
-        }
+    }
+    for _ in 0..backslashes {
+        text.push('\\');
+    }
+    match wildcard {
+        Some(pos) => Pattern::Wildcard {
+            prefix: text[..pos].to_string(),
+            suffix: text[pos + 1..].to_string(),
+        },
+        None => Pattern::Literal(text),
     }
 }
 
-/// If `word` matches the `%` pattern `pat` (which must contain a `%`), return the matched stem.
-fn pattern_stem<'a>(pat: &str, word: &'a str) -> Option<&'a str> {
-    let pct = pat.find('%')?;
-    let (prefix, suffix) = (&pat[..pct], &pat[pct + 1..]);
+/// Substitute one word for a substitution reference. A wildcard `from` has its stem substituted into
+/// `to`'s `%`; a literal `from` is a suffix replaced by `to`. A word that does not match is returned
+/// unchanged.
+fn substitute_word(word: &str, from: &str, to: &str) -> String {
+    match parse_pattern(from) {
+        Pattern::Wildcard { prefix, suffix } => match stem_of(&prefix, &suffix, word) {
+            Some(stem) => subst_replacement(to, stem),
+            None => word.to_string(),
+        },
+        Pattern::Literal(text) => match word.strip_suffix(&text) {
+            Some(prefix) => format!("{prefix}{to}"),
+            None => word.to_string(),
+        },
+    }
+}
+
+/// If `word` matches the wildcard pattern `prefix`%`suffix`, return the matched stem.
+fn stem_of<'a>(prefix: &str, suffix: &str, word: &'a str) -> Option<&'a str> {
     if word.len() >= prefix.len() + suffix.len()
         && word.starts_with(prefix)
         && word.ends_with(suffix)
@@ -1060,20 +1106,20 @@ fn pattern_stem<'a>(pat: &str, word: &'a str) -> Option<&'a str> {
     }
 }
 
-/// Substitute `stem` into the `%` of `to` (or return `to` unchanged when it has no `%`).
-fn subst_stem(to: &str, stem: &str) -> String {
-    match to.find('%') {
-        Some(tpct) => format!("{}{stem}{}", &to[..tpct], &to[tpct + 1..]),
-        None => to.to_string(),
+/// Build a replacement: substitute `stem` into the replacement's wildcard `%` (escapes resolved), or
+/// return the replacement literally when it has no wildcard.
+fn subst_replacement(repl: &str, stem: &str) -> String {
+    match parse_pattern(repl) {
+        Pattern::Wildcard { prefix, suffix } => format!("{prefix}{stem}{suffix}"),
+        Pattern::Literal(text) => text,
     }
 }
 
-/// Whether `word` matches `pattern`: a `%` pattern (any stem) or, without `%`, an exact match.
+/// Whether `word` matches `pattern`: a wildcard pattern (any stem) or a literal exact match.
 fn word_matches(pattern: &str, word: &str) -> bool {
-    if pattern.contains('%') {
-        pattern_stem(pattern, word).is_some()
-    } else {
-        pattern == word
+    match parse_pattern(pattern) {
+        Pattern::Wildcard { prefix, suffix } => stem_of(&prefix, &suffix, word).is_some(),
+        Pattern::Literal(text) => text == word,
     }
 }
 
@@ -1124,17 +1170,14 @@ fn func_subst(args: &[String]) -> String {
 /// original whitespace layout (leading, trailing, and the runs between words).
 fn func_patsubst(args: &[String]) -> String {
     let (pattern, replacement, text) = (arg(args, 0), arg(args, 1), arg(args, 2));
-    map_words_keep_spaces(text, |word| {
-        if pattern.contains('%') {
-            match pattern_stem(pattern, word) {
-                Some(stem) => subst_stem(replacement, stem),
-                None => word.to_string(),
-            }
-        } else if word == pattern {
-            replacement.to_string()
-        } else {
-            word.to_string()
-        }
+    let pattern = parse_pattern(pattern);
+    map_words_keep_spaces(text, |word| match &pattern {
+        Pattern::Wildcard { prefix, suffix } => match stem_of(prefix, suffix, word) {
+            Some(stem) => subst_replacement(replacement, stem),
+            None => word.to_string(),
+        },
+        Pattern::Literal(lit) if word == lit => replacement.to_string(),
+        Pattern::Literal(_) => word.to_string(),
     })
 }
 
