@@ -53,6 +53,14 @@ pub struct Args {
     #[arg(short, long, visible_alias("quiet"))]
     pub silent: bool,
 
+    /// Disable the built-in implicit rules.
+    #[arg(short = 'r', long = "no-builtin-rules")]
+    pub no_builtin_rules: bool,
+
+    /// Disable the built-in variable settings (implies -r).
+    #[arg(short = 'R', long = "no-builtin-variables")]
+    pub no_builtin_variables: bool,
+
     /// Don't execute recipes; just print them.
     #[arg(
         short = 'n',
@@ -97,6 +105,9 @@ impl From<Args> for Opts {
             just_print: args.just_print,
             keep_going: args.keep_going,
             silent: args.silent,
+            // `-R` (no built-in variables) implies `-r` (no built-in rules).
+            no_builtin_rules: args.no_builtin_rules || args.no_builtin_variables,
+            no_builtin_variables: args.no_builtin_variables,
             old_file: args.old_file,
             new_file: args.new_file,
         }

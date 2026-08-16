@@ -19,6 +19,7 @@ mod t33_empty_recipe;
 mod t34_inline_recipe;
 mod t35_multi_stanza;
 mod t36_cancel_pattern;
+mod t37_no_builtins;
 mod t3_old_files;
 mod t4_just_print;
 mod t5_silent;

@@ -160,6 +160,18 @@ impl Vars {
     /// Primary interface for configuring a new instance. We also create some cached values that
     /// live for the lifetime of this instance to reduce the number of allocations.
     pub fn new<const N: usize>(init: [(&str, &str); N]) -> Self {
+        Self::new_inner(init, true)
+    }
+
+    /// Like [`new`](Self::new), but omits make's built-in tool variables (`CC`, `CFLAGS`,
+    /// `COMPILE.c`, ...) for `-R`/`--no-builtin-variables`. The operational specials
+    /// (`.RECIPEPREFIX`, `.SHELLFLAGS`, `SHELL`, and the suffix list) are always defined so make can
+    /// still run recipes; env/makefile/command-line definitions are unaffected.
+    pub fn new_without_builtins<const N: usize>(init: [(&str, &str); N]) -> Self {
+        Self::new_inner(init, false)
+    }
+
+    fn new_inner<const N: usize>(init: [(&str, &str); N], builtins: bool) -> Self {
         let mut vars = Self {
             map: HashMap::new(),
             blank: Var {
@@ -171,15 +183,21 @@ impl Vars {
             default_vars: HashMap::new(),
         };
 
-        // Set default vars.
+        // Set default vars. The dotted specials (`.RECIPEPREFIX`, `.SHELLFLAGS`) are always defined;
+        // the tool vars (`CC`, `AR`, ...) are skipped under `-R`. The `default_vars` cache is always
+        // populated so blank-means-default keys (`.RECIPEPREFIX`) can reset.
         for (k, v) in DEFAULT_VARS {
-            vars.set_origin(k, v, false, Origin::Default).unwrap();
+            if builtins || k.starts_with('.') {
+                vars.set_origin(k, v, false, Origin::Default).unwrap();
+            }
             vars.default_vars.insert(k.to_string(), v.to_string());
         }
 
-        // Set default recursive vars.
-        for (k, v) in DEFAULT_RECURSIVE_VARS {
-            vars.set_origin(k, v, true, Origin::Default).unwrap();
+        // Set default recursive vars (all tool/compile definitions — skipped under `-R`).
+        if builtins {
+            for (k, v) in DEFAULT_RECURSIVE_VARS {
+                vars.set_origin(k, v, true, Origin::Default).unwrap();
+            }
         }
 
         // Set `SHELL` to `/bin/sh` by default.
@@ -302,9 +320,15 @@ impl Vars {
     }
 }
 
-impl From<Env> for Vars {
-    fn from(env: Env) -> Self {
-        let mut vars = Self::new([]);
+impl Vars {
+    /// Build the variable set from the OS environment. `builtin_vars` is false under `-R`, which
+    /// omits make's built-in variables so they do not shadow (or appear as) real definitions.
+    pub fn from_env(env: Env, builtin_vars: bool) -> Self {
+        let mut vars = if builtin_vars {
+            Self::new([])
+        } else {
+            Self::new_without_builtins([])
+        };
 
         for (k, v) in env {
             // Don't ever load `SHELL` from the environment.
@@ -319,6 +343,12 @@ impl From<Env> for Vars {
         }
 
         vars
+    }
+}
+
+impl From<Env> for Vars {
+    fn from(env: Env) -> Self {
+        Self::from_env(env, true)
     }
 }
 

@@ -17,6 +17,12 @@ pub struct Opts {
     /// Do not echo recipe commands before running them (`-s`, like a global `.SILENT:`).
     pub silent: bool,
 
+    /// Disable the built-in implicit rules (`-r`); also clears the default suffix list.
+    pub no_builtin_rules: bool,
+
+    /// Do not define the built-in variables (`-R`); implies `no_builtin_rules`.
+    pub no_builtin_variables: bool,
+
     /// Consider FILE to be very old and do not remake it.
     pub old_file: Vec<String>,
 

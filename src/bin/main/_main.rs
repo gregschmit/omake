@@ -115,6 +115,12 @@ fn apply_makeflags(opts: &mut Opts, makeflags: &str) {
             'i' => opts.ignore_errors = true,
             'B' => opts.always_make = true,
             's' => opts.silent = true,
+            // `-R` (no built-in variables) implies `-r` (no built-in rules).
+            'r' => opts.no_builtin_rules = true,
+            'R' => {
+                opts.no_builtin_rules = true;
+                opts.no_builtin_variables = true;
+            }
             _ => {}
         }
     }
@@ -212,9 +218,13 @@ fn makeflags_assignments(makeflags: &str) -> Vec<String> {
     tokens
 }
 
-/// Encode the effective single-letter flags as `MAKEFLAGS` for sub-makes (e.g. `-k -n` -> "kn").
+/// Encode the effective single-letter flags as `MAKEFLAGS` for sub-makes (e.g. `-k -n` -> "kn"),
+/// in GNU make's canonical order (`B i k n r R s`).
 fn encode_makeflags(opts: &Opts) -> String {
     let mut flags = String::new();
+    if opts.always_make {
+        flags.push('B');
+    }
     if opts.ignore_errors {
         flags.push('i');
     }
@@ -224,11 +234,14 @@ fn encode_makeflags(opts: &Opts) -> String {
     if opts.just_print {
         flags.push('n');
     }
+    if opts.no_builtin_rules {
+        flags.push('r');
+    }
+    if opts.no_builtin_variables {
+        flags.push('R');
+    }
     if opts.silent {
         flags.push('s');
-    }
-    if opts.always_make {
-        flags.push('B');
     }
     flags
 }
@@ -267,10 +280,12 @@ fn main() {
     let parent_makeflags = env::var("MAKEFLAGS").unwrap_or_default();
     let (parent_w, parent_no_w) = makeflags_print_directory(&parent_makeflags);
     let force_print = args.print_directory || parent_w;
+    let explicit_no_print = args.no_print_directory || parent_no_w;
     // `-s` (from the command line or inherited via `MAKEFLAGS`) also turns the directory messages
-    // off, unless `-w`/`--print-directory` was given explicitly (which wins over `-s`).
+    // off, unless `-w`/`--print-directory` was given explicitly (which wins over `-s`). This is not
+    // encoded as `--no-print-directory` in `MAKEFLAGS`: a child re-derives it from the inherited `s`.
     let silent = args.silent || makeflags_has_short_flag(&parent_makeflags, 's');
-    let force_no_print = args.no_print_directory || parent_no_w || (silent && !force_print);
+    let force_no_print = explicit_no_print || (silent && !force_print);
     // The messages are on for `-C`, `-w`, or a sub-make (`MAKELEVEL > 0`), unless turned off above.
     let print_directory =
         !force_no_print && (force_print || !args.directory.is_empty() || level > 0);
@@ -331,7 +346,7 @@ fn main() {
     // inside a value is backslash-escaped so a sub-make can recover it (`make 'FOO=a b'`). The
     // explicit `-w`/`--no-print-directory` choice is propagated so sub-makes inherit it.
     let mut makeflags = encode_makeflags(&opts);
-    if force_no_print {
+    if explicit_no_print {
         makeflags.push_str(" --no-print-directory");
     } else if force_print {
         makeflags.push('w');
@@ -351,7 +366,8 @@ fn main() {
 
     // Build variables from the (updated) environment, then define `MAKE` (for `$(MAKE) -C subdir`)
     // and set `MAKELEVEL` to this level (children see it incremented, via the exported env above).
-    let mut vars: Vars = env::vars().collect::<Env>().into();
+    // Under `-R` the built-in variables are omitted.
+    let mut vars = Vars::from_env(env::vars().collect::<Env>(), !opts.no_builtin_variables);
     // `MAKE` is a built-in default; `MAKELEVEL` comes from the environment (`$(origin ...)`).
     let _ = vars.set_origin("MAKE", make_path.as_str(), false, Origin::Default);
     let _ = vars.set_origin(

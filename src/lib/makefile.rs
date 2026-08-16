@@ -177,6 +177,14 @@ impl<L: Logger> Makefile<L> {
             include_depth: 0,
         };
 
+        // `-r`/`-R` clears the default suffix list before reading the makefile, so no default suffix
+        // rules apply (the makefile can still add its own via `.SUFFIXES:`).
+        if makefile.opts.no_builtin_rules {
+            makefile.suffixes.clear();
+            let _ = makefile.vars.set("SUFFIXES", "", false);
+            let _ = makefile.vars.set(".SUFFIXES", "", false);
+        }
+
         // Open the makefile and run it through the parser.
         let file = File::open(&path).map_err(|e| {
             MakeError::new(&format!("Could not read makefile ({}).", e), path.into())
@@ -184,7 +192,10 @@ impl<L: Logger> Makefile<L> {
         makefile.parse(BufReader::new(file))?;
 
         // Built-in implicit rules are appended after the user's rules so they take lower priority.
-        makefile.rule_map.register_builtins();
+        // `-r`/`-R` disables them.
+        if !makefile.opts.no_builtin_rules {
+            makefile.rule_map.register_builtins();
+        }
 
         Ok(makefile)
     }
