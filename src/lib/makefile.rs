@@ -358,8 +358,10 @@ impl<L: Logger> Makefile<L> {
         }
 
         // Strip inline comments (`#` to end of line) on non-recipe lines. Recipe lines keep `#` so
-        // it can reach the shell, and they already returned above.
-        let line = strip_inline_comment(&line);
+        // it can reach the shell, and they already returned above. The raw line is kept so an inline
+        // `;`-recipe on a rule can recover its (un-stripped) text, where `#` is not a comment.
+        let raw_line = line;
+        let line = strip_inline_comment(&raw_line);
 
         // A BSD `.for VAR... in ITEM...` header does not terminate the pending rule — its body (which
         // may be recipe lines) belongs to that rule — so start capturing before the rule-finalize.
@@ -530,10 +532,11 @@ impl<L: Logger> Makefile<L> {
             }
 
             // There could be a semicolon after prerequisites, in which case we should parse
-            // everything after that as a rule line.
-            let rule = deps.split_once(';').map(|(d, r)| {
+            // everything after that as a rule line. The recipe text is recovered from the raw line
+            // so a `#` in it reaches the shell instead of being stripped as a comment.
+            let rule = deps.split_once(';').map(|(d, _)| {
                 deps = d;
-                r
+                split_inline_recipe(&raw_line).unwrap_or("")
             });
 
             // A second colon in the dependency part introduces a static pattern rule
@@ -2122,6 +2125,15 @@ fn strip_one_trailing_backslash(line: &str) -> String {
     let mut s = line.to_string();
     s.pop();
     s
+}
+
+/// Recover the raw text of a rule's inline recipe (`target: prereqs ; recipe`) from the line before
+/// comment stripping, so a `#` in the recipe reaches the shell instead of being cut as a comment.
+/// Returns the text after the first `;` that follows the rule's `:`. The caller only uses this once
+/// the comment-stripped line has already confirmed the `;` introduces a recipe.
+fn split_inline_recipe(raw: &str) -> Option<&str> {
+    let colon = raw.find(':')?;
+    raw[colon + 1..].split_once(';').map(|(_, recipe)| recipe)
 }
 
 /// Remove an inline comment (from the first unescaped `#` to end of line). An escaped `\#` becomes
