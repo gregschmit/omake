@@ -1593,9 +1593,10 @@ impl<L: Logger> Makefile<L> {
             })
     }
 
-    /// Whether `target`'s recipes should not be echoed (via `.SILENT`).
+    /// Whether `target`'s recipes should not be echoed (via `-s`, `.SILENT`, or a `.SILENT` naming
+    /// the target).
     fn is_silent(&self, target: &str) -> bool {
-        self.special.silent_all || self.special.silent.contains(target)
+        self.opts.silent || self.special.silent_all || self.special.silent.contains(target)
     }
 
     /// Whether recipe errors for `target` should be ignored (via `.IGNORE`).

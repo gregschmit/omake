@@ -14,6 +14,9 @@ pub struct Opts {
     /// Continue building unrelated targets after a recipe fails (`-k`).
     pub keep_going: bool,
 
+    /// Do not echo recipe commands before running them (`-s`, like a global `.SILENT:`).
+    pub silent: bool,
+
     /// Consider FILE to be very old and do not remake it.
     pub old_file: Vec<String>,
 

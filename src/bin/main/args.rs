@@ -49,6 +49,10 @@ pub struct Args {
     #[arg(short, long)]
     pub keep_going: bool,
 
+    /// Don't echo recipes as they are run.
+    #[arg(short, long, visible_alias("quiet"))]
+    pub silent: bool,
+
     /// Don't execute recipes; just print them.
     #[arg(
         short = 'n',
@@ -92,6 +96,7 @@ impl From<Args> for Opts {
             ignore_errors: args.ignore_errors,
             just_print: args.just_print,
             keep_going: args.keep_going,
+            silent: args.silent,
             old_file: args.old_file,
             new_file: args.new_file,
         }

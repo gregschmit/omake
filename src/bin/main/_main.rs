@@ -114,6 +114,7 @@ fn apply_makeflags(opts: &mut Opts, makeflags: &str) {
             'n' => opts.just_print = true,
             'i' => opts.ignore_errors = true,
             'B' => opts.always_make = true,
+            's' => opts.silent = true,
             _ => {}
         }
     }
@@ -136,6 +137,16 @@ fn makeflags_print_directory(makeflags: &str) -> (bool, bool) {
         }
     }
     (on, off)
+}
+
+/// Whether the leading short-flag word of a parent make's `MAKEFLAGS` contains `flag` (e.g. `s` for
+/// `-s`). The first token is the bare (dashless) short-flag cluster; a token starting with `-` is a
+/// long option, so there is no short-flag word.
+fn makeflags_has_short_flag(makeflags: &str, flag: char) -> bool {
+    makeflags
+        .split_whitespace()
+        .next()
+        .is_some_and(|w| !w.starts_with('-') && w.contains(flag))
 }
 
 /// Parse a command-line variable assignment token (`FOO=bar`, `FOO:=bar`). Returns the name,
@@ -213,6 +224,9 @@ fn encode_makeflags(opts: &Opts) -> String {
     if opts.just_print {
         flags.push('n');
     }
+    if opts.silent {
+        flags.push('s');
+    }
     if opts.always_make {
         flags.push('B');
     }
@@ -252,9 +266,12 @@ fn main() {
     // top-level `--no-print-directory` reaches `$(MAKE)`-invoked children too.
     let parent_makeflags = env::var("MAKEFLAGS").unwrap_or_default();
     let (parent_w, parent_no_w) = makeflags_print_directory(&parent_makeflags);
-    let force_no_print = args.no_print_directory || parent_no_w;
     let force_print = args.print_directory || parent_w;
-    // The messages are on for `-C`, `-w`, or a sub-make (`MAKELEVEL > 0`), unless `--no-print-directory`.
+    // `-s` (from the command line or inherited via `MAKEFLAGS`) also turns the directory messages
+    // off, unless `-w`/`--print-directory` was given explicitly (which wins over `-s`).
+    let silent = args.silent || makeflags_has_short_flag(&parent_makeflags, 's');
+    let force_no_print = args.no_print_directory || parent_no_w || (silent && !force_print);
+    // The messages are on for `-C`, `-w`, or a sub-make (`MAKELEVEL > 0`), unless turned off above.
     let print_directory =
         !force_no_print && (force_print || !args.directory.is_empty() || level > 0);
 
