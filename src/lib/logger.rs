@@ -26,6 +26,13 @@ pub trait Logger {
         self.write(self.format_log(INFO, msg, context));
     }
 
+    /// Print a build-status notice to stdout with the plain `prefix:` form and no level tag (e.g.
+    /// "'X' is up to date." / "Nothing to be done for 'X'."), matching GNU make. Distinct from the
+    /// stderr diagnostic path used by `info`/`warn`/`error`.
+    fn notice(&self, msg: &str) {
+        println!("{}: {msg}", self.prefix());
+    }
+
     /// Log a `WARN` message.
     fn warn(&self, msg: &str, context: Option<&Context>) {
         self.write(self.format_log(WARN, msg, context));

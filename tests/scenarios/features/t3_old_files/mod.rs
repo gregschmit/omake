@@ -15,8 +15,8 @@ crate::system_test_cases!(
     },
     {
         args: &["b", "-o", "b"],
-        expected_stdout: "",
-        expected_stderr: "omake: INFO  | Target 'b' is up to date (old).\n",
+        expected_stdout: "omake: 'b' is up to date.\n",
+        expected_stderr: "",
         expected_files: &[],
         pre_hook: {
             std::fs::write("tests/scenarios/features/t3_old_files/a", "a\n").unwrap();

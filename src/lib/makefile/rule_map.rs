@@ -303,9 +303,10 @@ impl Rule {
             _ => false,                                     // absent, or untouched
         };
         if modified {
-            makefile
-                .logger
-                .info(&format!("Deleting file '{target}'"), None);
+            // gmake's form on stderr, `<prog>: *** Deleting file 'X'` (no INFO tag). It still
+            // prints before the recipe-failure error, unlike gmake — matching that order is a
+            // separate error-format change.
+            eprintln!("{}: *** Deleting file '{target}'", makefile.logger.prefix());
             let _ = std::fs::remove_file(target);
         }
     }
@@ -767,7 +768,7 @@ impl RuleMap {
                 } else {
                     format!("Nothing to be done for '{target}'.")
                 };
-                makefile.logger.info(&message, None);
+                makefile.logger.notice(&message);
             }
         }
 
@@ -789,7 +790,8 @@ impl RuleMap {
                 .map(|s| s.as_str())
                 .collect::<Vec<_>>()
                 .join(" ");
-            makefile.logger.info(&format!("rm {names}"), None);
+            // Echoed like a recipe line: plain, to stdout, no prefix (matching gmake).
+            println!("rm {names}");
             if !makefile.opts.just_print {
                 for file in to_delete {
                     let _ = std::fs::remove_file(file);
@@ -925,9 +927,10 @@ impl RuleMap {
         // Old files have their rules ignored. This reports its own status, so mark the target
         // reported (`recipes_run`) to suppress the generic top-level summary.
         if makefile.opts.old_file.iter().any(|f| f == target) {
+            // gmake prints the plain up-to-date line for an assume-old target (no "(old)" note).
             makefile
                 .logger
-                .info(&format!("Target '{target}' is up to date (old)."), None);
+                .notice(&format!("'{target}' is up to date."));
             state.recipes_run += 1;
             return Ok(());
         }

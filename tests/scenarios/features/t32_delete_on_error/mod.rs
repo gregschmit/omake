@@ -4,7 +4,7 @@
 crate::system_test_cases!({
     args: &[],
     expected_stdout: "building\n",
-    expected_stderr: "omake: INFO  | Deleting file 'artifact'\nomake: ERROR [Makefile:5] | Failed with code 1.\n  |\n5 | @false\n  | \n\n",
+    expected_stderr: "omake: *** Deleting file 'artifact'\nomake: ERROR [Makefile:5] | Failed with code 1.\n  |\n5 | @false\n  | \n\n",
     expected_files: &[],
     expected_code: Some(2),
     post_hook: {
