@@ -99,9 +99,8 @@ pub const DEFAULT_RECURSIVE_VARS: [(&str, &str); 36] = [
 /// The "raw" environment variables, coming from the OS.
 pub type Env = HashMap<String, String>;
 
-/// Where a variable's definition came from, reported by `$(origin ...)`. omake does not yet track
-/// command-line assignments or the `override` directive, so those origins are absent; automatic
-/// variables are recognized by name in the `origin` function rather than stored here.
+/// Where a variable's definition came from, reported by `$(origin ...)`. Automatic variables are
+/// recognized by name in the `origin` function rather than stored here.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Origin {
     /// A built-in default (e.g. `CC`, `MAKE`).
@@ -110,6 +109,25 @@ pub enum Origin {
     Environment,
     /// Assigned in a makefile.
     File,
+    /// Assigned on the command line (`make FOO=bar`).
+    CommandLine,
+    /// Assigned with the `override` directive.
+    Override,
+}
+
+impl Origin {
+    /// Precedence rank: an assignment of a higher-ranked origin overrides one of a lower rank (and
+    /// a lower-ranked assignment is a no-op against a higher-ranked binding). This is how a
+    /// command-line variable beats a file assignment, and `override` beats the command line.
+    pub fn rank(self) -> u8 {
+        match self {
+            Origin::Default => 0,
+            Origin::Environment => 1,
+            Origin::File => 2,
+            Origin::CommandLine => 3,
+            Origin::Override => 4,
+        }
+    }
 }
 
 /// A single variable: its value, whether it is recursively expanded, and where it came from.
@@ -197,6 +215,17 @@ impl Vars {
         self.map.contains_key(k.as_ref().trim())
     }
 
+    /// Iterate over every defined variable as `(name, &Var)`. Used by export-all and `$(...)`
+    /// introspection.
+    pub fn iter(&self) -> impl Iterator<Item = (&String, &Var)> {
+        self.map.iter()
+    }
+
+    /// Remove a variable (for the `undefine` directive). Returns its prior [`Var`], if any.
+    pub fn remove(&mut self, k: impl AsRef<str>) -> Option<Var> {
+        self.map.remove(k.as_ref().trim())
+    }
+
     /// Remove the positional call parameters (`$(0)`, `$(1)`, ...): every variable whose name is
     /// all ASCII digits. `$(call ...)` uses this so a nested call does not inherit higher-numbered
     /// parameters from the enclosing call.
@@ -231,6 +260,15 @@ impl Vars {
             if BAD_VARIABLE_CHARS.contains(&ch) {
                 return Err(format!("Variable contains bad character '{ch}'."));
             }
+        }
+
+        // Precedence: a lower-ranked origin cannot overwrite a higher-ranked binding (so a makefile
+        // assignment is a no-op against a command-line or `override` variable). Equal ranks
+        // overwrite, allowing normal reassignment.
+        if let Some(existing) = self.map.get(&k)
+            && existing.origin.rank() > origin.rank()
+        {
+            return Ok(());
         }
 
         if BLANK_MEANS_DEFAULT_VARS.contains(&&k[..]) && v.is_empty() {

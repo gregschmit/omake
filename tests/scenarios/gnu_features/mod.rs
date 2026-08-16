@@ -13,3 +13,6 @@ mod t29_functions;
 mod t30_control_functions;
 mod t31_function_lines;
 mod t32_eval_origin;
+mod t33_directives;
+mod t34_command_line_vars;
+mod t35_path_functions;

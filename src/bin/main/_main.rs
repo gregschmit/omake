@@ -108,6 +108,69 @@ fn apply_makeflags(opts: &mut Opts, makeflags: &str) {
     }
 }
 
+/// Parse a command-line variable assignment token (`FOO=bar`, `FOO:=bar`). Returns the name,
+/// whether the flavor is recursive (`=` yes, `:=`/`::=` no), and the value. Returns `None` if the
+/// token is not an assignment (no `=`, or an empty name).
+fn parse_cmdline_var(token: &str) -> Option<(&str, bool, &str)> {
+    let eq = token.find('=')?;
+    let value = &token[eq + 1..];
+    let mut name = &token[..eq];
+    // A trailing operator char before `=` selects the flavor; `:=`/`::=` are simple.
+    let recursive = if name.ends_with(':') {
+        name = name.trim_end_matches(':');
+        false
+    } else {
+        name = name.trim_end_matches(['+', '?', '!']);
+        true
+    };
+    let name = name.trim();
+    (!name.is_empty()).then_some((name, recursive, value))
+}
+
+/// Backslash-escape whitespace (and the backslash itself) so a `MAKEFLAGS` assignment token
+/// survives whitespace-splitting when a sub-make re-parses it.
+fn escape_makeflag(token: &str) -> String {
+    let mut out = String::with_capacity(token.len());
+    for c in token.chars() {
+        if c == '\\' || c.is_whitespace() {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// Extract the variable-assignment tokens from a `MAKEFLAGS` string (everything after the ` -- `
+/// separator), un-escaping each. This is how a parent make passes command-line variables down.
+fn makeflags_assignments(makeflags: &str) -> Vec<String> {
+    let Some((_, rest)) = makeflags.split_once(" -- ") else {
+        return Vec::new();
+    };
+    // Split on unescaped whitespace, un-escaping `\<char>` to `<char>`.
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut chars = rest.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => {
+                if let Some(next) = chars.next() {
+                    current.push(next);
+                }
+            }
+            c if c.is_whitespace() => {
+                if !current.is_empty() {
+                    tokens.push(std::mem::take(&mut current));
+                }
+            }
+            c => current.push(c),
+        }
+    }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+    tokens
+}
+
 /// Encode the effective single-letter flags as `MAKEFLAGS` for sub-makes (e.g. `-k -n` -> "kn").
 fn encode_makeflags(opts: &Opts) -> String {
     let mut flags = String::new();
@@ -174,12 +237,33 @@ fn main() {
     // Merge flags inherited from a parent make (via `MAKEFLAGS`), then re-encode the effective
     // flags for sub-makes. `MAKELEVEL` tracks the recursion depth.
     let mut opts: Opts = args.clone().into();
-    apply_makeflags(&mut opts, &env::var("MAKEFLAGS").unwrap_or_default());
+    let parent_makeflags = env::var("MAKEFLAGS").unwrap_or_default();
+    apply_makeflags(&mut opts, &parent_makeflags);
     let level: u32 = env::var("MAKELEVEL")
         .ok()
         .and_then(|s| s.trim().parse().ok())
         .unwrap_or(0);
-    let makeflags = encode_makeflags(&opts);
+
+    // A command-line token containing `=` is a variable assignment (`make FOO=bar`), not a goal.
+    // These also arrive from a parent make via `MAKEFLAGS` (after `--`), so sub-makes inherit them.
+    let (cmdline_tokens, goals): (Vec<String>, Vec<String>) = args
+        .targets
+        .iter()
+        .cloned()
+        .partition(|t| parse_cmdline_var(t).is_some());
+    let cmdline_tokens: Vec<String> = makeflags_assignments(&parent_makeflags)
+        .into_iter()
+        .chain(cmdline_tokens)
+        .collect();
+
+    // Re-encode MAKEFLAGS with the command-line assignments after a `--` separator. Whitespace
+    // inside a value is backslash-escaped so a sub-make can recover it (`make 'FOO=a b'`).
+    let mut makeflags = encode_makeflags(&opts);
+    if !cmdline_tokens.is_empty() {
+        makeflags.push_str(" -- ");
+        let escaped: Vec<String> = cmdline_tokens.iter().map(|t| escape_makeflag(t)).collect();
+        makeflags.push_str(&escaped.join(" "));
+    }
 
     // Export MAKEFLAGS/MAKELEVEL to recipe children (and thus sub-makes). This runs once, at
     // startup on the main thread, before anything reads the environment concurrently.
@@ -199,6 +283,18 @@ fn main() {
         false,
         Origin::Environment,
     );
+    // Command-line variables override makefile assignments (via origin precedence) and are
+    // auto-exported to recipes. A `:=` (simple) value is expanded once, immediately.
+    for token in &cmdline_tokens {
+        if let Some((name, recursive, value)) = parse_cmdline_var(token) {
+            let stored = if recursive {
+                value.to_string()
+            } else {
+                omake::expand::expand(value, &vars).unwrap_or_else(|_| value.to_string())
+            };
+            let _ = vars.set_origin(name, stored.as_str(), recursive, Origin::CommandLine);
+        }
+    }
 
     // Parse the makefile.
     let makefile = match Makefile::new(makefile_fn, opts, vars, DefaultLogger {}) {
@@ -206,8 +302,8 @@ fn main() {
         Ok(m) => m,
     };
 
-    // Execute the makefile.
-    if let Err(e) = makefile.execute(args.targets) {
+    // Execute the makefile (command-line variable assignments are not goals).
+    if let Err(e) = makefile.execute(goals) {
         exit_with(&logger, &e.msg, Some(e.context));
     }
 

@@ -16,7 +16,7 @@ use std::{fs, fs::File};
 use crate::error::MakeError;
 use crate::expand::{expand, expand_collect};
 use crate::logger::{Logger, context::Context};
-use crate::vars::Vars;
+use crate::vars::{Origin, Vars};
 
 use rule_map::{Rule, RuleMap};
 
@@ -46,6 +46,8 @@ struct DefineCapture {
     name: String,
     /// Assignment flavor from the `define` line (`define X :=`, etc.); default is recursive.
     op: AssignOp,
+    /// `File`, or `Override` for `override define`.
+    origin: Origin,
     /// Body lines collected so far (verbatim).
     body: Vec<String>,
     /// Nesting depth of inner `define`/`endef` pairs within the body.
@@ -77,6 +79,9 @@ pub struct Makefile<L: Logger> {
     exported: HashSet<String>,
     /// Names marked `unexport` — removed from recipe child environments (even if inherited).
     unexported: HashSet<String>,
+    /// A bare `export` / `.EXPORT_ALL_VARIABLES:` exports every file/environment variable with a
+    /// valid identifier name (minus any `unexport`ed).
+    export_all: bool,
     /// `vpath PATTERN DIRS` directives: directories to search for files matching each pattern.
     vpaths: Vec<(String, Vec<String>)>,
     /// Known suffixes (from `.SUFFIXES`), used to recognize suffix rules like `.c.o:`.
@@ -103,6 +108,7 @@ impl<L: Logger> Makefile<L> {
             special: SpecialTargets::default(),
             exported: HashSet::new(),
             unexported: HashSet::new(),
+            export_all: false,
             vpaths: Vec::new(),
             suffixes: crate::vars::DEFAULT_SUFFIXES
                 .iter()
@@ -339,13 +345,20 @@ impl<L: Logger> Makefile<L> {
             return self.handle_export(export, rest);
         }
 
-        // Handle `vpath` directives.
-        if let Some(rest) = parse_vpath(trimmed_line) {
-            return self.handle_vpath(rest);
+        // Handle `[override] undefine NAME`.
+        if let Some((override_, name)) = parse_undefine(trimmed_line) {
+            return self.handle_undefine(override_, name);
         }
 
-        // Handle `define NAME [op]` — begin capturing a multi-line variable.
-        if let Some(rest) = parse_define(trimmed_line) {
+        // An optional leading `override` (with `Override` precedence) applies to a `define` or an
+        // assignment. Strip it so both forms below can handle it.
+        let (origin, directive) = match trimmed_line.strip_prefix("override") {
+            Some(rest) if rest.starts_with([' ', '\t']) => (Origin::Override, rest.trim_start()),
+            _ => (Origin::File, trimmed_line),
+        };
+
+        // Handle `[override] define NAME [op]` — begin capturing a multi-line variable.
+        if let Some(rest) = parse_define(directive) {
             let (name, op) = match parse_assignment(rest) {
                 Some((key, op, _)) => (key.trim().to_string(), op),
                 None => (rest.trim().to_string(), AssignOp::Recursive),
@@ -353,10 +366,25 @@ impl<L: Logger> Makefile<L> {
             self.defining = Some(DefineCapture {
                 name,
                 op,
+                origin,
                 body: Vec::new(),
                 depth: 0,
             });
             return Ok(());
+        }
+
+        // Handle `override VAR op value` — an assignment with override precedence (it beats a
+        // command-line variable). Must run before plain assignment detection, which would otherwise
+        // read `override VAR` as the key.
+        if origin == Origin::Override
+            && let Some((key, op, value)) = parse_assignment(directive)
+        {
+            return self.assign(key, op, value.trim_start(), Origin::Override);
+        }
+
+        // Handle `vpath` directives.
+        if let Some(rest) = parse_vpath(trimmed_line) {
+            return self.handle_vpath(rest);
         }
 
         // Handle variable assignments. This must run before rule detection so operators like `:=`,
@@ -433,12 +461,19 @@ impl<L: Logger> Makefile<L> {
     /// Apply a variable assignment with the semantics of its operator, stripping the leading
     /// whitespace that follows the operator (`FOO =   value`).
     fn handle_assignment(&mut self, key: &str, op: AssignOp, value: &str) -> Result<(), MakeError> {
-        self.assign(key, op, value.trim_start())
+        self.assign(key, op, value.trim_start(), Origin::File)
     }
 
-    /// Apply an assignment with `value` used verbatim (no leading-whitespace trimming). Used for
-    /// `define` bodies, where leading whitespace is significant.
-    fn assign(&mut self, key: &str, op: AssignOp, value: &str) -> Result<(), MakeError> {
+    /// Apply an assignment with `value` used verbatim (no leading-whitespace trimming), recording
+    /// `origin` (`File` for a normal assignment, `Override` for the `override` directive). Used for
+    /// `define` bodies too, where leading whitespace is significant.
+    fn assign(
+        &mut self,
+        key: &str,
+        op: AssignOp,
+        value: &str,
+        origin: Origin,
+    ) -> Result<(), MakeError> {
         if key.trim().is_empty() {
             return Err(MakeError::new("Empty variable name.", self.context.clone()));
         }
@@ -450,12 +485,14 @@ impl<L: Logger> Makefile<L> {
 
         match op {
             // Recursive (`=`): store the raw value, expanded lazily at each use.
-            AssignOp::Recursive => self.vars.set(key, value, true).map_err(err),
+            AssignOp::Recursive => self.vars.set_origin(key, value, true, origin).map_err(err),
 
             // Simple (`:=` / `::=`): expand the value now and store the result.
             AssignOp::Simple => {
                 let expanded = self.expand_str(value)?;
-                self.vars.set(key, &expanded, false).map_err(err)
+                self.vars
+                    .set_origin(key, &expanded, false, origin)
+                    .map_err(err)
             }
 
             // Conditional (`?=`): set (recursively) only if not already defined.
@@ -463,14 +500,14 @@ impl<L: Logger> Makefile<L> {
                 if self.vars.is_set(key) {
                     return Ok(());
                 }
-                self.vars.set(key, value, true).map_err(err)
+                self.vars.set_origin(key, value, true, origin).map_err(err)
             }
 
             // Append (`+=`): if undefined, act like `=`; otherwise append preserving the target's
             // flavor (simple variables expand the addition now, recursive ones keep it raw).
             AssignOp::Append => {
                 if !self.vars.is_set(key) {
-                    return self.vars.set(key, value, true).map_err(err);
+                    return self.vars.set_origin(key, value, true, origin).map_err(err);
                 }
 
                 let existing = self.vars.get(key);
@@ -488,7 +525,9 @@ impl<L: Logger> Makefile<L> {
                     format!("{existing_value} {addition}")
                 };
 
-                self.vars.set(key, &new_value, recursive).map_err(err)
+                self.vars
+                    .set_origin(key, &new_value, recursive, origin)
+                    .map_err(err)
             }
 
             // Shell (`!=`): run the (expanded) value through the shell; store stdout with trailing
@@ -525,7 +564,9 @@ impl<L: Logger> Makefile<L> {
                 }
                 let result = result.replace("\r\n", " ").replace('\n', " ");
 
-                self.vars.set(key, &result, true).map_err(err)
+                self.vars
+                    .set_origin(key, &result, true, origin)
+                    .map_err(err)
             }
         }
     }
@@ -942,7 +983,12 @@ impl<L: Logger> Makefile<L> {
         if is_endef && self.defining.as_ref().unwrap().depth == 0 {
             let capture = self.defining.take().unwrap();
             // The body is assigned verbatim (leading whitespace within it is significant).
-            return self.assign(&capture.name, capture.op, &capture.body.join("\n"));
+            return self.assign(
+                &capture.name,
+                capture.op,
+                &capture.body.join("\n"),
+                capture.origin,
+            );
         }
 
         let capture = self.defining.as_mut().unwrap();
@@ -967,13 +1013,45 @@ impl<L: Logger> Makefile<L> {
             return Ok(());
         }
 
-        // Otherwise a (possibly empty, possibly computed) list of names. A bare `export`/`unexport`
-        // affecting all variables is not supported yet; treat it as a no-op.
+        // A bare `export` / `unexport` (no names) toggles the export-all flag.
+        if rest.is_empty() {
+            self.export_all = export;
+            return Ok(());
+        }
+
+        // Otherwise a (possibly computed) list of names.
         let expanded =
             expand(rest, &self.vars).map_err(|e| MakeError::new(&e, self.context.clone()))?;
         for name in expanded.split_whitespace() {
             self.set_exported(name, export);
         }
+        Ok(())
+    }
+
+    /// Handle `[override] undefine NAME`: remove the variable. The whole (expanded) argument is a
+    /// single name. Without `override`, a command-line/`override`-origin variable is left alone
+    /// (matching assignment precedence). Removing a variable also drops it from recipe children.
+    fn handle_undefine(&mut self, override_: bool, name: &str) -> Result<(), MakeError> {
+        let name =
+            expand(name, &self.vars).map_err(|e| MakeError::new(&e, self.context.clone()))?;
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(MakeError::new("Empty variable name.", self.context.clone()));
+        }
+
+        // Respect origin precedence: a plain `undefine` cannot remove a command-line or `override`
+        // variable.
+        if !override_
+            && self.vars.is_set(name)
+            && self.vars.get(name).origin.rank() > Origin::File.rank()
+        {
+            return Ok(());
+        }
+
+        self.vars.remove(name);
+        // Drop it from recipe children too (it was exported, an env var, or neither).
+        self.exported.remove(name);
+        self.unexported.insert(name.to_string());
         Ok(())
     }
 
@@ -992,13 +1070,31 @@ impl<L: Logger> Makefile<L> {
     /// The environment changes for a recipe child: variables to add (as `NAME=value`) and names to
     /// remove (so `unexport` also drops inherited environment variables).
     fn exported_env(&self, vars: &Vars) -> (Vec<(String, String)>, Vec<String>) {
-        let adds = self
-            .exported
-            .iter()
+        // Names to export: those named explicitly, plus (under export-all) every file/environment
+        // variable with a valid identifier name. `unexport`ed names are excluded.
+        let mut names: HashSet<&str> = self.exported.iter().map(String::as_str).collect();
+        for (name, var) in vars.iter() {
+            // Command-line variables are always exported; export-all also exports file/environment
+            // variables with a valid identifier name.
+            let cmdline = matches!(var.origin, Origin::CommandLine);
+            let by_all = self.export_all
+                && matches!(
+                    var.origin,
+                    Origin::File | Origin::Environment | Origin::Override
+                )
+                && is_env_identifier(name);
+            if cmdline || by_all {
+                names.insert(name);
+            }
+        }
+
+        let adds = names
+            .into_iter()
+            .filter(|name| !self.unexported.contains(*name))
             .filter_map(|name| {
                 expand(&vars.get(name).value, vars)
                     .ok()
-                    .map(|value| (name.clone(), value))
+                    .map(|value| (name.to_string(), value))
             })
             .collect();
         let removes = self.unexported.iter().cloned().collect();
@@ -1100,6 +1196,8 @@ impl<L: Logger> Makefile<L> {
                     }
                 }
                 ".DEFAULT" => self.special.default_recipe = rule.recipe.clone(),
+                // `.EXPORT_ALL_VARIABLES:` is another spelling of a bare `export`.
+                ".EXPORT_ALL_VARIABLES" => self.export_all = true,
                 // `.SUFFIXES:` with no prerequisites clears the suffix list; otherwise it appends.
                 ".SUFFIXES" => {
                     if rule.prerequisites.is_empty() {
@@ -1250,6 +1348,19 @@ fn parse_export(trimmed: &str) -> Option<(bool, &str)> {
     None
 }
 
+/// If `trimmed` is an `undefine NAME` directive (optionally `override undefine NAME`), return
+/// whether it was `override` and the (unexpanded) name argument — the whole rest of the line, not
+/// split. `undefine` must be followed by whitespace and a non-empty argument.
+fn parse_undefine(trimmed: &str) -> Option<(bool, &str)> {
+    let (override_, rest) = match trimmed.strip_prefix("override") {
+        Some(r) if r.starts_with([' ', '\t']) => (true, r.trim_start()),
+        _ => (false, trimmed),
+    };
+    let name = rest.strip_prefix("undefine")?;
+    name.starts_with([' ', '\t'])
+        .then(|| (override_, name.trim()))
+}
+
 /// If `trimmed` is an `include`/`-include`/`sinclude` directive, return whether missing files are
 /// tolerated and the (unexpanded) filename list.
 fn parse_include(trimmed: &str) -> Option<(bool, &str)> {
@@ -1348,6 +1459,14 @@ fn strip_full_parens(expr: &str) -> Option<&str> {
         }
     }
     None
+}
+
+/// Whether `name` is a valid environment-variable identifier (`[A-Za-z_][A-Za-z0-9_]*`). Export-all
+/// only exports variables with such names (so dotted/hyphenated names are skipped).
+fn is_env_identifier(name: &str) -> bool {
+    let mut chars = name.chars();
+    matches!(chars.next(), Some(c) if c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// Expand any glob patterns among `words` against the filesystem. A word with a metacharacter is

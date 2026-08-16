@@ -291,7 +291,7 @@ fn function_arity(name: &str) -> Option<usize> {
         "subst" | "patsubst" | "wordlist" => 3,
         "filter" | "filter-out" | "word" | "addprefix" | "addsuffix" | "join" => 2,
         "wildcard" | "strip" | "sort" | "words" | "firstword" | "lastword" | "dir" | "notdir"
-        | "basename" | "suffix" => 1,
+        | "basename" | "suffix" | "realpath" | "abspath" | "file" => 1,
         _ => return None,
     })
 }
@@ -302,7 +302,10 @@ fn call_function(name: &str, args: &[String]) -> Result<String, String> {
     Ok(match name {
         "word" => return func_word(args),
         "wordlist" => return func_wordlist(args),
+        "file" => return func_file(arg(args, 0)),
         "wildcard" => wildcard(arg(args, 0)),
+        "realpath" => func_realpath(arg(args, 0)),
+        "abspath" => func_abspath(arg(args, 0)),
         "subst" => func_subst(args),
         "patsubst" => func_patsubst(args),
         "strip" => func_strip(arg(args, 0)),
@@ -580,6 +583,8 @@ fn func_origin(raw_args: &str, vars: &Vars, ctx: &mut Expander) -> Result<String
             Origin::Default => "default",
             Origin::Environment => "environment",
             Origin::File => "file",
+            Origin::CommandLine => "command line",
+            Origin::Override => "override",
         }
     };
     Ok(origin.to_string())
@@ -632,6 +637,109 @@ fn func_diagnostic(
         Stream::Stdout => println!("{message}"),
         Stream::Stderr => eprintln!("{message}"),
     }
+    Ok(String::new())
+}
+
+/// `$(realpath NAMES)`: the canonical absolute path of each name (symlinks resolved). A name that
+/// does not exist contributes nothing, so the word count may be less than the input count.
+fn func_realpath(names: &str) -> String {
+    names
+        .split_whitespace()
+        .filter_map(|name| {
+            std::fs::canonicalize(name)
+                .ok()
+                .map(|p| p.to_string_lossy().into_owned())
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// `$(abspath NAMES)`: the absolute path of each name, resolved purely lexically (`.`/`..`
+/// collapsed, no symlink resolution, no filesystem access). Always one output word per input.
+fn func_abspath(names: &str) -> String {
+    names
+        .split_whitespace()
+        .map(abspath_one)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn abspath_one(name: &str) -> String {
+    // Make absolute against the current directory, then normalize components textually.
+    let combined = if name.starts_with('/') {
+        name.to_string()
+    } else {
+        let cwd = std::env::current_dir()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        format!("{cwd}/{name}")
+    };
+    let mut parts: Vec<&str> = Vec::new();
+    for comp in combined.split('/') {
+        match comp {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            c => parts.push(c),
+        }
+    }
+    format!("/{}", parts.join("/"))
+}
+
+/// `$(file OP PATH[,TEXT])`: write (`>`), append (`>>`), or read (`<`) a file, performed during
+/// expansion. Write/append return the empty string; read returns the contents with one trailing
+/// newline removed. A missing or invalid operator is an error.
+fn func_file(arg: &str) -> Result<String, String> {
+    let arg = arg.trim_start();
+    let (append, rest) = if let Some(rest) = arg.strip_prefix(">>") {
+        (Some(true), rest)
+    } else if let Some(rest) = arg.strip_prefix('>') {
+        (Some(false), rest)
+    } else if let Some(rest) = arg.strip_prefix('<') {
+        // Read: the path is the first whitespace-delimited token; extra tokens are ignored. A `>`
+        // in the operator position (`<>`) is an invalid combined operator; a missing path errors.
+        let rest = rest.trim_start();
+        if rest.starts_with('>') {
+            return Err("file: invalid file operation".to_string());
+        }
+        let path = rest.split_whitespace().next().unwrap_or("");
+        if path.is_empty() {
+            return Err("file: missing filename".to_string());
+        }
+        let content = std::fs::read_to_string(path).unwrap_or_default();
+        return Ok(content.strip_suffix('\n').unwrap_or(&content).to_string());
+    } else {
+        return Err("file: invalid file operation".to_string());
+    };
+
+    // Write/append: the path is up to the first comma (whitespace-trimmed, first token); the text
+    // after the comma is literal. A trailing newline is added unless the text already ends in one.
+    let (path_part, data) = match rest.split_once(',') {
+        // A trailing newline is added unless the text already ends in one (so empty text writes a
+        // lone newline).
+        Some((path, text)) if text.ends_with('\n') => (path, text.to_string()),
+        Some((path, text)) => (path, format!("{text}\n")),
+        // No comma at all: write nothing (a 0-byte file, still truncating for `>`).
+        None => (rest, String::new()),
+    };
+    let path = path_part.split_whitespace().next().unwrap_or("");
+
+    let file = if append == Some(true) {
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+    } else {
+        std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(path)
+    };
+    use std::io::Write;
+    file.and_then(|mut f| f.write_all(data.as_bytes()))
+        .map_err(|e| format!("file: {e}"))?;
     Ok(String::new())
 }
 
@@ -1287,5 +1395,27 @@ mod tests {
         let (result, evals) = expand_collect("[$(eval X := 1)]", &vars).unwrap();
         assert_eq!(result, "[]");
         assert_eq!(evals, vec!["X := 1".to_string()]);
+    }
+
+    #[test]
+    fn test_path_and_file_functions() {
+        let vars = Vars::new([]);
+        let e = |s: &str| expand(s, &vars).unwrap();
+
+        // `$(abspath)` is pure-lexical; absolute inputs are deterministic.
+        assert_eq!(e("$(abspath /x/./y/../z)"), "/x/z");
+        assert_eq!(e("$(abspath /a/b/ /c//d)"), "/a/b /c/d");
+
+        // `$(file)`: write then read round-trips (a trailing newline is added on write and one is
+        // stripped on read); append concatenates; an invalid operator errors.
+        let path = std::env::temp_dir().join("omake_file_fn_test.txt");
+        let p = path.to_string_lossy();
+        assert_eq!(e(&format!("$(file > {p},hello)")), "");
+        assert_eq!(e(&format!("$(file < {p})")), "hello");
+        e(&format!("$(file >> {p},world)"));
+        assert_eq!(e(&format!("$(file < {p})")), "hello\nworld");
+        assert_eq!(e("$(file < /no/such/omake/file)"), "");
+        assert!(expand("$(file bogus)", &vars).is_err());
+        let _ = std::fs::remove_file(&path);
     }
 }
