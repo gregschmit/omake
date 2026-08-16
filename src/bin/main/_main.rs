@@ -119,6 +119,25 @@ fn apply_makeflags(opts: &mut Opts, makeflags: &str) {
     }
 }
 
+/// Read the working-directory-message preference a parent make passed in `MAKEFLAGS`: `w` in the
+/// leading short-flag word forces the "Entering/Leaving directory" messages on, a
+/// `--no-print-directory` token forces them off. Returns `(force_on, force_off)`. Tokens after the
+/// ` -- ` variables separator are ignored.
+fn makeflags_print_directory(makeflags: &str) -> (bool, bool) {
+    let (mut on, mut off) = (false, false);
+    for (i, tok) in makeflags.split_whitespace().enumerate() {
+        match tok {
+            "--" => break,
+            "--no-print-directory" => off = true,
+            "--print-directory" => on = true,
+            // The first bare (dashless) word is the short-flag cluster.
+            _ if i == 0 && !tok.starts_with('-') && tok.contains('w') => on = true,
+            _ => {}
+        }
+    }
+    (on, off)
+}
+
 /// Parse a command-line variable assignment token (`FOO=bar`, `FOO:=bar`). Returns the name,
 /// whether the flavor is recursive (`=` yes, `:=`/`::=` no), and the value. Returns `None` if the
 /// token is not an assignment (no `=`, or an empty name).
@@ -228,9 +247,16 @@ fn main() {
     let make_path = resolve_make_path();
 
     // GNU make prints "Entering/Leaving directory" around a `-C` chdir, unless `--no-print-directory`
-    // (the messages are on by default when a directory is given, and `-w` forces them on).
+    // (the messages are on by default when a directory is given, and `-w` forces them on). The
+    // `-w`/`--no-print-directory` choice is inherited from a parent make via `MAKEFLAGS`, so a
+    // top-level `--no-print-directory` reaches `$(MAKE)`-invoked children too.
+    let parent_makeflags = env::var("MAKEFLAGS").unwrap_or_default();
+    let (parent_w, parent_no_w) = makeflags_print_directory(&parent_makeflags);
+    let force_no_print = args.no_print_directory || parent_no_w;
+    let force_print = args.print_directory || parent_w;
+    // The messages are on for `-C`, `-w`, or a sub-make (`MAKELEVEL > 0`), unless `--no-print-directory`.
     let print_directory =
-        !args.no_print_directory && (args.print_directory || !args.directory.is_empty());
+        !force_no_print && (force_print || !args.directory.is_empty() || level > 0);
 
     // Change to another directory, if specified by the arguments.
     let original_dir = if args.directory.is_empty() {
@@ -247,16 +273,19 @@ fn main() {
             .fold(PathBuf::new(), |dir, d| dir.join(d));
         env::set_current_dir(&dir)
             .unwrap_or_else(|e| exit_with(&logger, &format!("Chdir failed: {e}."), None));
-        if print_directory && let Ok(now) = env::current_dir() {
-            println!(
-                "{}: Entering directory '{}'",
-                logger.prefix(),
-                now.display()
-            );
-        }
 
         Some(cwd)
     };
+
+    // Announce the working directory (GNU make does this for `-C`, `-w`, and sub-makes), naming the
+    // current directory even when no `-C` was given.
+    if print_directory && let Ok(now) = env::current_dir() {
+        println!(
+            "{}: Entering directory '{}'",
+            logger.prefix(),
+            now.display()
+        );
+    }
 
     // Determine the makefile to read.
     let makefile_fn = match args.file {
@@ -267,7 +296,6 @@ fn main() {
     // Merge flags inherited from a parent make (via `MAKEFLAGS`), then re-encode the effective
     // flags for sub-makes. `MAKELEVEL` tracks the recursion depth.
     let mut opts: Opts = args.clone().into();
-    let parent_makeflags = env::var("MAKEFLAGS").unwrap_or_default();
     apply_makeflags(&mut opts, &parent_makeflags);
 
     // A command-line token containing `=` is a variable assignment (`make FOO=bar`), not a goal.
@@ -283,8 +311,14 @@ fn main() {
         .collect();
 
     // Re-encode MAKEFLAGS with the command-line assignments after a `--` separator. Whitespace
-    // inside a value is backslash-escaped so a sub-make can recover it (`make 'FOO=a b'`).
+    // inside a value is backslash-escaped so a sub-make can recover it (`make 'FOO=a b'`). The
+    // explicit `-w`/`--no-print-directory` choice is propagated so sub-makes inherit it.
     let mut makeflags = encode_makeflags(&opts);
+    if force_no_print {
+        makeflags.push_str(" --no-print-directory");
+    } else if force_print {
+        makeflags.push('w');
+    }
     if !cmdline_tokens.is_empty() {
         makeflags.push_str(" -- ");
         let escaped: Vec<String> = cmdline_tokens.iter().map(|t| escape_makeflag(t)).collect();
@@ -329,17 +363,19 @@ fn main() {
     };
 
     // Execute the makefile (command-line variable assignments are not goals).
-    if let Err(e) = makefile.execute(goals) {
-        exit_with(&logger, &e.msg, Some(e.context));
-    }
+    let result = makefile.execute(goals);
 
-    // Go back to the original directory, if we changed directory previously. The "Leaving" message
-    // names the directory being left (the current one), not the one returned to.
+    // Announce leaving the working directory (naming the current one), then return to the original
+    // directory if `-C` changed it. This runs whether or not the build succeeded.
+    if print_directory && let Ok(now) = env::current_dir() {
+        println!("{}: Leaving directory '{}'", logger.prefix(), now.display());
+    }
     if let Some(cwd) = original_dir {
-        if print_directory && let Ok(now) = env::current_dir() {
-            println!("{}: Leaving directory '{}'", logger.prefix(), now.display());
-        }
         env::set_current_dir(&cwd)
             .unwrap_or_else(|e| exit_with(&logger, &format!("Chdir failed: {e}."), None));
+    }
+
+    if let Err(e) = result {
+        exit_with(&logger, &e.msg, Some(e.context));
     }
 }
