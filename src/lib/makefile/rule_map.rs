@@ -31,6 +31,11 @@ pub struct Rule {
     /// rebuild.
     pub order_only: Vec<String>,
     pub recipe: Vec<String>,
+    /// Whether a recipe section was present, even if it holds no command lines (e.g. `target:;` or
+    /// a target followed by a blank recipe line). GNU make treats such a target as "having commands"
+    /// — it reports it up to date rather than "Nothing to be done" — so this is tracked separately
+    /// from `recipe` being non-empty.
+    pub has_recipe: bool,
     pub context: Context,
     pub double_colon: bool,
 }
@@ -39,15 +44,26 @@ impl Rule {
     /// Execute this rule's recipe for a specific `target` (one rule may have several targets, and
     /// automatic variables like `$@` depend on which one is being built). `stem` is the `%` match
     /// for a pattern rule (used for `$*`); it is empty for explicit rules.
+    /// Returns the number of command lines actually echoed or run (lines that were only command
+    /// modifiers such as `@` execute nothing and are not counted). The caller uses this to decide
+    /// whether any real work happened for the "up to date" / "Nothing to be done" summary.
     pub fn execute<L: Logger>(
         &self,
         makefile: &Makefile<L>,
         target: &str,
         stem: &str,
-    ) -> Result<(), MakeError> {
+    ) -> Result<usize, MakeError> {
         // Build a per-target variable scope: the makefile's variables plus automatic variables.
         let mut vars = makefile.vars.clone();
         self.set_automatic_vars(&mut vars, makefile, target, stem);
+
+        let mut commands_run = 0;
+
+        // For `.DELETE_ON_ERROR:`, remember the target file's state so a failing recipe can tell
+        // whether it modified the target (and should therefore delete it).
+        let mtime_before = std::fs::metadata(target)
+            .ok()
+            .and_then(|m| m.modified().ok());
 
         let shell = vars.get("SHELL").value.clone();
         let shell_flags = vars
@@ -98,6 +114,8 @@ impl Rule {
                 if command.is_empty() {
                     continue;
                 }
+                // A real command line: it will be echoed and/or run, so it counts as work done.
+                commands_run += 1;
 
                 // Echo the command to stdout, unless silenced. `--just-print` always echoes.
                 if (!silent && !silent_target) || makefile.opts.just_print {
@@ -123,21 +141,55 @@ impl Rule {
 
                 // Check for command errors, unless directed to ignore them.
                 if !ignore_errors && !ignore_target && !makefile.opts.ignore_errors {
-                    match res.code() {
-                        Some(0) => {}
-                        Some(code) => {
-                            return Err(MakeError::new(
-                                &format!("Failed with code {code}."),
-                                self.context.clone(),
-                            ));
-                        }
-                        None => return Err(MakeError::new("Killed.", self.context.clone())),
+                    let error = match res.code() {
+                        Some(0) => None,
+                        Some(code) => Some(format!("Failed with code {code}.")),
+                        None => Some("Killed.".to_string()),
+                    };
+                    if let Some(msg) = error {
+                        self.remove_target_on_error(makefile, target, stem, mtime_before);
+                        return Err(MakeError::new(&msg, self.context.clone()));
                     }
                 }
             }
         }
 
-        Ok(())
+        Ok(commands_run)
+    }
+
+    /// Under `.DELETE_ON_ERROR:`, delete `target` if a failing recipe created or modified it (so a
+    /// partial/corrupt file is not left looking up to date). `.PRECIOUS` and phony targets are
+    /// exempt. Matches GNU make, which only deletes a target the recipe actually touched. A
+    /// non-empty `stem` means this is a pattern-rule build, which lets `.PRECIOUS` pattern entries
+    /// (e.g. `%.o`) protect the target — gmake honors those only for implicitly-built targets.
+    fn remove_target_on_error<L: Logger>(
+        &self,
+        makefile: &Makefile<L>,
+        target: &str,
+        stem: &str,
+        mtime_before: Option<std::time::SystemTime>,
+    ) {
+        let pattern_build = !stem.is_empty();
+        if !makefile.delete_on_error()
+            || makefile.is_precious(target, pattern_build)
+            || makefile.is_phony(target)
+        {
+            return;
+        }
+        let mtime_after = std::fs::metadata(target)
+            .ok()
+            .and_then(|m| m.modified().ok());
+        let modified = match (mtime_before, mtime_after) {
+            (None, Some(_)) => true,                        // created by the recipe
+            (Some(before), Some(after)) => after != before, // modified by the recipe
+            _ => false,                                     // absent, or untouched
+        };
+        if modified {
+            makefile
+                .logger
+                .info(&format!("Deleting file '{target}'"), None);
+            let _ = std::fs::remove_file(target);
+        }
     }
 
     /// Populate `vars` with the automatic variables for building `target` (with `stem` as `$*`).
@@ -419,7 +471,19 @@ impl RuleMap {
         let mut state = ExecState::default();
         for target in targets {
             // Top-level targets have no parent edge (they cannot be circular on first entry).
+            let recipes_before = state.recipes_run;
             self.execute_target(makefile, target, "", &mut state)?;
+
+            // If nothing ran for this goal, report it: "up to date" when the goal carries a recipe
+            // of its own, else "Nothing to be done" (matching GNU make).
+            if state.recipes_run == recipes_before && !state.failed.contains(target) {
+                let message = if self.has_recipe(makefile, target) {
+                    format!("'{target}' is up to date.")
+                } else {
+                    format!("Nothing to be done for '{target}'.")
+                };
+                makefile.logger.info(&message, None);
+            }
         }
 
         // Under `--keep-going` failures are recorded rather than propagated, so report them now.
@@ -502,10 +566,12 @@ impl RuleMap {
                         prerequisites: vec![],
                         order_only: vec![],
                         recipe: default.to_vec(),
+                        has_recipe: true,
                         context: Context::new(),
                         double_colon: false,
                     };
-                    return rule.execute(makefile, target, "");
+                    state.recipes_run += rule.execute(makefile, target, "")?;
+                    return Ok(());
                 }
                 return Err(MakeError::new(
                     &format!("No rule to make target '{target}'."),
@@ -514,15 +580,16 @@ impl RuleMap {
             }
         };
 
-        // Old files have their rules ignored.
+        // Old files have their rules ignored. This reports its own status, so mark the target
+        // reported (`recipes_run`) to suppress the generic top-level summary.
         if makefile.opts.old_file.iter().any(|f| f == target) {
             makefile
                 .logger
                 .info(&format!("Target '{target}' is up to date (old)."), None);
+            state.recipes_run += 1;
             return Ok(());
         }
 
-        let mut executed = false;
         for i in rule_indices {
             let rule = &self.rules[i.to_owned()];
             // Re-read the target mtime per rule so a double-colon rule sees files written by an
@@ -576,19 +643,40 @@ impl RuleMap {
             }
 
             if target_mtime_opt.is_none() || should_execute {
-                rule.execute(makefile, target, "")?;
-                executed = true;
+                state.recipes_run += rule.execute(makefile, target, "")?;
             }
         }
 
-        if !executed {
-            makefile.logger.info(
-                &format!("Target '{target}' is up to date."),
-                Some(&Context::new()),
-            );
-        }
-
         Ok(())
+    }
+
+    /// Whether `target` "has commands" for the up-to-date vs Nothing-to-be-done summary (used when a
+    /// goal needed no work). Like GNU make: a phony target is never up to date; otherwise the target
+    /// has commands if it has an explicit rule with a recipe section (even an empty one), or an
+    /// applicable implicit (pattern/built-in) rule with a recipe.
+    fn has_recipe<L: Logger>(&self, makefile: &Makefile<L>, target: &str) -> bool {
+        if makefile.is_phony(target) {
+            return false;
+        }
+        // An explicit rule decides on its own (gmake does not fall back to a pattern or `.DEFAULT`
+        // for the wording once the target has a rule). A double-colon target's wording keys on its
+        // first entry; a normal target (one recipe, possibly split across prereq-only stanzas)
+        // counts a recipe from any entry.
+        if let Some(indices) = self.by_target.get(target) {
+            if self.rules[indices[0]].double_colon {
+                return self.rules[indices[0]].has_recipe;
+            }
+            return indices.iter().any(|i| self.rules[*i].has_recipe);
+        }
+        // No explicit rule: an applicable implicit (pattern/built-in) rule with a recipe, else
+        // `.DEFAULT`, whose recipe (if any) supplies the target's commands.
+        if self
+            .match_pattern_rule(makefile, target)
+            .is_some_and(|(idx, _)| !self.pattern_rules[idx].recipe.is_empty())
+        {
+            return true;
+        }
+        !makefile.default_recipe().is_empty()
     }
 
     /// Find the first pattern rule whose target pattern matches `target` and whose (stem-expanded)
@@ -700,11 +788,12 @@ impl RuleMap {
                 targets: vec![target.to_string()],
                 prerequisites: prereqs,
                 order_only,
+                has_recipe: !prule.recipe.is_empty(),
                 recipe: prule.recipe.clone(),
                 context: prule.context.clone(),
                 double_colon: false,
             };
-            rule.execute(makefile, target, stem)?;
+            state.recipes_run += rule.execute(makefile, target, stem)?;
         }
 
         Ok(())
@@ -736,4 +825,7 @@ struct ExecState {
     done: HashSet<String>,
     /// Targets that failed to build (only used under `--keep-going`, which continues past errors).
     failed: HashSet<String>,
+    /// Count of rules whose (non-empty) recipe ran, so a goal that ran nothing can report "up to
+    /// date" / "Nothing to be done".
+    recipes_run: usize,
 }

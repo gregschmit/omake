@@ -37,6 +37,10 @@ pub struct SpecialTargets {
     ignore_all: bool,
     /// Recipe for `.DEFAULT`, used for targets that have no rule of their own.
     default_recipe: Vec<String>,
+    /// Targets exempt from delete-on-error/interrupt (`.PRECIOUS`).
+    precious: HashSet<String>,
+    /// Whether a target modified by a failing recipe is deleted (`.DELETE_ON_ERROR:`).
+    delete_on_error: bool,
 }
 
 /// State for a `define ... endef` multi-line variable being captured.
@@ -277,11 +281,14 @@ impl<L: Logger> Makefile<L> {
                 Some(r) => {
                     // Strip the recipe prefix and store the command RAW; recipes are expanded at
                     // execution time (so later variable definitions and automatic variables like
-                    // `$@` resolve). Skip blank recipe lines.
+                    // `$@` resolve). A blank recipe line is not stored, but its presence still marks
+                    // the rule as having a recipe section (gmake treats `target:;` and a bare blank
+                    // recipe line as "has commands").
                     let cmd = line
                         .strip_prefix(recipe_prefix)
                         .expect("line known to start with a recipe prefix");
 
+                    r.has_recipe = true;
                     if !cmd.trim().is_empty() {
                         r.recipe.push(cmd.to_string());
                     }
@@ -442,6 +449,7 @@ impl<L: Logger> Makefile<L> {
                 prerequisites: glob(&normal_deps),
                 order_only: glob(&order_deps),
                 recipe: vec![],
+                has_recipe: false,
                 context: self.context.clone(),
                 double_colon,
             });
@@ -1198,6 +1206,12 @@ impl<L: Logger> Makefile<L> {
                 ".DEFAULT" => self.special.default_recipe = rule.recipe.clone(),
                 // `.EXPORT_ALL_VARIABLES:` is another spelling of a bare `export`.
                 ".EXPORT_ALL_VARIABLES" => self.export_all = true,
+                ".PRECIOUS" => self
+                    .special
+                    .precious
+                    .extend(rule.prerequisites.iter().cloned()),
+                // `.DELETE_ON_ERROR:` is a global flag (its prerequisites are ignored).
+                ".DELETE_ON_ERROR" => self.special.delete_on_error = true,
                 // `.SUFFIXES:` with no prerequisites clears the suffix list; otherwise it appends.
                 ".SUFFIXES" => {
                     if rule.prerequisites.is_empty() {
@@ -1229,6 +1243,27 @@ impl<L: Logger> Makefile<L> {
     /// The recipe defined by `.DEFAULT`, used for targets that have no rule of their own.
     fn default_recipe(&self) -> &[String] {
         &self.special.default_recipe
+    }
+
+    /// Whether `target` is `.PRECIOUS` (exempt from delete-on-error). An exact name always matches.
+    /// A `%` pattern entry (e.g. `%.o`) matches only when the target is built by a pattern rule
+    /// (`pattern_build`), which is how gmake scopes pattern entries in `.PRECIOUS`; a bare `%`
+    /// protects nothing.
+    fn is_precious(&self, target: &str, pattern_build: bool) -> bool {
+        if self.special.precious.contains(target) {
+            return true;
+        }
+        pattern_build
+            && self
+                .special
+                .precious
+                .iter()
+                .any(|p| precious_pattern_matches(p, target))
+    }
+
+    /// Whether `.DELETE_ON_ERROR:` is in effect.
+    fn delete_on_error(&self) -> bool {
+        self.special.delete_on_error
     }
 
     /// Get the `mtime` of a file. Note that the return value also signals whether or not the file
@@ -1323,6 +1358,21 @@ fn vpath_matches(pattern: &str, name: &str) -> bool {
         }
         None => pattern == name,
     }
+}
+
+/// Whether a `.PRECIOUS` pattern entry (which must contain `%`) matches `target`. A bare `%` matches
+/// nothing, since gmake does not let the catch-all pattern protect any target from delete-on-error.
+fn precious_pattern_matches(pattern: &str, target: &str) -> bool {
+    let Some(pct) = pattern.find('%') else {
+        return false;
+    };
+    let (prefix, suffix) = (&pattern[..pct], &pattern[pct + 1..]);
+    if prefix.is_empty() && suffix.is_empty() {
+        return false;
+    }
+    target.len() >= prefix.len() + suffix.len()
+        && target.starts_with(prefix)
+        && target.ends_with(suffix)
 }
 
 /// If `trimmed` is a `define NAME [op]` directive, return the part after `define`.

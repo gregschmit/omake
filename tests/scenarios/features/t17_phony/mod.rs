@@ -1,6 +1,7 @@
 // A `.PHONY` target runs its recipe even when a file of the same name exists (the pre_hook creates
 // a file named `clean`, which without .PHONY would make the target look up to date). A target
-// declared only via `.PHONY` (`noop`, with no rule of its own) is a valid no-op, not an error.
+// declared only via `.PHONY` (`noop`, with no rule of its own) is a valid no-op: like gmake, it
+// reports "Nothing to be done".
 crate::system_test_cases!(
     {
         args: &["clean"],
@@ -17,7 +18,7 @@ crate::system_test_cases!(
     {
         args: &["noop"],
         expected_stdout: "",
-        expected_stderr: "",
+        expected_stderr: "make: INFO  | Nothing to be done for 'noop'.\n",
         expected_files: &[],
         expected_code: Some(0),
     },
