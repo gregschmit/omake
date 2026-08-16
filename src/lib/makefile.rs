@@ -1621,6 +1621,12 @@ impl<L: Logger> Makefile<L> {
         self.opts.silent || self.special.silent_all || self.special.silent.contains(target)
     }
 
+    /// Whether *all* output is silenced globally — `-s` or a `.SILENT:` with no arguments. Used to
+    /// suppress the ignored-error diagnostic (a target-specific `.SILENT` does not suppress it).
+    fn is_silent_all(&self) -> bool {
+        self.opts.silent || self.special.silent_all
+    }
+
     /// Whether recipe errors for `target` should be ignored (via `.IGNORE`).
     fn is_ignored(&self, target: &str) -> bool {
         self.special.ignore_all || self.special.ignore.contains(target)

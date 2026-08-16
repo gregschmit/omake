@@ -167,15 +167,33 @@ impl Rule {
                     .status()
                     .map_err(|e| MakeError::new(&e.to_string(), self.context.clone()))?;
 
-                // Check for command errors, unless directed to ignore them.
-                if !ignore_errors && !ignore_target && !makefile.opts.ignore_errors {
-                    let error = match res.code() {
-                        Some(0) => None,
-                        Some(code) => Some(format!("Failed with code {code}.")),
-                        None => Some("Killed.".to_string()),
-                    };
-                    if let Some(msg) = error {
+                // A non-zero exit (or a signal) is a failure. When the error is ignored (`-` prefix,
+                // `.IGNORE`, or `-i`) gmake prints `<prog>: [file:N: target] <reason> (ignored)` to
+                // stderr and carries on; otherwise the build aborts.
+                if !matches!(res.code(), Some(0)) {
+                    let ignored = ignore_errors || ignore_target || makefile.opts.ignore_errors;
+                    if ignored {
+                        // Suppressed only when *globally* silent (`-s`/`.SILENT:` with no args); a
+                        // target-specific `.SILENT` or a per-line `@` does not suppress it.
+                        if !makefile.is_silent_all() {
+                            let mut ctx = self.context.clone();
+                            ctx.line_index = Some(recipe_line);
+                            let loc = ctx
+                                .label()
+                                .map(|l| format!("[{l}: {target}]"))
+                                .unwrap_or_else(|| format!("[{target}]"));
+                            makefile.logger.write(format!(
+                                "{}: {loc} {} (ignored)",
+                                makefile.logger.prefix(),
+                                exit_reason(&res),
+                            ));
+                        }
+                    } else {
                         self.remove_target_on_error(makefile, target, pattern_build, mtime_before);
+                        let msg = match res.code() {
+                            Some(code) => format!("Failed with code {code}."),
+                            None => "Killed.".to_string(),
+                        };
                         // Report the failing recipe line (not the rule header), like gmake.
                         let mut ctx = self.context.clone();
                         ctx.line_index = Some(recipe_line);
@@ -304,6 +322,24 @@ fn single_target(rule: &Rule, target: &str) -> Rule {
     Rule {
         targets: vec![target.to_string()],
         ..rule.clone()
+    }
+}
+
+/// gmake's reason text for a failed recipe command, used in the `(ignored)` diagnostic: `Error N`
+/// for a non-zero exit code, or the signal name for a signal-terminated command.
+fn exit_reason(status: &std::process::ExitStatus) -> String {
+    use std::os::unix::process::ExitStatusExt;
+    match status.code() {
+        Some(code) => format!("Error {code}"),
+        None => match status.signal() {
+            Some(2) => "Interrupt".to_string(),
+            Some(6) => "Aborted (core dumped)".to_string(),
+            Some(9) => "Killed".to_string(),
+            Some(11) => "Segmentation fault (core dumped)".to_string(),
+            Some(15) => "Terminated".to_string(),
+            Some(n) => format!("Signal {n}"),
+            None => "Terminated".to_string(),
+        },
     }
 }
 

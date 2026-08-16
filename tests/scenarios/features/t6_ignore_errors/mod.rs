@@ -1,9 +1,10 @@
 crate::system_test_cases!(
     {
-        // `-i` makes the failing `false` non-fatal, so the build continues to `after`.
+        // `-i` makes the failing `false` non-fatal, so the build continues to `after`; gmake still
+        // prints the `Error N (ignored)` diagnostic to stderr.
         args: &["-i"],
         expected_stdout: "false\nafter\n",
-        expected_stderr: "",
+        expected_stderr: "omake: [Makefile:2: all] Error 1 (ignored)\n",
         expected_files: &[],
     },
     {
