@@ -36,6 +36,10 @@ pub struct Opts {
     /// rebuilding, 2 on error.
     pub question: bool,
 
+    /// Requested parallel jobs (`-j`): `None` = serial, `Some(0)` = unlimited, `Some(n)` = n. omake
+    /// currently builds serially regardless; kept for the `MAKEFLAGS` round-trip.
+    pub jobs: Option<usize>,
+
     /// Consider FILE to be very old and do not remake it.
     pub old_file: Vec<String>,
 

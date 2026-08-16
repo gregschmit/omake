@@ -77,6 +77,10 @@ pub struct Args {
     #[arg(short = 'q', long)]
     pub question: bool,
 
+    /// Allow N jobs at once (accepted; omake currently builds serially).
+    #[arg(short = 'j', long = "jobs", value_name = "N", num_args = 0..=1, default_missing_value = "0")]
+    pub jobs: Option<Option<u32>>,
+
     /// Don't execute recipes; just print them.
     #[arg(
         short = 'n',
@@ -142,6 +146,8 @@ impl From<Args> for Opts {
             touch: args.touch,
             include_dirs: fold_include_dirs(&args.include_dir),
             question: args.question,
+            // `-j` with no number (or `-j0`) means unlimited (0); `-jN` means N.
+            jobs: args.jobs.map(|inner| inner.unwrap_or(0) as usize),
             old_file: args.old_file,
             new_file: args.new_file,
         }

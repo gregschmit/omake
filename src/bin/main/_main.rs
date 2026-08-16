@@ -157,6 +157,14 @@ fn makeflags_include_dirs(makeflags: &str) -> Vec<String> {
         .collect()
 }
 
+/// Recover the `-j` job count from a parent make's `MAKEFLAGS` (`-jN`, or `-j` alone for unlimited).
+/// A `--jobserver-auth=` token (gmake's job pipe) is ignored — omake has no jobserver.
+fn makeflags_jobs(makeflags: &str) -> Option<usize> {
+    let head = makeflags.split(" -- ").next().unwrap_or(makeflags);
+    head.split_whitespace()
+        .find_map(|t| t.strip_prefix("-j").map(|n| n.parse().unwrap_or(0)))
+}
+
 /// Whether the leading short-flag word of a parent make's `MAKEFLAGS` contains `flag` (e.g. `s` for
 /// `-s`). The first token is the bare (dashless) short-flag cluster; a token starting with `-` is a
 /// long option, so there is no short-flag word.
@@ -359,6 +367,10 @@ fn main() {
             opts.include_dirs.push(dir);
         }
     }
+    // Inherit a parent make's `-j` unless this command line set its own.
+    if opts.jobs.is_none() {
+        opts.jobs = makeflags_jobs(&parent_makeflags);
+    }
 
     // A command-line token containing `=` is a variable assignment (`make FOO=bar`), not a goal.
     // These also arrive from a parent make via `MAKEFLAGS` (after `--`), so sub-makes inherit them.
@@ -385,6 +397,15 @@ fn main() {
     for dir in &opts.include_dirs {
         makeflags.push_str(" -I");
         makeflags.push_str(dir);
+    }
+    // `-j` round-trips as a separate ` -jN` word (` -j` for unlimited), like gmake.
+    match opts.jobs {
+        Some(0) => makeflags.push_str(" -j"),
+        Some(n) => {
+            makeflags.push_str(" -j");
+            makeflags.push_str(&n.to_string());
+        }
+        None => {}
     }
     if !cmdline_tokens.is_empty() {
         makeflags.push_str(" -- ");
