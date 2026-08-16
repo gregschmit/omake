@@ -147,6 +147,15 @@ fn makeflags_print_directory(makeflags: &str) -> (bool, bool) {
     (on, off)
 }
 
+/// Extract the `-Idir` include-directory tokens a parent make passed in `MAKEFLAGS` (the part before
+/// the ` -- ` variable separator), in order.
+fn makeflags_include_dirs(makeflags: &str) -> Vec<String> {
+    let head = makeflags.split(" -- ").next().unwrap_or(makeflags);
+    head.split_whitespace()
+        .filter_map(|t| t.strip_prefix("-I").map(str::to_string))
+        .collect()
+}
+
 /// Whether the leading short-flag word of a parent make's `MAKEFLAGS` contains `flag` (e.g. `s` for
 /// `-s`). The first token is the bare (dashless) short-flag cluster; a token starting with `-` is a
 /// long option, so there is no short-flag word.
@@ -337,6 +346,15 @@ fn main() {
     // flags for sub-makes. `MAKELEVEL` tracks the recursion depth.
     let mut opts: Opts = args.clone().into();
     apply_makeflags(&mut opts, &parent_makeflags);
+    // Inherit the parent make's `-I` include directories (honoring a `-I -` reset), appended after
+    // any given on this command line.
+    for dir in makeflags_include_dirs(&parent_makeflags) {
+        if dir == "-" {
+            opts.include_dirs.clear();
+        } else {
+            opts.include_dirs.push(dir);
+        }
+    }
 
     // A command-line token containing `=` is a variable assignment (`make FOO=bar`), not a goal.
     // These also arrive from a parent make via `MAKEFLAGS` (after `--`), so sub-makes inherit them.
@@ -358,6 +376,11 @@ fn main() {
         makeflags.push_str(" --no-print-directory");
     } else if force_print {
         makeflags.push('w');
+    }
+    // `-I` directories round-trip as ` -Idir` tokens after the flag cluster (gmake form).
+    for dir in &opts.include_dirs {
+        makeflags.push_str(" -I");
+        makeflags.push_str(dir);
     }
     if !cmdline_tokens.is_empty() {
         makeflags.push_str(" -- ");

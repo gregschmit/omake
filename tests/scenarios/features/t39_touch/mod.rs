@@ -7,7 +7,8 @@ crate::system_test_cases!({
     expected_stderr: "",
     expected_files: &[("bar", ""), ("foo", "")],
     pre_hook: {
-        let _ = std::fs::remove_file(format!("{path}/foo"));
-        let _ = std::fs::remove_file(format!("{path}/bar"));
+        let dir = "tests/scenarios/features/t39_touch";
+        let _ = std::fs::remove_file(format!("{dir}/foo"));
+        let _ = std::fs::remove_file(format!("{dir}/bar"));
     },
 });

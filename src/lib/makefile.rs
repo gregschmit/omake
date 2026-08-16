@@ -1098,6 +1098,24 @@ impl<L: Logger> Makefile<L> {
         Ok(())
     }
 
+    /// Resolve an `include` name against the search path: the current directory first, then each
+    /// `-I` directory in order (matching gmake). An absolute path is used as-is. Returns the path
+    /// that exists, or `None`.
+    fn find_include(&self, name: &str) -> Option<PathBuf> {
+        let p = Path::new(name);
+        if p.is_absolute() {
+            return p.exists().then(|| p.to_path_buf());
+        }
+        if p.exists() {
+            return Some(p.to_path_buf());
+        }
+        self.opts
+            .include_dirs
+            .iter()
+            .map(|dir| Path::new(dir).join(name))
+            .find(|cand| cand.exists())
+    }
+
     /// Parse a single named file into the current parser state. A missing file is an error unless
     /// `optional`. The name is used verbatim (already expanded and, for BSD `.include`, unquoted),
     /// so filenames may contain spaces.
@@ -1110,14 +1128,28 @@ impl<L: Logger> Makefile<L> {
             ));
         }
 
-        let file = match File::open(name) {
-            Ok(file) => file,
-            Err(e) => {
+        // Resolve against the `-I` search path, then open. A missing file reports the bare `name`
+        // (like gmake), while the parse context uses the resolved path so inner errors name it.
+        let resolved = self.find_include(name);
+        let file = match &resolved {
+            Some(path) => match File::open(path) {
+                Ok(file) => file,
+                Err(e) => {
+                    if optional {
+                        return Ok(());
+                    }
+                    return Err(MakeError::new(
+                        &format!("Could not include {name} ({e})."),
+                        self.context.clone(),
+                    ));
+                }
+            },
+            None => {
                 if optional {
                     return Ok(());
                 }
                 return Err(MakeError::new(
-                    &format!("Could not include {name} ({e})."),
+                    &format!("Could not include {name} (No such file or directory)."),
                     self.context.clone(),
                 ));
             }
@@ -1126,7 +1158,7 @@ impl<L: Logger> Makefile<L> {
         // Parse the included file with its own context, restoring ours afterwards.
         let cond_depth = self.cond_stack.len();
         let saved = self.context.clone();
-        self.context = PathBuf::from(name).into();
+        self.context = resolved.unwrap_or_else(|| PathBuf::from(name)).into();
         self.include_depth += 1;
         let result = self.parse_reader(BufReader::new(file));
         self.include_depth -= 1;

@@ -69,6 +69,10 @@ pub struct Args {
     #[arg(short = 't', long)]
     pub touch: bool,
 
+    /// Search DIR for included makefiles.
+    #[arg(short = 'I', long = "include-dir", value_name = "DIR")]
+    pub include_dir: Vec<String>,
+
     /// Don't execute recipes; just print them.
     #[arg(
         short = 'n',
@@ -105,6 +109,20 @@ pub struct Args {
     pub license: bool,
 }
 
+/// Fold a `-I` directory list left to right, honoring `-I -` (which clears the list accumulated so
+/// far, matching gmake).
+fn fold_include_dirs(entries: &[String]) -> Vec<String> {
+    let mut dirs = Vec::new();
+    for e in entries {
+        if e == "-" {
+            dirs.clear();
+        } else {
+            dirs.push(e.clone());
+        }
+    }
+    dirs
+}
+
 impl From<Args> for Opts {
     fn from(args: Args) -> Self {
         Self {
@@ -118,6 +136,7 @@ impl From<Args> for Opts {
             no_builtin_variables: args.no_builtin_variables,
             environment_overrides: args.environment_overrides,
             touch: args.touch,
+            include_dirs: fold_include_dirs(&args.include_dir),
             old_file: args.old_file,
             new_file: args.new_file,
         }

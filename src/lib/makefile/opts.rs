@@ -29,6 +29,9 @@ pub struct Opts {
     /// Touch targets (mark them up to date) instead of running their recipes (`-t`).
     pub touch: bool,
 
+    /// Directories searched for `include`d makefiles (`-I`), in order, after the current directory.
+    pub include_dirs: Vec<String>,
+
     /// Consider FILE to be very old and do not remake it.
     pub old_file: Vec<String>,
 

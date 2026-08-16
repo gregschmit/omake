@@ -1,0 +1,1 @@
+VAR = from-include-dir
