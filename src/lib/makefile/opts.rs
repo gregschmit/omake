@@ -26,6 +26,9 @@ pub struct Opts {
     /// Let environment variables override makefile assignments (`-e`).
     pub environment_overrides: bool,
 
+    /// Touch targets (mark them up to date) instead of running their recipes (`-t`).
+    pub touch: bool,
+
     /// Consider FILE to be very old and do not remake it.
     pub old_file: Vec<String>,
 

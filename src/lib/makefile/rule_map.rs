@@ -107,6 +107,12 @@ impl Rule {
         // removed (even if inherited from omake's own environment).
         let (env_adds, env_removes) = makefile.exported_env(&vars);
 
+        // Under `-t` (touch mode) the recipe is replaced by a single `touch <target>`: only
+        // `+`-prefixed lines still run, the rest are skipped, and the target is touched afterward.
+        let touch_mode = makefile.opts.touch;
+        let mut touch_saw_plus = false;
+        let mut touch_saw_non_plus = false;
+
         debug_assert_eq!(self.recipe.len(), self.recipe_lines.len());
         for (raw, &recipe_line) in self.recipe.iter().zip(self.recipe_lines.iter()) {
             // Command modifiers (`@` silence, `-` ignore errors, `+` run even under `--just-print`)
@@ -115,6 +121,15 @@ impl Rule {
             // recipe. Modifiers introduced by expansion (e.g. the kernel's `$(Q)` = `@`) apply only
             // to their own line. This matches GNU make.
             let (line_silent, line_ignore, line_force, body) = strip_command_modifiers(raw);
+
+            if touch_mode {
+                if line_force {
+                    touch_saw_plus = true; // a `+` line runs even under -t
+                } else {
+                    touch_saw_non_plus = true;
+                    continue;
+                }
+            }
 
             // Expand the recipe body now, at execution time. This resolves variables defined after
             // the rule, automatic variables, and cases where a variable expands to a command
@@ -201,6 +216,25 @@ impl Rule {
                         return Err(MakeError::new(&msg, ctx));
                     }
                 }
+            }
+        }
+
+        // Touch the out-of-date target (`-t`), unless it is phony, has no recipe, or its recipe was
+        // entirely `+` lines. The echo is gated only on the global `-s`; `--just-print` echoes but
+        // does not touch. Only reached for out-of-date targets, matching gmake's touch condition.
+        if touch_mode
+            && self.has_recipe
+            && !makefile.is_phony(target)
+            && (touch_saw_non_plus || !touch_saw_plus)
+        {
+            if !makefile.opts.silent {
+                println!("touch {target}");
+            }
+            commands_run += 1;
+            if !makefile.opts.just_print {
+                touch_file(target).map_err(|e| {
+                    MakeError::new(&format!("touch: {target}: {e}"), self.context.clone())
+                })?;
             }
         }
 
@@ -323,6 +357,16 @@ fn single_target(rule: &Rule, target: &str) -> Rule {
         targets: vec![target.to_string()],
         ..rule.clone()
     }
+}
+
+/// Create `path` if missing (empty) or bump its mtime to now, for `-t` (touch mode).
+fn touch_file(path: &str) -> std::io::Result<()> {
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)?;
+    file.set_modified(SystemTime::now())
 }
 
 /// gmake's reason text for a failed recipe command, used in the `(ignored)` diagnostic: `Error N`

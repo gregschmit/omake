@@ -115,6 +115,7 @@ fn apply_makeflags(opts: &mut Opts, makeflags: &str) {
             'i' => opts.ignore_errors = true,
             'B' => opts.always_make = true,
             's' => opts.silent = true,
+            't' => opts.touch = true,
             'e' => opts.environment_overrides = true,
             // `-R` (no built-in variables) implies `-r` (no built-in rules).
             'r' => opts.no_builtin_rules = true,
@@ -246,6 +247,9 @@ fn encode_makeflags(opts: &Opts) -> String {
     }
     if opts.silent {
         flags.push('s');
+    }
+    if opts.touch {
+        flags.push('t');
     }
     flags
 }
