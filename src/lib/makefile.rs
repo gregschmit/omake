@@ -137,6 +137,9 @@ pub struct Makefile<L: Logger> {
     target_vars: HashMap<String, Vec<TargetVar>>,
     /// Pattern-specific variable assignments (`%.o: VAR = value`).
     pattern_vars: Vec<PatternVar>,
+    /// Whether `.SECONDEXPANSION:` has been seen: rules parsed after it have their prerequisites
+    /// expanded a second time at build time (with `$@`/`$*` in scope).
+    second_expansion: bool,
 
     // Parser state.
     pub vars: Vars,
@@ -168,6 +171,7 @@ impl<L: Logger> Makefile<L> {
                 .collect(),
             target_vars: HashMap::new(),
             pattern_vars: Vec::new(),
+            second_expansion: false,
             vars,
             current_rule: None,
             context: path.clone().into(),
@@ -588,6 +592,13 @@ impl<L: Logger> Makefile<L> {
             let targets = self.expand_str(targets)?;
             let normal_deps = self.expand_str(normal_deps)?;
             let order_deps = self.expand_str(order_deps)?;
+
+            // `.SECONDEXPANSION:` turns on a second expansion of prerequisites for the rules that
+            // follow it (positional, matching gmake).
+            if targets.split_whitespace().any(|t| t == ".SECONDEXPANSION") {
+                self.second_expansion = true;
+            }
+
             let deps_list = |s: &str| {
                 if target_pattern.is_some() {
                     s.split_whitespace()
@@ -604,15 +615,33 @@ impl<L: Logger> Makefile<L> {
                 }
             };
 
+            // Under second expansion (plain explicit rules only for now), defer word-splitting and
+            // globbing to build time — the second pass may change word boundaries (`$$(LIST)`). The
+            // once-expanded prerequisite line is stored verbatim and re-expanded then.
+            let second_expand = self.second_expansion && target_pattern.is_none();
+            let deferred = |s: &str| {
+                if s.trim().is_empty() {
+                    vec![]
+                } else {
+                    vec![s.to_string()]
+                }
+            };
+            let (prerequisites, order_only) = if second_expand {
+                (deferred(&normal_deps), deferred(&order_deps))
+            } else {
+                (deps_list(&normal_deps), deps_list(&order_deps))
+            };
+
             self.current_rule = Some(Rule {
                 targets: glob_words(targets.split_whitespace().map(str::to_string)),
-                prerequisites: deps_list(&normal_deps),
-                order_only: deps_list(&order_deps),
+                prerequisites,
+                order_only,
                 recipe: vec![],
                 recipe_lines: vec![],
                 has_recipe: false,
                 stem: String::new(),
                 target_pattern,
+                second_expand,
                 context: self.context.clone(),
                 double_colon,
             });
@@ -1477,6 +1506,7 @@ impl<L: Logger> Makefile<L> {
                 has_recipe: rule.has_recipe,
                 stem,
                 target_pattern: None,
+                second_expand: rule.second_expand,
                 context: rule.context.clone(),
                 double_colon: rule.double_colon,
             };

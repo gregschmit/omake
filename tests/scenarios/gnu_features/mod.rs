@@ -26,3 +26,4 @@ mod t42_private_var;
 mod t43_shellstatus;
 mod t44_suffixes;
 mod t45_include_dir;
+mod t46_secondexpansion;

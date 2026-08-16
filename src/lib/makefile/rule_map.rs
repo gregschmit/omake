@@ -54,6 +54,9 @@ pub struct Rule {
     /// parsing; each listed target is expanded into its own concrete rule (with `stem` filled in)
     /// before insertion, so every stored rule has `None` here.
     pub target_pattern: Option<String>,
+    /// Whether this rule's prerequisites need a second expansion at build time (`.SECONDEXPANSION:`).
+    /// When set, `prerequisites`/`order_only` hold the once-expanded, un-split prerequisite text.
+    pub second_expand: bool,
     pub context: Context,
     pub double_colon: bool,
 }
@@ -472,6 +475,48 @@ fn split_dir_file(path: &str) -> (String, String) {
     }
 }
 
+/// Build a `.SECONDEXPANSION:` scope: a copy of `scope` with only the automatic variables that are
+/// defined during prerequisite expansion — `$@`, `$*`, and their `D`/`F` parts. `$<`/`$^`/`$?`/`$+`/
+/// `$|` are intentionally left empty (they are not known while the prerequisite list is computed).
+fn second_expansion_scope(scope: &Vars, target: &str, stem: &str) -> Vars {
+    let mut vars = scope.clone();
+    let _ = vars.set("@", target, false);
+    let _ = vars.set("*", stem, false);
+    let (at_dir, at_file) = split_dir_file(target);
+    let _ = vars.set("@D", at_dir.as_str(), false);
+    let _ = vars.set("@F", at_file.as_str(), false);
+    let (star_dir, star_file) = split_dir_file(stem);
+    let _ = vars.set("*D", star_dir.as_str(), false);
+    let _ = vars.set("*F", star_file.as_str(), false);
+    vars
+}
+
+/// Second-expand each deferred prerequisite line (`.SECONDEXPANSION:`), then word-split and glob,
+/// producing the concrete prerequisite list.
+fn expand_deferred_prereqs(raws: &[String], scope: &Vars) -> Result<Vec<String>, MakeError> {
+    let mut out = Vec::new();
+    for raw in raws {
+        let expanded = expand_collect(raw, scope)
+            .map_err(|e| MakeError::new(&e, Context::new()))?
+            .result;
+        out.extend(super::glob_words(
+            expanded.split_whitespace().map(str::to_string),
+        ));
+    }
+    Ok(out)
+}
+
+/// Produce a concrete copy of a `.SECONDEXPANSION:` rule with its prerequisites resolved (see
+/// [`expand_deferred_prereqs`]) so the rest of the build treats it like any other rule.
+fn resolve_second_expansion(rule: &Rule, target: &str, scope: &Vars) -> Result<Rule, MakeError> {
+    let se_scope = second_expansion_scope(scope, target, &rule.stem);
+    let mut resolved = rule.clone();
+    resolved.prerequisites = expand_deferred_prereqs(&rule.prerequisites, &se_scope)?;
+    resolved.order_only = expand_deferred_prereqs(&rule.order_only, &se_scope)?;
+    resolved.second_expand = false;
+    Ok(resolved)
+}
+
 /// A pattern rule (e.g. `%.o: %.c`). The target pattern is split around its single `%` into a
 /// prefix and suffix; the stem is whatever `%` matched.
 #[derive(Debug, Clone)]
@@ -612,8 +657,11 @@ impl RuleMap {
         }
 
         // Record explicit prerequisites so such files are never treated as invented intermediates.
-        self.mentioned.extend(rule.prerequisites.iter().cloned());
-        self.mentioned.extend(rule.order_only.iter().cloned());
+        // Deferred (`.SECONDEXPANSION:`) prerequisites are still un-expanded here, so skip them.
+        if !rule.second_expand {
+            self.mentioned.extend(rule.prerequisites.iter().cloned());
+            self.mentioned.extend(rule.order_only.iter().cloned());
+        }
 
         // Each target of a rule is stored as its own rule instance, since GNU make treats the
         // targets of a multi-target rule (`a b: x`) independently: a later stanza extending one
@@ -646,6 +694,9 @@ impl RuleMap {
             let old_recipe = !self.rules[first].recipe.is_empty();
             let old_context = self.rules[first].context.clone();
             let existing = &mut self.rules[first];
+            // A merged rule needs a second expansion if any of its stanzas did (each stanza's stored
+            // prerequisites re-expand independently at build time).
+            existing.second_expand |= rule.second_expand;
             if rule.has_recipe {
                 // This stanza carries the recipe: its prerequisites go in front, and it supplies the
                 // recipe (even an empty one, which clears the old) plus its stem/context (so a static
@@ -855,6 +906,7 @@ impl RuleMap {
                         has_recipe: true,
                         stem: String::new(),
                         target_pattern: None,
+                        second_expand: false,
                         context: Context::new(),
                         double_colon: false,
                     };
@@ -902,7 +954,16 @@ impl RuleMap {
         }
 
         for i in rule_indices {
-            let rule = &self.rules[i.to_owned()];
+            let stored = &self.rules[i.to_owned()];
+            // `.SECONDEXPANSION:`: resolve the deferred prerequisites now, with `$@`/`$*` in scope,
+            // into a concrete rule the rest of the build uses unchanged.
+            let resolved;
+            let rule: &Rule = if stored.second_expand {
+                resolved = resolve_second_expansion(stored, target, scope)?;
+                &resolved
+            } else {
+                stored
+            };
             // Re-read the target mtime per rule so a double-colon rule sees files written by an
             // earlier rule for the same target.
             let target_mtime_opt = makefile.get_mtime(target);
@@ -1184,6 +1245,7 @@ impl RuleMap {
                 recipe_lines: prule.recipe_lines.clone(),
                 stem: stem.to_string(),
                 target_pattern: None,
+                second_expand: false,
                 context: prule.context.clone(),
                 double_colon: false,
             };
