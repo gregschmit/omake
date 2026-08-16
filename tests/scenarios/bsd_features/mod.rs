@@ -3,3 +3,4 @@ mod t2_include;
 mod t3_logical;
 mod t4_message;
 mod t5_for;
+mod t6_modifiers;

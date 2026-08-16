@@ -206,21 +206,12 @@ fn expand_inner(s: &str, vars: &Vars, ctx: &mut Expander) -> Result<String, Stri
                     continue;
                 }
 
-                // A substitution reference is `NAME:FROM=TO` (a `:` is otherwise an invalid
-                // character in a name, so it only appears here for a substitution). `FROM=TO`
-                // supports both the suffix form (`.c=.o`) and the pattern form (`%.c=%.o`). The
-                // name uses the inline-expanded buffer (so computed names like `$($(X))` resolve).
+                // A `:` in `${NAME:...}` introduces a GNU substitution reference (`NAME:FROM=TO`,
+                // suffix or `%` form) or a BSD modifier chain (`NAME:M...:S/.../.../...`). A `=`
+                // marks it a GNU reference (so every GNU makefile keeps working); otherwise BSD
+                // modifiers are tried. The name uses the inline-expanded buffer.
                 let content = current_buffer.trim();
-                let (name, subst) = match content.split_once(':') {
-                    Some((n, s)) if s.contains('=') => {
-                        let (from, to) = s.split_once('=').unwrap();
-                        (
-                            n.trim().to_string(),
-                            Some((from.to_string(), to.to_string())),
-                        )
-                    }
-                    _ => (content.to_string(), None),
-                };
+                let (name, action) = parse_var_action(content);
 
                 let var = vars.get(&name);
                 let recursive_result: String;
@@ -238,14 +229,18 @@ fn expand_inner(s: &str, vars: &Vars, ctx: &mut Expander) -> Result<String, Stri
                     &var.value
                 };
 
-                // Apply the substitution reference to the resolved value, if present.
-                let substituted: String;
-                let result: &str = match &subst {
-                    Some((from, to)) => {
-                        substituted = substitute_ref(value, from, to);
-                        &substituted
+                // Apply the substitution reference or BSD modifiers to the resolved value.
+                let transformed: String;
+                let result: &str = match &action {
+                    VarAction::None => value,
+                    VarAction::Gnu(from, to) => {
+                        transformed = substitute_ref(value, from, to);
+                        &transformed
                     }
-                    None => value,
+                    VarAction::Bsd(mods) => {
+                        transformed = apply_bsd_modifiers(value, mods, vars.is_set(&name));
+                        &transformed
+                    }
                 };
 
                 current_buffer = stack.pop().unwrap().previous_buffer;
@@ -752,6 +747,277 @@ fn wildcard(patterns: &str) -> String {
         .flat_map(crate::glob::glob)
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+/// What follows the `:` in a `${VAR:...}` reference: nothing, a GNU substitution reference, or a
+/// chain of BSD variable modifiers.
+enum VarAction {
+    None,
+    Gnu(String, String),
+    Bsd(Vec<Modifier>),
+}
+
+/// A BSD variable modifier (`:M`, `:S`, `:Q`, `:tl`, ...).
+enum Modifier {
+    /// `:Mpattern` — keep words matching the glob pattern.
+    Match(String),
+    /// `:Npattern` — keep words not matching the glob pattern.
+    NoMatch(String),
+    /// `:S/from/to/[1g]` — literal substring substitution per word (`^`/`$` anchor to word bounds).
+    Subst {
+        from: String,
+        to: String,
+        global: bool,
+        anchor_start: bool,
+        anchor_end: bool,
+    },
+    /// `:Q` — backslash-escape shell-special characters in the value.
+    Quote,
+    /// `:tl` / `:tu` — lower/upper case.
+    Lower,
+    Upper,
+    /// `:H` / `:T` — directory / file part of each word.
+    Head,
+    Tail,
+    /// `:E` / `:R` — extension / root (basename without extension) of each word.
+    Ext,
+    Root,
+    /// `:Uvalue` — use `value` if the variable is undefined.
+    Default(String),
+}
+
+/// Determine the variable name and the action (GNU substitution reference or BSD modifiers) from a
+/// `${...}` reference's content. A `=` in the part after the first `:` marks a GNU reference; a valid
+/// BSD modifier chain (with no `=`) is BSD; anything else leaves the `:` as part of the name.
+fn parse_var_action(content: &str) -> (String, VarAction) {
+    match content.split_once(':') {
+        Some((name, m)) if m.contains('=') => {
+            let (from, to) = m.split_once('=').unwrap();
+            (
+                name.trim().to_string(),
+                VarAction::Gnu(from.to_string(), to.to_string()),
+            )
+        }
+        Some((name, m)) => match parse_bsd_modifiers(m) {
+            Some(mods) => (name.trim().to_string(), VarAction::Bsd(mods)),
+            None => (content.to_string(), VarAction::None),
+        },
+        None => (content.to_string(), VarAction::None),
+    }
+}
+
+/// Parse a chain of BSD modifiers (`M...:S/.../.../...`). Returns `None` if any part is not a
+/// recognized modifier, so the caller can fall back to treating the `:` as part of the name.
+fn parse_bsd_modifiers(mut rest: &str) -> Option<Vec<Modifier>> {
+    let mut mods = Vec::new();
+    while !rest.is_empty() {
+        let (modifier, next) = take_modifier(rest)?;
+        mods.push(modifier);
+        rest = next;
+    }
+    (!mods.is_empty()).then_some(mods)
+}
+
+/// Parse one BSD modifier from the start of `s`; return it and the remainder after the separating
+/// `:` (empty at the end).
+fn take_modifier(s: &str) -> Option<(Modifier, &str)> {
+    // A fixed-token modifier must be followed by `:` or end of string.
+    let simple = |len: usize, m: Modifier| -> Option<(Modifier, &str)> {
+        match s[len..].strip_prefix(':') {
+            Some(after) => Some((m, after)),
+            None if s.len() == len => Some((m, "")),
+            None => None,
+        }
+    };
+    // A one-argument modifier (`M`/`N`/`U`) takes everything up to the next `:`.
+    let arg = |m: fn(String) -> Modifier| -> Option<(Modifier, &str)> {
+        match s[1..].find(':') {
+            Some(i) => Some((m(s[1..1 + i].to_string()), &s[2 + i..])),
+            None => Some((m(s[1..].to_string()), "")),
+        }
+    };
+    match s.as_bytes().first()? {
+        b'Q' => simple(1, Modifier::Quote),
+        b'H' => simple(1, Modifier::Head),
+        b'T' => simple(1, Modifier::Tail),
+        b'E' => simple(1, Modifier::Ext),
+        b'R' => simple(1, Modifier::Root),
+        b't' if s.as_bytes().get(1) == Some(&b'l') => simple(2, Modifier::Lower),
+        b't' if s.as_bytes().get(1) == Some(&b'u') => simple(2, Modifier::Upper),
+        b'M' => arg(Modifier::Match),
+        b'N' => arg(Modifier::NoMatch),
+        b'U' => arg(Modifier::Default),
+        b'S' => take_subst(s),
+        _ => None,
+    }
+}
+
+/// Parse a `:S<sep>from<sep>to<sep>[1g]` substitution modifier.
+fn take_subst(s: &str) -> Option<(Modifier, &str)> {
+    let mut chars = s.char_indices();
+    chars.next()?; // 'S'
+    let (sep_pos, sep) = chars.next()?; // separator character
+    let after = &s[sep_pos + sep.len_utf8()..];
+    let (from, after) = split_once_char(after, sep)?;
+    let (to, after) = split_once_char(after, sep)?;
+    // Flags run to the next `:` or end.
+    let (flags, rest) = match after.find(':') {
+        Some(i) => (&after[..i], &after[i + 1..]),
+        None => (after, ""),
+    };
+    let anchor_start = from.starts_with('^');
+    let from = from.strip_prefix('^').unwrap_or(from);
+    let anchor_end = from.ends_with('$');
+    let from = from.strip_suffix('$').unwrap_or(from);
+    Some((
+        Modifier::Subst {
+            from: from.to_string(),
+            to: to.to_string(),
+            global: flags.contains('g'),
+            anchor_start,
+            anchor_end,
+        },
+        rest,
+    ))
+}
+
+/// Split `s` at the first `sep`, returning the part before and after (or `None` if `sep` is absent).
+fn split_once_char(s: &str, sep: char) -> Option<(&str, &str)> {
+    let i = s.find(sep)?;
+    Some((&s[..i], &s[i + sep.len_utf8()..]))
+}
+
+/// Apply a chain of BSD modifiers to `value` (`is_set` is whether the variable is defined, for `:U`).
+fn apply_bsd_modifiers(value: &str, mods: &[Modifier], is_set: bool) -> String {
+    let mut val = value.to_string();
+    let mut set = is_set;
+    // Empty results drop out of the word list, matching bmake.
+    let map_words = |val: &str, f: &dyn Fn(&str) -> String| {
+        val.split_whitespace()
+            .map(f)
+            .filter(|w| !w.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    for m in mods {
+        match m {
+            Modifier::Default(def) => {
+                if !set {
+                    val = def.clone();
+                    set = true;
+                }
+            }
+            Modifier::Quote => val = bsd_quote(&val),
+            Modifier::Lower => val = val.to_lowercase(),
+            Modifier::Upper => val = val.to_uppercase(),
+            Modifier::Match(pat) => {
+                val = val
+                    .split_whitespace()
+                    .filter(|w| crate::glob::fnmatch(pat, w))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+            }
+            Modifier::NoMatch(pat) => {
+                val = val
+                    .split_whitespace()
+                    .filter(|w| !crate::glob::fnmatch(pat, w))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+            }
+            Modifier::Subst {
+                from,
+                to,
+                global,
+                anchor_start,
+                anchor_end,
+            } => {
+                val = map_words(&val, &|w| {
+                    bsd_subst(w, from, to, *global, *anchor_start, *anchor_end)
+                });
+            }
+            Modifier::Head => val = map_words(&val, &|w| path_head(w).to_string()),
+            Modifier::Tail => val = map_words(&val, &|w| path_tail(w).to_string()),
+            Modifier::Ext => val = map_words(&val, &|w| path_ext(w).to_string()),
+            Modifier::Root => val = map_words(&val, &|w| path_root(w).to_string()),
+        }
+    }
+    val
+}
+
+/// Literal substring substitution for a `:S` modifier (`^`/`$` anchor to the word's bounds).
+fn bsd_subst(word: &str, from: &str, to: &str, global: bool, start: bool, end: bool) -> String {
+    match (start, end) {
+        (true, true) => {
+            if word == from {
+                to.to_string()
+            } else {
+                word.to_string()
+            }
+        }
+        (true, false) => match word.strip_prefix(from) {
+            Some(rest) => format!("{to}{rest}"),
+            None => word.to_string(),
+        },
+        (false, true) => match word.strip_suffix(from) {
+            Some(pre) => format!("{pre}{to}"),
+            None => word.to_string(),
+        },
+        (false, false) if global => word.replace(from, to),
+        (false, false) => word.replacen(from, to, 1),
+    }
+}
+
+/// Backslash-escape shell-special characters for a `:Q` modifier.
+fn bsd_quote(value: &str) -> String {
+    const SPECIAL: &[char] = &[
+        ' ', '\t', '\n', '"', '\'', '`', '\\', '$', ';', '&', '|', '<', '>', '(', ')', '{', '}',
+        '[', ']', '*', '?', '#', '~', '^', '!',
+    ];
+    let mut out = String::with_capacity(value.len());
+    for c in value.chars() {
+        if SPECIAL.contains(&c) {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// Directory part of a word (`:H`) — everything before the last `/`; `.` when there is no `/`.
+fn path_head(word: &str) -> &str {
+    match word.rfind('/') {
+        Some(i) => &word[..i],
+        None => ".",
+    }
+}
+
+/// File part of a word (`:T`); the whole word when there is no `/`.
+fn path_tail(word: &str) -> &str {
+    match word.rfind('/') {
+        Some(i) => &word[i + 1..],
+        None => word,
+    }
+}
+
+/// Extension of a word without the dot (`:E`); empty when the basename has no `.`.
+fn path_ext(word: &str) -> &str {
+    let base = path_tail(word);
+    match base.rfind('.') {
+        Some(i) => &base[i + 1..],
+        None => "",
+    }
+}
+
+/// Root of a word — everything but the extension (`:R`).
+fn path_root(word: &str) -> &str {
+    let dot = path_tail(word).rfind('.');
+    match dot {
+        Some(i) => {
+            let cut = word.len() - (path_tail(word).len() - i);
+            &word[..cut]
+        }
+        None => word,
+    }
 }
 
 /// Apply a substitution reference (`$(VAR:FROM=TO)`) to each whitespace-separated word of `value`.
