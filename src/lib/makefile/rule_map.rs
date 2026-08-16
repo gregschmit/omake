@@ -105,33 +105,28 @@ impl Rule {
         let (env_adds, env_removes) = makefile.exported_env(&vars);
 
         for raw in self.recipe.iter() {
-            // Expand the recipe line now, at execution time. This resolves variables defined after
+            // Command modifiers (`@` silence, `-` ignore errors, `+` run even under `--just-print`)
+            // that appear literally at the start of the recipe line — before expansion — apply to
+            // EVERY line the recipe expands to, so `@$(canned)` silences all of a multi-line canned
+            // recipe. Modifiers introduced by expansion (e.g. the kernel's `$(Q)` = `@`) apply only
+            // to their own line. This matches GNU make.
+            let (line_silent, line_ignore, line_force, body) = strip_command_modifiers(raw);
+
+            // Expand the recipe body now, at execution time. This resolves variables defined after
             // the rule, automatic variables, and cases where a variable expands to a command
-            // modifier (e.g. the kernel's `$(Q)` = `@` pattern), which must be recognized below.
+            // modifier, which is recognized per line below.
             let expanded =
-                expand(raw, &vars).map_err(|e| MakeError::new(&e, self.context.clone()))?;
+                expand(body, &vars).map_err(|e| MakeError::new(&e, self.context.clone()))?;
 
             // A recipe line may expand to several lines — e.g. a `define` used as a canned recipe —
             // and each becomes its own command. A backslash-newline is a continuation, not a split.
             for line in split_recipe_lines(&expanded) {
-                // Strip leading command modifiers: `@` (silence echo), `-` (ignore errors), and `+`
-                // (run even under `--just-print`). They may be combined in any order and separated
-                // by whitespace (e.g. `@-` or `- @`), and must be removed before the command is
-                // echoed or handed to the shell; only the remainder is a real command.
-                let mut silent = false;
-                let mut ignore_errors = false;
-                let mut force = false;
-                let mut command = line.as_str();
-                loop {
-                    command = command.trim_start();
-                    match command.chars().next() {
-                        Some('@') => silent = true,
-                        Some('-') => ignore_errors = true,
-                        Some('+') => force = true,
-                        _ => break,
-                    }
-                    command = &command[1..];
-                }
+                // Per-line modifiers (from a `define`'s own lines, or an expanded `$(Q)`) combine
+                // with the line-level ones parsed from the raw recipe line above.
+                let (per_silent, per_ignore, per_force, command) = strip_command_modifiers(&line);
+                let silent = line_silent || per_silent;
+                let ignore_errors = line_ignore || per_ignore;
+                let force = line_force || per_force;
 
                 // A recipe consisting only of modifiers (e.g. `@`) is a no-op.
                 if command.is_empty() {
@@ -296,6 +291,25 @@ fn single_target(rule: &Rule, target: &str) -> Rule {
         targets: vec![target.to_string()],
         ..rule.clone()
     }
+}
+
+/// Strip leading command modifiers (`@` silence, `-` ignore errors, `+` force) from a recipe line.
+/// They may be combined in any order and separated by whitespace (e.g. `@-` or `- @`). Returns the
+/// three flags and the remaining command text.
+fn strip_command_modifiers(s: &str) -> (bool, bool, bool, &str) {
+    let (mut silent, mut ignore_errors, mut force) = (false, false, false);
+    let mut rest = s;
+    loop {
+        rest = rest.trim_start();
+        match rest.chars().next() {
+            Some('@') => silent = true,
+            Some('-') => ignore_errors = true,
+            Some('+') => force = true,
+            _ => break,
+        }
+        rest = &rest[1..];
+    }
+    (silent, ignore_errors, force, rest)
 }
 
 /// Split an expanded recipe into individual command lines. A newline preceded by an odd number of

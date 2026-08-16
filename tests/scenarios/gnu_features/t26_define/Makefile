@@ -4,3 +4,5 @@ echo world
 endef
 all:
 	$(GREET)
+quiet:
+	@$(GREET)
