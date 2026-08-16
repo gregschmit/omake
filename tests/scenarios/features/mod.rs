@@ -16,6 +16,7 @@ mod t30_suffix_rule;
 mod t31_builtin_rule;
 mod t32_delete_on_error;
 mod t33_empty_recipe;
+mod t34_inline_recipe;
 mod t3_old_files;
 mod t4_just_print;
 mod t5_silent;

@@ -67,9 +67,11 @@ impl Rule {
         makefile: &Makefile<L>,
         target: &str,
         pattern_build: bool,
+        scope: &Vars,
     ) -> Result<usize, MakeError> {
-        // Build a per-target variable scope: the makefile's variables plus automatic variables.
-        let mut vars = makefile.vars.clone();
+        // Build a per-target variable scope: the incoming scope (makefile variables plus any
+        // target-specific ones) plus automatic variables.
+        let mut vars = scope.clone();
         self.set_automatic_vars(&mut vars, makefile, target, &self.stem);
 
         let mut commands_run = 0;
@@ -488,9 +490,10 @@ impl RuleMap {
     {
         let mut state = ExecState::default();
         for target in targets {
-            // Top-level targets have no parent edge (they cannot be circular on first entry).
+            // Top-level targets have no parent edge (they cannot be circular on first entry). The
+            // initial variable scope is the makefile's global variables.
             let recipes_before = state.recipes_run;
-            self.execute_target(makefile, target, "", &mut state)?;
+            self.execute_target(makefile, target, "", &makefile.vars, &mut state)?;
 
             // If nothing ran for this goal, report it: "up to date" when the goal carries a recipe
             // of its own, else "Nothing to be done" (matching GNU make).
@@ -521,6 +524,7 @@ impl RuleMap {
         makefile: &Makefile<L>,
         target: &str,
         parent: &str,
+        scope: &Vars,
         state: &mut ExecState,
     ) -> Result<(), MakeError> {
         // Already resolved this run: nothing to do.
@@ -538,7 +542,7 @@ impl RuleMap {
             return Ok(());
         }
 
-        let result = self.build_target(makefile, target, state);
+        let result = self.build_target(makefile, target, scope, state);
 
         state.in_progress.remove(target);
         match result {
@@ -562,8 +566,21 @@ impl RuleMap {
         &self,
         makefile: &Makefile<L>,
         target: &str,
+        scope: &Vars,
         state: &mut ExecState,
     ) -> Result<(), MakeError> {
+        // Extend the variable scope with this target's target-specific variables (`target: VAR =
+        // value`); they stay in scope while this target and its prerequisites are built. Only clone
+        // when the target actually has such variables.
+        let mut extended;
+        let scope: &Vars = if makefile.has_target_vars(target) {
+            extended = scope.clone();
+            makefile.apply_target_vars(&mut extended, target);
+            &extended
+        } else {
+            scope
+        };
+
         let rule_indices = match self.by_target.get(target) {
             Some(indices) => indices,
             None => {
@@ -571,7 +588,8 @@ impl RuleMap {
                 // when a prerequisite is newer).
                 if let Some((idx, stem)) = self.match_pattern_rule(makefile, target) {
                     let borrowed = BorrowedPrereqs::default();
-                    return self.build_from_pattern(makefile, target, idx, &stem, &borrowed, state);
+                    return self
+                        .build_from_pattern(makefile, target, idx, &stem, &borrowed, scope, state);
                 }
                 // An existing file is a source and is up to date; a target declared only via
                 // `.PHONY` is a valid empty target; otherwise fall back to `.DEFAULT`, or error.
@@ -591,7 +609,7 @@ impl RuleMap {
                         context: Context::new(),
                         double_colon: false,
                     };
-                    state.recipes_run += rule.execute(makefile, target, false)?;
+                    state.recipes_run += rule.execute(makefile, target, false, scope)?;
                     return Ok(());
                 }
                 return Err(MakeError::new(
@@ -629,7 +647,7 @@ impl RuleMap {
                     .flat_map(|i| self.rules[*i].order_only.clone())
                     .collect(),
             };
-            return self.build_from_pattern(makefile, target, idx, &stem, &borrowed, state);
+            return self.build_from_pattern(makefile, target, idx, &stem, &borrowed, scope, state);
         }
 
         for i in rule_indices {
@@ -644,13 +662,13 @@ impl RuleMap {
             for prereq in &rule.prerequisites {
                 // Check if prereq exists unless `always_make`.
                 if makefile.opts.always_make {
-                    self.execute_target(makefile, prereq, target, state)?;
+                    self.execute_target(makefile, prereq, target, scope, state)?;
                 } else {
                     match makefile.get_mtime(prereq) {
                         None => {
                             // Prereq doesn't exist, so make it. By definition, it's more up-to-date
                             // than the target.
-                            self.execute_target(makefile, prereq, target, state)?;
+                            self.execute_target(makefile, prereq, target, scope, state)?;
                             should_execute = true;
                         }
                         Some(prereq_mtime) => {
@@ -672,7 +690,7 @@ impl RuleMap {
             }
 
             // Order-only prerequisites are made if missing but never force a rebuild.
-            self.make_order_only(makefile, &rule.order_only, target, state)?;
+            self.make_order_only(makefile, &rule.order_only, target, scope, state)?;
             if rule.order_only.iter().any(|p| state.failed.contains(p)) {
                 prereq_failed = true;
             }
@@ -685,7 +703,7 @@ impl RuleMap {
             }
 
             if target_mtime_opt.is_none() || should_execute {
-                state.recipes_run += rule.execute(makefile, target, false)?;
+                state.recipes_run += rule.execute(makefile, target, false, scope)?;
             }
         }
 
@@ -777,6 +795,7 @@ impl RuleMap {
     /// prerequisites from a recipe-less explicit rule for `target`; they are appended after the
     /// pattern-derived ones, so `$<` stays the pattern's first prerequisite and `$^` lists the
     /// pattern prerequisite(s) then the explicit ones (matching GNU make).
+    #[allow(clippy::too_many_arguments)]
     fn build_from_pattern<L: Logger>(
         &self,
         makefile: &Makefile<L>,
@@ -784,6 +803,7 @@ impl RuleMap {
         idx: usize,
         stem: &str,
         borrowed: &BorrowedPrereqs,
+        scope: &Vars,
         state: &mut ExecState,
     ) -> Result<(), MakeError> {
         let prule = &self.pattern_rules[idx];
@@ -796,11 +816,11 @@ impl RuleMap {
 
         for prereq in &prereqs {
             if makefile.opts.always_make {
-                self.execute_target(makefile, prereq, target, state)?;
+                self.execute_target(makefile, prereq, target, scope, state)?;
             } else {
                 match makefile.get_mtime(prereq) {
                     None => {
-                        self.execute_target(makefile, prereq, target, state)?;
+                        self.execute_target(makefile, prereq, target, scope, state)?;
                         should_execute = true;
                     }
                     Some(prereq_mtime) => {
@@ -814,7 +834,7 @@ impl RuleMap {
             }
         }
 
-        self.make_order_only(makefile, &order_only, target, state)?;
+        self.make_order_only(makefile, &order_only, target, scope, state)?;
 
         // Under `--keep-going`, a failed prerequisite is recorded rather than propagated, so this
         // target must not be built if any (normal or order-only) prerequisite failed.
@@ -841,7 +861,7 @@ impl RuleMap {
                 context: prule.context.clone(),
                 double_colon: false,
             };
-            state.recipes_run += rule.execute(makefile, target, true)?;
+            state.recipes_run += rule.execute(makefile, target, true, scope)?;
         }
 
         Ok(())
@@ -855,10 +875,11 @@ impl RuleMap {
         makefile: &Makefile<L>,
         order_only: &[String],
         parent: &str,
+        scope: &Vars,
         state: &mut ExecState,
     ) -> Result<(), MakeError> {
         for prereq in order_only {
-            self.execute_target(makefile, prereq, parent, state)?;
+            self.execute_target(makefile, prereq, parent, scope, state)?;
         }
         Ok(())
     }

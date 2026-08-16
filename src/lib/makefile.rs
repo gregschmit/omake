@@ -6,7 +6,7 @@ pub mod rule_map;
 
 use opts::Opts;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -58,6 +58,26 @@ struct DefineCapture {
     depth: usize,
 }
 
+/// A target-specific variable assignment (`target: [override] VAR OP value`). It is applied to the
+/// variable scope while the target and its prerequisites are built.
+#[derive(Debug, Clone)]
+struct TargetVar {
+    name: String,
+    op: AssignOp,
+    value: String,
+    /// `override` makes it beat a command-line variable (origin `Override` vs `File`).
+    is_override: bool,
+}
+
+/// Pattern-specific variable assignments (`%.o: VAR = value`): the assignments apply to every target
+/// matching the `%` pattern (split into `prefix`/`suffix`).
+#[derive(Debug, Clone)]
+struct PatternVar {
+    prefix: String,
+    suffix: String,
+    vars: Vec<TargetVar>,
+}
+
 /// One level of `ifeq`/`ifdef`/... nesting.
 #[derive(Debug)]
 struct CondState {
@@ -90,6 +110,10 @@ pub struct Makefile<L: Logger> {
     vpaths: Vec<(String, Vec<String>)>,
     /// Known suffixes (from `.SUFFIXES`), used to recognize suffix rules like `.c.o:`.
     suffixes: Vec<String>,
+    /// Target-specific variable assignments (`target: VAR = value`), keyed by exact target name.
+    target_vars: HashMap<String, Vec<TargetVar>>,
+    /// Pattern-specific variable assignments (`%.o: VAR = value`).
+    pattern_vars: Vec<PatternVar>,
 
     // Parser state.
     pub vars: Vars,
@@ -118,6 +142,8 @@ impl<L: Logger> Makefile<L> {
                 .iter()
                 .map(|s| s.to_string())
                 .collect(),
+            target_vars: HashMap::new(),
+            pattern_vars: Vec::new(),
             vars,
             current_rule: None,
             context: path.clone().into(),
@@ -428,6 +454,17 @@ impl<L: Logger> Makefile<L> {
             {
                 deps = &deps[1..];
                 double_colon = true;
+            }
+
+            // A target-specific variable (`target: VAR OP value`). GNU make treats the line as an
+            // assignment only when the operator precedes the first `;`; otherwise the `;` starts an
+            // inline recipe. When it is an assignment, a `;` in the value stays part of the value,
+            // so parse the full `deps`.
+            let before_semicolon = deps.split(';').next().unwrap_or(deps);
+            if parse_target_var(before_semicolon).is_some()
+                && let Some(tv) = parse_target_var(deps)
+            {
+                return self.add_target_var(targets, tv);
             }
 
             // There could be a semicolon after prerequisites, in which case we should parse
@@ -1341,6 +1378,74 @@ impl<L: Logger> Makefile<L> {
         self.special.phony.contains(target)
     }
 
+    /// Store a target-specific variable assignment for each listed target or `%` pattern.
+    fn add_target_var(&mut self, targets: &str, mut tv: TargetVar) -> Result<(), MakeError> {
+        // A simple (`:=`/`::=`) value is expanded once, now, in the global scope at this point in
+        // the makefile — like a global simple variable — not deferred to build time.
+        if let AssignOp::Simple = tv.op {
+            tv.value = self.expand_str(&tv.value)?;
+        }
+        let targets = self.expand_str(targets)?;
+        for t in targets.split_whitespace() {
+            match t.split_once('%') {
+                Some((prefix, suffix)) => {
+                    match self
+                        .pattern_vars
+                        .iter_mut()
+                        .find(|p| p.prefix == prefix && p.suffix == suffix)
+                    {
+                        Some(pv) => pv.vars.push(tv.clone()),
+                        None => self.pattern_vars.push(PatternVar {
+                            prefix: prefix.to_string(),
+                            suffix: suffix.to_string(),
+                            vars: vec![tv.clone()],
+                        }),
+                    }
+                }
+                None => self
+                    .target_vars
+                    .entry(t.to_string())
+                    .or_default()
+                    .push(tv.clone()),
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether any target-specific (exact or pattern) variable applies to `target`.
+    fn has_target_vars(&self, target: &str) -> bool {
+        self.target_vars.contains_key(target)
+            || self
+                .pattern_vars
+                .iter()
+                .any(|p| pattern_stem(&p.prefix, &p.suffix, target).is_some())
+    }
+
+    /// Apply target-specific variables for `target` onto `scope`. Pattern-specific assignments are
+    /// applied least-specific first (longest matched stem), so the most specific pattern wins;
+    /// equal-specificity ties keep definition order (later wins). Exact-target assignments are
+    /// applied last, overriding any pattern. Used while building the target and its prerequisites.
+    fn apply_target_vars(&self, scope: &mut Vars, target: &str) {
+        let mut assigned = HashSet::new();
+        let mut matches: Vec<(usize, &PatternVar)> = self
+            .pattern_vars
+            .iter()
+            .filter_map(|pv| pattern_stem(&pv.prefix, &pv.suffix, target).map(|s| (s.len(), pv)))
+            .collect();
+        // Stable sort by descending stem length keeps definition order among equal-length stems.
+        matches.sort_by_key(|m| std::cmp::Reverse(m.0));
+        for (_, pv) in matches {
+            for tv in &pv.vars {
+                apply_target_var_to(scope, tv, &self.vars, &mut assigned);
+            }
+        }
+        if let Some(vars) = self.target_vars.get(target) {
+            for tv in vars {
+                apply_target_var_to(scope, tv, &self.vars, &mut assigned);
+            }
+        }
+    }
+
     /// Whether `target`'s recipes should not be echoed (via `.SILENT`).
     fn is_silent(&self, target: &str) -> bool {
         self.special.silent_all || self.special.silent.contains(target)
@@ -1874,6 +1979,116 @@ fn parse_assignment(line: &str) -> Option<(&str, AssignOp, &str)> {
     }
 
     None
+}
+
+/// Parse the dependency part of a target-specific variable line (`[override] [export] [private] VAR
+/// OP value`). Returns the assignment, or `None` if it is not a variable assignment (so the line is
+/// a normal rule or a static pattern rule). GNU make 4.4 requires an assignment — a bare
+/// `target: export VAR` does nothing — so this only matches when an operator is present.
+fn parse_target_var(deps: &str) -> Option<TargetVar> {
+    let mut rest = deps.trim_start();
+    let mut is_override = false;
+    // Strip leading modifier keywords (whole words). `export` (also export to the recipe env) and
+    // `private` (scope the variable to the target, not its prerequisites) are recognized but their
+    // extra effects are not yet modeled — only the value assignment is applied.
+    loop {
+        let word = rest.split_whitespace().next().unwrap_or("");
+        match word {
+            "override" => is_override = true,
+            "export" | "private" => {}
+            _ => break,
+        }
+        rest = rest[word.len()..].trim_start();
+    }
+    let (name, op, value) = parse_assignment(rest)?;
+    // The variable name must be a single word; otherwise the line is a normal rule whose
+    // prerequisite list happens to contain an operator (e.g. `all: a.o b.o CFLAGS = -O2`).
+    let name = name.trim();
+    if name.is_empty() || name.split_whitespace().count() != 1 {
+        return None;
+    }
+    Some(TargetVar {
+        name: name.to_string(),
+        op,
+        value: value.trim_start().to_string(),
+        is_override,
+    })
+}
+
+/// Apply a single target-specific variable onto `scope`, honoring its flavor and `override` (which
+/// uses origin `Override` to beat a command-line variable; a plain assignment uses `File`, which
+/// overrides a global makefile variable but loses to the command line). `global` is the makefile's
+/// global scope (with command-line/environment variables), and `assigned` collects the names this
+/// target has already assigned. Both are used only for `?=`, which sets the variable unless it has a
+/// global/command-line/environment definition or an earlier same-target assignment — an inherited
+/// value from an ancestor target does not count.
+fn apply_target_var_to(
+    scope: &mut Vars,
+    tv: &TargetVar,
+    global: &Vars,
+    assigned: &mut HashSet<String>,
+) {
+    let origin = if tv.is_override {
+        Origin::Override
+    } else {
+        Origin::File
+    };
+    match tv.op {
+        AssignOp::Recursive => {
+            let _ = scope.set_origin(&tv.name, &tv.value, true, origin);
+        }
+        // A simple value was already expanded when parsed (see `add_target_var`); set it as-is.
+        AssignOp::Simple => {
+            let _ = scope.set_origin(&tv.name, &tv.value, false, origin);
+        }
+        AssignOp::Conditional => {
+            if !global.is_set(&tv.name) && !assigned.contains(&tv.name) {
+                let _ = scope.set_origin(&tv.name, &tv.value, true, origin);
+            }
+        }
+        AssignOp::Append => {
+            if !scope.is_set(&tv.name) {
+                let _ = scope.set_origin(&tv.name, &tv.value, true, origin);
+            } else {
+                let existing = scope.get(&tv.name);
+                let recursive = existing.recursive;
+                let existing_value = existing.value.clone();
+                let addition = if recursive {
+                    tv.value.clone()
+                } else {
+                    expand(&tv.value, scope).unwrap_or_else(|_| tv.value.clone())
+                };
+                let new_value = if existing_value.is_empty() {
+                    addition
+                } else {
+                    format!("{existing_value} {addition}")
+                };
+                let _ = scope.set_origin(&tv.name, &new_value, recursive, origin);
+            }
+        }
+        AssignOp::Shell => {
+            let cmd = expand(&tv.value, scope).unwrap_or_else(|_| tv.value.clone());
+            let shell = scope.get("SHELL").value.clone();
+            let flags: Vec<String> = scope
+                .get(".SHELLFLAGS")
+                .value
+                .split_whitespace()
+                .map(str::to_string)
+                .collect();
+            let result = std::process::Command::new(&shell)
+                .args(&flags)
+                .arg(&cmd)
+                .output()
+                .map(|o| {
+                    String::from_utf8_lossy(&o.stdout)
+                        .trim_end_matches('\n')
+                        .replace('\n', " ")
+                })
+                .unwrap_or_default();
+            let _ = scope.set_origin(&tv.name, &result, true, origin);
+        }
+    }
+    assigned.insert(tv.name.clone());
 }
 
 #[cfg(test)]
