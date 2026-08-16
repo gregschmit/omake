@@ -64,6 +64,19 @@ struct DefineCapture {
     depth: usize,
 }
 
+/// State for a BSD `.for VAR... in ITEM... / .endfor` loop being captured.
+#[derive(Debug)]
+struct ForCapture {
+    /// Loop variable names (`.for a b in ...` has two).
+    vars: Vec<String>,
+    /// The expanded list of items to iterate over.
+    items: Vec<String>,
+    /// Body lines collected so far (verbatim), re-parsed once per iteration.
+    body: Vec<String>,
+    /// Nesting depth of inner `.for`/`.endfor` pairs within the body.
+    depth: usize,
+}
+
 /// A target-specific variable assignment (`target: [override] VAR OP value`). It is applied to the
 /// variable scope while the target and its prerequisites are built.
 #[derive(Debug, Clone)]
@@ -129,6 +142,7 @@ pub struct Makefile<L: Logger> {
     context: Context,
     cond_stack: Vec<CondState>,
     defining: Option<DefineCapture>,
+    for_capture: Option<ForCapture>,
     include_depth: usize,
 }
 
@@ -157,6 +171,7 @@ impl<L: Logger> Makefile<L> {
             context: path.clone().into(),
             cond_stack: Vec::new(),
             defining: None,
+            for_capture: None,
             include_depth: 0,
         };
 
@@ -190,6 +205,10 @@ impl<L: Logger> Makefile<L> {
 
         if self.defining.is_some() {
             return Err(MakeError::new("Missing `endef`.", self.context.clone()));
+        }
+
+        if self.for_capture.is_some() {
+            return Err(MakeError::new("Missing `.endfor`.", self.context.clone()));
         }
 
         Ok(())
@@ -284,6 +303,11 @@ impl<L: Logger> Makefile<L> {
             return self.capture_define_line(line);
         }
 
+        // While capturing a `.for` body, collect lines verbatim until the matching `.endfor`.
+        if self.for_capture.is_some() {
+            return self.capture_for_line(line);
+        }
+
         let recipe_prefix = self.vars.get(".RECIPEPREFIX").value.to_string();
 
         // A line beginning with the recipe prefix is a recipe (or a "recipe without rule" error),
@@ -334,6 +358,20 @@ impl<L: Logger> Makefile<L> {
         // Strip inline comments (`#` to end of line) on non-recipe lines. Recipe lines keep `#` so
         // it can reach the shell, and they already returned above.
         let line = strip_inline_comment(&line);
+
+        // A BSD `.for VAR... in ITEM...` header does not terminate the pending rule — its body (which
+        // may be recipe lines) belongs to that rule — so start capturing before the rule-finalize.
+        if let Some((vars, list)) = parse_for(line.trim()) {
+            let expanded =
+                expand(list, &self.vars).map_err(|e| MakeError::new(&e, self.context.clone()))?;
+            self.for_capture = Some(ForCapture {
+                vars,
+                items: expanded.split_whitespace().map(str::to_string).collect(),
+                body: Vec::new(),
+                depth: 0,
+            });
+            return Ok(());
+        }
 
         // Anything other than recipe lines terminate a rule definition.
         if let Some(mut rule) = self.current_rule.take() {
@@ -1114,6 +1152,45 @@ impl<L: Logger> Makefile<L> {
         Ok(())
     }
 
+    /// Collect a line of a `.for` body. A nested `.for`/`.endfor` is tracked by depth; the matching
+    /// `.endfor` at depth 0 runs the loop.
+    fn capture_for_line(&mut self, line: String) -> Result<(), MakeError> {
+        let trimmed = line.trim();
+        if parse_for(trimmed).is_some() {
+            self.for_capture.as_mut().unwrap().depth += 1;
+            self.for_capture.as_mut().unwrap().body.push(line);
+            return Ok(());
+        }
+        if trimmed == ".endfor" {
+            let capture = self.for_capture.as_mut().unwrap();
+            if capture.depth == 0 {
+                let capture = self.for_capture.take().unwrap();
+                return self.run_for_loop(capture);
+            }
+            capture.depth -= 1;
+        }
+        self.for_capture.as_mut().unwrap().body.push(line);
+        Ok(())
+    }
+
+    /// Run a captured `.for` loop: for each chunk of items (one per loop variable), substitute the
+    /// variables into the body lines and re-parse them, so recipes bake in the current values.
+    fn run_for_loop(&mut self, capture: ForCapture) -> Result<(), MakeError> {
+        let n = capture.vars.len();
+        for chunk in capture.items.chunks(n) {
+            // A trailing partial chunk (fewer items than variables) binds the missing ones to "".
+            for line in &capture.body {
+                let mut substituted = line.clone();
+                for (i, var) in capture.vars.iter().enumerate() {
+                    let value = chunk.get(i).map(String::as_str).unwrap_or("");
+                    substituted = substitute_for_var(&substituted, var, value);
+                }
+                self.parse_line(substituted)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Handle an `export`/`unexport` directive. `rest` may be empty, a list of variable names, or
     /// (for `export`) an assignment (`export NAME = value`), which both assigns and exports.
     fn handle_export(&mut self, export: bool, rest: &str) -> Result<(), MakeError> {
@@ -1722,6 +1799,81 @@ fn parse_bsd_include(trimmed: &str) -> Option<(bool, &str)> {
         }
     }
     None
+}
+
+/// If `trimmed` is a BSD `.for VAR... in ITEM...` header, return the loop variable names and the
+/// (unexpanded) item-list text after the `in` keyword.
+fn parse_for(trimmed: &str) -> Option<(Vec<String>, &str)> {
+    let rest = trimmed.strip_prefix(".for")?;
+    if !rest.starts_with([' ', '\t']) {
+        return None;
+    }
+    let mut vars = Vec::new();
+    let mut cursor = rest;
+    loop {
+        cursor = cursor.trim_start();
+        if cursor.is_empty() {
+            return None; // no `in` keyword
+        }
+        let end = cursor.find(char::is_whitespace).unwrap_or(cursor.len());
+        let word = &cursor[..end];
+        let after = &cursor[end..];
+        if word == "in" {
+            return (!vars.is_empty()).then(|| (vars, after.trim_start()));
+        }
+        vars.push(word.to_string());
+        cursor = after;
+    }
+}
+
+/// Textually substitute a `.for` loop variable `var` with `value` in a body line: `${var}`,
+/// `$(var)`, and (for a single-character name) `$v` are replaced. `$$` is left as an escaped dollar,
+/// and `${var:modifier}` is left for the normal expander. Substitution is textual (not a variable)
+/// so recipe lines, which expand at run time, capture the current value.
+fn substitute_for_var(line: &str, var: &str, value: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '$' {
+            out.push(c);
+            continue;
+        }
+        match chars.peek().copied() {
+            Some('$') => {
+                out.push_str("$$");
+                chars.next();
+            }
+            Some(open @ ('{' | '(')) => {
+                let close = if open == '{' { '}' } else { ')' };
+                chars.next();
+                let mut name = String::new();
+                let mut found = false;
+                for ch in chars.by_ref() {
+                    if ch == close {
+                        found = true;
+                        break;
+                    }
+                    name.push(ch);
+                }
+                if found && name == var {
+                    out.push_str(value);
+                } else {
+                    out.push('$');
+                    out.push(open);
+                    out.push_str(&name);
+                    if found {
+                        out.push(close);
+                    }
+                }
+            }
+            Some(c) if var.len() == 1 && c == var.chars().next().unwrap() => {
+                out.push_str(value);
+                chars.next();
+            }
+            _ => out.push('$'),
+        }
+    }
+    out
 }
 
 /// A BSD diagnostic directive: `.error` aborts, `.warning`/`.info` are non-fatal.
