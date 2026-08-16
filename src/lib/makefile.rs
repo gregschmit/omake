@@ -41,6 +41,12 @@ pub struct SpecialTargets {
     precious: HashSet<String>,
     /// Whether a target modified by a failing recipe is deleted (`.DELETE_ON_ERROR:`).
     delete_on_error: bool,
+    /// Intermediate files to preserve (`.SECONDARY`), or all of them when `secondary_all`.
+    secondary: HashSet<String>,
+    /// Whether every intermediate file is preserved (`.SECONDARY` with no prerequisites).
+    secondary_all: bool,
+    /// Files forced to be intermediate (`.INTERMEDIATE: x`), deleted after the build if invented.
+    intermediate: HashSet<String>,
 }
 
 /// State for a `define ... endef` multi-line variable being captured.
@@ -1360,6 +1366,21 @@ impl<L: Logger> Makefile<L> {
                     .extend(rule.prerequisites.iter().cloned()),
                 // `.DELETE_ON_ERROR:` is a global flag (its prerequisites are ignored).
                 ".DELETE_ON_ERROR" => self.special.delete_on_error = true,
+                // `.SECONDARY:` with no prerequisites preserves all intermediates; otherwise it
+                // preserves the listed ones. `.INTERMEDIATE:` forces the listed targets intermediate.
+                ".SECONDARY" => {
+                    if rule.prerequisites.is_empty() {
+                        self.special.secondary_all = true;
+                    } else {
+                        self.special
+                            .secondary
+                            .extend(rule.prerequisites.iter().cloned());
+                    }
+                }
+                ".INTERMEDIATE" => self
+                    .special
+                    .intermediate
+                    .extend(rule.prerequisites.iter().cloned()),
                 // `.SUFFIXES:` with no prerequisites clears the suffix list; otherwise it appends.
                 ".SUFFIXES" => {
                     if rule.prerequisites.is_empty() {
@@ -1480,6 +1501,20 @@ impl<L: Logger> Makefile<L> {
     /// Whether `.DELETE_ON_ERROR:` is in effect.
     fn delete_on_error(&self) -> bool {
         self.special.delete_on_error
+    }
+
+    /// Whether an invented intermediate file `target` should be preserved rather than deleted after
+    /// the build (`.SECONDARY` or `.PRECIOUS`). `.PRECIOUS` honors `%` patterns (an intermediate is
+    /// always pattern-built); `.SECONDARY` matches exact names only, like GNU make.
+    fn is_secondary(&self, target: &str) -> bool {
+        self.special.secondary_all
+            || self.special.secondary.contains(target)
+            || self.is_precious(target, true)
+    }
+
+    /// Whether `target` is explicitly declared intermediate (`.INTERMEDIATE: target`).
+    fn is_intermediate_marked(&self, target: &str) -> bool {
+        self.special.intermediate.contains(target)
     }
 
     /// Get the `mtime` of a file. Note that the return value also signals whether or not the file

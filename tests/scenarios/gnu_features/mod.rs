@@ -19,3 +19,4 @@ mod t35_path_functions;
 mod t36_static_pattern;
 mod t37_borrow_recipe;
 mod t38_target_vars;
+mod t39_intermediate;

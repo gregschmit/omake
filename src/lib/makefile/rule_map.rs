@@ -2,6 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::process::Command;
+use std::time::SystemTime;
 
 use super::{Context, Logger, MakeError, Makefile};
 use crate::expand::expand;
@@ -372,6 +373,10 @@ pub struct RuleMap {
 
     /// Pattern rules (targets containing `%`), tried in order when no explicit rule matches.
     pattern_rules: Vec<PatternRule>,
+
+    /// Files named as a prerequisite in some explicit rule. Such a file is never an intermediate
+    /// (GNU make only invents/deletes files that appear solely via implicit-rule chaining).
+    mentioned: HashSet<String>,
 }
 
 /// Note that methods on `RuleMap` MUST ensure that only new entries are added to either `rules` or
@@ -389,6 +394,7 @@ impl RuleMap {
             rules: vec![],
             by_target: HashMap::new(),
             pattern_rules: vec![],
+            mentioned: HashSet::new(),
         }
     }
 
@@ -448,6 +454,10 @@ impl RuleMap {
             return Ok(());
         }
 
+        // Record explicit prerequisites so such files are never treated as invented intermediates.
+        self.mentioned.extend(rule.prerequisites.iter().cloned());
+        self.mentioned.extend(rule.order_only.iter().cloned());
+
         // Load rule into the storage vector and get a reference to it and the insertion index.
         let index = self.rules.len();
         self.rules.push(rule);
@@ -488,12 +498,21 @@ impl RuleMap {
     where
         L: Logger,
     {
-        let mut state = ExecState::default();
+        let mut state = ExecState {
+            goals: targets.iter().cloned().collect(),
+            ..Default::default()
+        };
+        // A build error (without `--keep-going`) is held until after the intermediate cleanup below,
+        // since GNU make deletes invented intermediates even when the build fails.
+        let mut build_error = None;
         for target in targets {
             // Top-level targets have no parent edge (they cannot be circular on first entry). The
             // initial variable scope is the makefile's global variables.
             let recipes_before = state.recipes_run;
-            self.execute_target(makefile, target, "", &makefile.vars, &mut state)?;
+            if let Err(e) = self.execute_target(makefile, target, "", &makefile.vars, &mut state) {
+                build_error = Some(e);
+                break;
+            }
 
             // If nothing ran for this goal, report it: "up to date" when the goal carries a recipe
             // of its own, else "Nothing to be done" (matching GNU make).
@@ -505,6 +524,37 @@ impl RuleMap {
                 };
                 makefile.logger.info(&message, None);
             }
+        }
+
+        // Delete intermediate files this run invented, unless preserved by `.SECONDARY`/`.PRECIOUS`
+        // (matching GNU make, which keeps the source tree clean of chained-rule byproducts). Only
+        // files the recipe actually created are removed, and they are reported in one `rm` line.
+        // Under `--just-print`, the recipe did not create the files, but the `rm` is still shown.
+        let to_delete: Vec<&String> = state
+            .invented
+            .iter()
+            .filter(|f| {
+                !makefile.is_secondary(f)
+                    && (makefile.opts.just_print || std::path::Path::new(f).exists())
+            })
+            .collect();
+        if !to_delete.is_empty() {
+            let names = to_delete
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .join(" ");
+            makefile.logger.info(&format!("rm {names}"), None);
+            if !makefile.opts.just_print {
+                for file in to_delete {
+                    let _ = std::fs::remove_file(file);
+                }
+            }
+        }
+
+        // A build error (without `--keep-going`) is propagated now, after the cleanup above.
+        if let Some(e) = build_error {
+            return Err(e);
         }
 
         // Under `--keep-going` failures are recorded rather than propagated, so report them now.
@@ -580,6 +630,10 @@ impl RuleMap {
         } else {
             scope
         };
+
+        // Whether the target already existed, so a `.INTERMEDIATE`-marked file its own explicit rule
+        // creates can be recognized as invented (and deleted afterward).
+        let existed_before = makefile.get_mtime(target).is_some();
 
         let rule_indices = match self.by_target.get(target) {
             Some(indices) => indices,
@@ -707,6 +761,15 @@ impl RuleMap {
             }
         }
 
+        // A `.INTERMEDIATE`-marked file that its own explicit rule just created (absent before) is an
+        // invented intermediate to delete after the build.
+        if !existed_before
+            && self.is_intermediate(makefile, target, state)
+            && makefile.get_mtime(target).is_some()
+        {
+            state.invented.push(target.to_string());
+        }
+
         Ok(())
     }
 
@@ -791,6 +854,53 @@ impl RuleMap {
         })
     }
 
+    /// Whether `target` is an intermediate file: a non-goal, non-phony file made only by an implicit
+    /// rule (a chain link like `foo.c` in `foo.y` -> `foo.c` -> `foo.o`), or one forced intermediate
+    /// with `.INTERMEDIATE`. Intermediates are not rebuilt merely for being absent, and an invented
+    /// one is deleted after the build.
+    fn is_intermediate<L: Logger>(
+        &self,
+        makefile: &Makefile<L>,
+        target: &str,
+        state: &ExecState,
+    ) -> bool {
+        if state.goals.contains(target) || makefile.is_phony(target) {
+            return false;
+        }
+        if makefile.is_intermediate_marked(target) {
+            return true;
+        }
+        // A file named as an explicit prerequisite (or with its own explicit rule) is a real file,
+        // not an invented intermediate.
+        !self.mentioned.contains(target)
+            && !self.by_target.contains_key(target)
+            && self.match_pattern_rule(makefile, target).is_some()
+    }
+
+    /// The mtime a (possibly missing) file effectively has for out-of-date checks. An existing file
+    /// uses its real mtime; a missing file buildable by a pattern rule uses the newest mtime among
+    /// its (recursively resolved) prerequisites — so a missing intermediate does not force a rebuild
+    /// unless its own sources are newer than the target that needs it.
+    fn effective_mtime<L: Logger>(
+        &self,
+        makefile: &Makefile<L>,
+        target: &str,
+        depth: usize,
+    ) -> Option<SystemTime> {
+        if let Some(mtime) = makefile.get_mtime(target) {
+            return Some(mtime);
+        }
+        if depth == 0 {
+            return None;
+        }
+        let (idx, stem) = self.match_pattern_rule(makefile, target)?;
+        self.pattern_rules[idx]
+            .prerequisites(&stem)
+            .iter()
+            .filter_map(|p| self.effective_mtime(makefile, p, depth - 1))
+            .max()
+    }
+
     /// Build `target` using the pattern rule at `idx` with the given `stem`. `borrowed` holds
     /// prerequisites from a recipe-less explicit rule for `target`; they are appended after the
     /// pattern-derived ones, so `$<` stays the pattern's first prerequisite and `$^` lists the
@@ -812,44 +922,52 @@ impl RuleMap {
         let mut order_only = prule.order_only(stem);
         order_only.extend(borrowed.order_only.iter().cloned());
         let target_mtime = makefile.get_mtime(target);
-        let mut should_execute = makefile.opts.always_make;
 
+        // Pass 1: decide whether the target is out of date, without building anything yet. A missing
+        // prerequisite that is an intermediate file is judged by its effective mtime (its own
+        // sources) rather than treated as infinitely new, so a missing intermediate does not force a
+        // rebuild when the final target is already up to date.
+        let mut should_execute = makefile.opts.always_make;
         for prereq in &prereqs {
-            if makefile.opts.always_make {
-                self.execute_target(makefile, prereq, target, scope, state)?;
+            let prereq_mtime = if makefile.get_mtime(prereq).is_some() {
+                makefile.get_mtime(prereq)
+            } else if self.is_intermediate(makefile, prereq, state) {
+                self.effective_mtime(makefile, prereq, PATTERN_CHAIN_LIMIT)
             } else {
-                match makefile.get_mtime(prereq) {
-                    None => {
-                        self.execute_target(makefile, prereq, target, scope, state)?;
+                None
+            };
+            match prereq_mtime {
+                None => should_execute = true,
+                Some(m) => {
+                    if target_mtime.is_none_or(|tm| m > tm) {
                         should_execute = true;
-                    }
-                    Some(prereq_mtime) => {
-                        if let Some(tm) = target_mtime
-                            && prereq_mtime > tm
-                        {
-                            should_execute = true;
-                        }
                     }
                 }
             }
         }
 
+        // Order-only prerequisites are always made if missing (but never force a rebuild).
         self.make_order_only(makefile, &order_only, target, scope, state)?;
 
-        // Under `--keep-going`, a failed prerequisite is recorded rather than propagated, so this
-        // target must not be built if any (normal or order-only) prerequisite failed.
-        if prereqs
-            .iter()
-            .chain(&order_only)
-            .any(|p| state.failed.contains(p))
-        {
-            return Err(MakeError::new(
-                &format!("Target '{target}' not remade because of errors."),
-                Context::new(),
-            ));
-        }
-
         if target_mtime.is_none() || should_execute {
+            // Build the normal prerequisites (including any intermediate now actually needed).
+            for prereq in &prereqs {
+                self.execute_target(makefile, prereq, target, scope, state)?;
+            }
+
+            // Under `--keep-going`, a failed prerequisite is recorded rather than propagated, so
+            // this target must not be built if any (normal or order-only) prerequisite failed.
+            if prereqs
+                .iter()
+                .chain(&order_only)
+                .any(|p| state.failed.contains(p))
+            {
+                return Err(MakeError::new(
+                    &format!("Target '{target}' not remade because of errors."),
+                    Context::new(),
+                ));
+            }
+
             let rule = Rule {
                 targets: vec![target.to_string()],
                 prerequisites: prereqs,
@@ -862,6 +980,12 @@ impl RuleMap {
                 double_colon: false,
             };
             state.recipes_run += rule.execute(makefile, target, true, scope)?;
+
+            // A file just built by an implicit rule that was absent beforehand and is only a chain
+            // link (not a goal) is an invented intermediate; record it for deletion after the build.
+            if target_mtime.is_none() && self.is_intermediate(makefile, target, state) {
+                state.invented.push(target.to_string());
+            }
         }
 
         Ok(())
@@ -897,4 +1021,9 @@ struct ExecState {
     /// Count of rules whose (non-empty) recipe ran, so a goal that ran nothing can report "up to
     /// date" / "Nothing to be done".
     recipes_run: usize,
+    /// The top-level goals; a goal is never treated as an intermediate file.
+    goals: HashSet<String>,
+    /// Intermediate files invented this run (built by an implicit rule as a non-goal chain link,
+    /// and absent beforehand). Deleted after the build unless `.SECONDARY`/`.PRECIOUS`.
+    invented: Vec<String>,
 }
