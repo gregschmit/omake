@@ -88,6 +88,8 @@ struct TargetVar {
     is_override: bool,
     /// `export` also adds the variable to the target's (and its prerequisites') recipe environment.
     is_export: bool,
+    /// `private` scopes the variable to the target's own recipe; prerequisites do not inherit it.
+    is_private: bool,
 }
 
 /// Pattern-specific variable assignments (`%.o: VAR = value`): the assignments apply to every target
@@ -1536,11 +1538,25 @@ impl<L: Logger> Makefile<L> {
                 .any(|p| pattern_stem(&p.prefix, &p.suffix, target).is_some())
     }
 
-    /// Apply target-specific variables for `target` onto `scope`. Pattern-specific assignments are
-    /// applied least-specific first (longest matched stem), so the most specific pattern wins;
-    /// equal-specificity ties keep definition order (later wins). Exact-target assignments are
-    /// applied last, overriding any pattern. Used while building the target and its prerequisites.
+    /// Apply the non-`private` target-specific variables for `target` onto `scope`. This scope
+    /// propagates to the target's prerequisites, so `private` assignments are excluded (they are
+    /// added only to the target's own recipe, via [`apply_private_target_vars`]).
     fn apply_target_vars(&self, scope: &mut Vars, target: &str) {
+        self.apply_target_vars_filtered(scope, target, false);
+    }
+
+    /// Apply only the `private` target-specific variables for `target` onto `scope`. Used for the
+    /// target's own recipe, on top of the (already non-`private`-extended) inherited scope.
+    fn apply_private_target_vars(&self, scope: &mut Vars, target: &str) {
+        self.apply_target_vars_filtered(scope, target, true);
+    }
+
+    /// Apply target-specific variables for `target` onto `scope`, keeping only those whose `private`
+    /// flag equals `want_private`. Pattern-specific assignments are applied least-specific first
+    /// (longest matched stem), so the most specific pattern wins; equal-specificity ties keep
+    /// definition order (later wins). Exact-target assignments are applied last, overriding any
+    /// pattern.
+    fn apply_target_vars_filtered(&self, scope: &mut Vars, target: &str, want_private: bool) {
         let mut assigned = HashSet::new();
         let mut matches: Vec<(usize, &PatternVar)> = self
             .pattern_vars
@@ -1550,15 +1566,28 @@ impl<L: Logger> Makefile<L> {
         // Stable sort by descending stem length keeps definition order among equal-length stems.
         matches.sort_by_key(|m| std::cmp::Reverse(m.0));
         for (_, pv) in matches {
-            for tv in &pv.vars {
+            for tv in pv.vars.iter().filter(|tv| tv.is_private == want_private) {
                 apply_target_var_to(scope, tv, &self.vars, &mut assigned);
             }
         }
         if let Some(vars) = self.target_vars.get(target) {
-            for tv in vars {
+            for tv in vars.iter().filter(|tv| tv.is_private == want_private) {
                 apply_target_var_to(scope, tv, &self.vars, &mut assigned);
             }
         }
+    }
+
+    /// Whether `target` has any `private` target-specific variable (exact or matching pattern).
+    fn has_private_target_vars(&self, target: &str) -> bool {
+        let exact = self
+            .target_vars
+            .get(target)
+            .is_some_and(|vars| vars.iter().any(|tv| tv.is_private));
+        exact
+            || self.pattern_vars.iter().any(|pv| {
+                pv.vars.iter().any(|tv| tv.is_private)
+                    && pattern_stem(&pv.prefix, &pv.suffix, target).is_some()
+            })
     }
 
     /// Whether `target`'s recipes should not be echoed (via `.SILENT`).
@@ -2217,14 +2246,15 @@ fn parse_target_var(deps: &str) -> Option<TargetVar> {
     let mut rest = deps.trim_start();
     let mut is_override = false;
     let mut is_export = false;
-    // Strip leading modifier keywords (whole words). `private` (scope the variable to the target,
-    // not its prerequisites) is recognized but not yet modeled — only the value assignment applies.
+    let mut is_private = false;
+    // Strip leading modifier keywords (whole words). `private` scopes the variable to the target's
+    // own recipe, so its prerequisites do not inherit it.
     loop {
         let word = rest.split_whitespace().next().unwrap_or("");
         match word {
             "override" => is_override = true,
             "export" => is_export = true,
-            "private" => {}
+            "private" => is_private = true,
             _ => break,
         }
         rest = rest[word.len()..].trim_start();
@@ -2242,6 +2272,7 @@ fn parse_target_var(deps: &str) -> Option<TargetVar> {
         value: value.trim_start().to_string(),
         is_override,
         is_export,
+        is_private,
     })
 }
 

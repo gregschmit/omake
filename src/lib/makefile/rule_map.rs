@@ -71,8 +71,13 @@ impl Rule {
         scope: &Vars,
     ) -> Result<usize, MakeError> {
         // Build a per-target variable scope: the incoming scope (makefile variables plus any
-        // target-specific ones) plus automatic variables.
+        // target-specific ones) plus automatic variables. `private` target-specific variables are
+        // added here — they scope to this recipe only, so they are excluded from the inherited scope
+        // that reached the prerequisites.
         let mut vars = scope.clone();
+        if makefile.has_private_target_vars(target) {
+            makefile.apply_private_target_vars(&mut vars, target);
+        }
         self.set_automatic_vars(&mut vars, makefile, target, &self.stem);
 
         let mut commands_run = 0;

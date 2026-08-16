@@ -22,3 +22,4 @@ mod t38_target_vars;
 mod t39_intermediate;
 mod t40_target_export;
 mod t41_escaped_percent;
+mod t42_private_var;
