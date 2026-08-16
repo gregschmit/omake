@@ -10,11 +10,12 @@
 use std::collections::HashMap;
 
 pub const BAD_VARIABLE_CHARS: [char; 3] = [':', '#', '='];
-// Target-side suffixes (`.out`, `.a`, `.o`, ...) come first, then source suffixes, matching the
-// conventional default `.SUFFIXES` order used by POSIX/GNU/BSD make.
-pub const DEFAULT_SUFFIXES: [&str; 20] = [
-    ".out", ".a", ".ln", ".o", ".C", ".F", ".S", ".c", ".cc", ".cpp", ".def", ".f", ".m", ".mod",
-    ".p", ".r", ".s", ".y", ".l", ".h",
+// GNU make's exact default `.SUFFIXES` list and order (from `gmake -p -f /dev/null`). Drives both
+// the `SUFFIXES` snapshot variable and internal suffix-rule recognition.
+pub const DEFAULT_SUFFIXES: [&str; 35] = [
+    ".out", ".a", ".ln", ".o", ".c", ".cc", ".C", ".cpp", ".p", ".f", ".F", ".m", ".r", ".y", ".l",
+    ".ym", ".yl", ".s", ".S", ".mod", ".sym", ".def", ".h", ".info", ".dvi", ".tex", ".texinfo",
+    ".texi", ".txinfo", ".w", ".ch", ".web", ".sh", ".elc", ".el",
 ];
 
 /// List of variables where setting the value to blank means to reset it to the default value. All
@@ -213,11 +214,11 @@ impl Vars {
         vars.set_origin("SHELL", "/bin/sh", false, Origin::Default)
             .unwrap();
 
-        // Set default `SUFFIXES` and `.SUFFIXES`.
+        // Set the default `SUFFIXES` snapshot variable. `.SUFFIXES` is a special *target*, not a
+        // variable (so `$(.SUFFIXES)` is empty), matching gmake — its prereq list lives in the
+        // makefile's `suffixes` field.
         let suffixes = DEFAULT_SUFFIXES.join(" ");
         vars.set_origin("SUFFIXES", &suffixes, false, Origin::Default)
-            .unwrap();
-        vars.set_origin(".SUFFIXES", &suffixes, false, Origin::Default)
             .unwrap();
 
         // Use `set` to initialize data (treated as file-origin, like a makefile assignment).

@@ -24,3 +24,4 @@ mod t40_target_export;
 mod t41_escaped_percent;
 mod t42_private_var;
 mod t43_shellstatus;
+mod t44_suffixes;

@@ -182,7 +182,6 @@ impl<L: Logger> Makefile<L> {
         if makefile.opts.no_builtin_rules {
             makefile.suffixes.clear();
             let _ = makefile.vars.set("SUFFIXES", "", false);
-            let _ = makefile.vars.set(".SUFFIXES", "", false);
         }
 
         // Open the makefile and run it through the parser.
