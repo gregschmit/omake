@@ -14,7 +14,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{fs, fs::File};
 
 use crate::error::MakeError;
-use crate::expand::expand;
+use crate::expand::{expand, expand_collect};
 use crate::logger::{Logger, context::Context};
 use crate::vars::Vars;
 
@@ -297,11 +297,14 @@ impl<L: Logger> Makefile<L> {
             // Rewrite a suffix rule (e.g. `.c.o:`) into the equivalent pattern rule (`%.o: %.c`).
             self.rewrite_suffix_rule(&mut rule);
 
-            // If there is no default target, see if we can assign one.
+            // If there is no default target, see if we can assign one. A dot-target (`.PHONY`) or a
+            // `%` pattern rule is never the default goal, matching GNU make.
             if self.default_target.is_none() {
                 for target in rule.targets.iter() {
-                    // Set default target if none is specified and this is a normal target.
-                    if self.default_target.is_none() && !target.starts_with('.') {
+                    if self.default_target.is_none()
+                        && !target.starts_with('.')
+                        && !target.contains('%')
+                    {
                         self.default_target = Some(target.clone());
                     }
                 }
@@ -362,13 +365,12 @@ impl<L: Logger> Makefile<L> {
             return self.handle_assignment(key, op, value);
         }
 
-        // A line that is only a function/variable reference (e.g. `$(info ...)`, `$(warning ...)`,
+        // A line that is only a function/variable reference (e.g. `$(info ...)`, `$(eval ...)`,
         // `$(error ...)`) is expanded for its side effects; if it expands to nothing, the line is a
         // no-op. This matches GNU make evaluating a bare function-call line, and runs before rule
         // detection so a `:` inside the reference is not mistaken for a rule colon.
         if trimmed_line.starts_with('$') {
-            let expanded = expand(trimmed_line, &self.vars)
-                .map_err(|e| MakeError::new(&e, self.context.clone()))?;
+            let expanded = self.expand_str(trimmed_line)?;
             if expanded.trim().is_empty() {
                 return Ok(());
             }
@@ -398,19 +400,19 @@ impl<L: Logger> Makefile<L> {
                 Some((n, o)) => (n, o),
                 None => (deps, ""),
             };
-            // Expand variables, split into words, then glob each word against the filesystem (a
-            // word with no match keeps its literal form, like GNU make). Wildcards resolve at
-            // parse time, so only files present when the makefile is read are matched.
-            let expand_words = |s: &str| -> Result<Vec<String>, MakeError> {
-                let expanded =
-                    expand(s, &self.vars).map_err(|e| MakeError::new(&e, self.context.clone()))?;
-                Ok(glob_words(expanded.split_whitespace().map(str::to_string)))
-            };
+            // Expand variables (evaluating any `$(eval ...)`), split into words, then glob each
+            // word against the filesystem (a word with no match keeps its literal form, like GNU
+            // make). Wildcards resolve at parse time, so only files present when the makefile is
+            // read are matched.
+            let targets = self.expand_str(targets)?;
+            let normal_deps = self.expand_str(normal_deps)?;
+            let order_deps = self.expand_str(order_deps)?;
+            let glob = |s: &str| glob_words(s.split_whitespace().map(str::to_string));
 
             self.current_rule = Some(Rule {
-                targets: expand_words(targets)?,
-                prerequisites: expand_words(normal_deps)?,
-                order_only: expand_words(order_deps)?,
+                targets: glob(&targets),
+                prerequisites: glob(&normal_deps),
+                order_only: glob(&order_deps),
                 recipe: vec![],
                 context: self.context.clone(),
                 double_colon,
@@ -441,7 +443,10 @@ impl<L: Logger> Makefile<L> {
             return Err(MakeError::new("Empty variable name.", self.context.clone()));
         }
 
-        let err = |e: String| MakeError::new(&e, self.context.clone());
+        // Capture a cloned context (not `self`) so the closure does not borrow `self`, leaving
+        // `self.expand_str` (which needs `&mut self` to process `$(eval ...)`) free to run.
+        let context = self.context.clone();
+        let err = |e: String| MakeError::new(&e, context.clone());
 
         match op {
             // Recursive (`=`): store the raw value, expanded lazily at each use.
@@ -449,7 +454,7 @@ impl<L: Logger> Makefile<L> {
 
             // Simple (`:=` / `::=`): expand the value now and store the result.
             AssignOp::Simple => {
-                let expanded = expand(value, &self.vars).map_err(err)?;
+                let expanded = self.expand_str(value)?;
                 self.vars.set(key, &expanded, false).map_err(err)
             }
 
@@ -475,7 +480,7 @@ impl<L: Logger> Makefile<L> {
                 let addition = if recursive {
                     value.to_string()
                 } else {
-                    expand(value, &self.vars).map_err(err)?
+                    self.expand_str(value)?
                 };
                 let new_value = if existing_value.is_empty() {
                     addition
@@ -523,6 +528,31 @@ impl<L: Logger> Makefile<L> {
                 self.vars.set(key, &result, true).map_err(err)
             }
         }
+    }
+
+    /// Expand `s`, then parse any text produced by `$(eval ...)` as makefile syntax. The eval text
+    /// is processed *after* expansion finishes (once the borrow of the variables is released), so a
+    /// variable it defines is visible on later lines but not within the same expression.
+    fn expand_str(&mut self, s: &str) -> Result<String, MakeError> {
+        let (result, evals) =
+            expand_collect(s, &self.vars).map_err(|e| MakeError::new(&e, self.context.clone()))?;
+        for text in evals {
+            self.eval_makefile_text(&text)?;
+        }
+        Ok(result)
+    }
+
+    /// Parse `text` (the already-expanded argument of a `$(eval ...)`) as makefile source, then
+    /// finalize any pending rule (two blank lines, as end-of-file does). The parse context is saved
+    /// and restored so the caller's line reporting is unaffected.
+    fn eval_makefile_text(&mut self, text: &str) -> Result<(), MakeError> {
+        let saved = self.context.clone();
+        let result = self
+            .parse_reader(std::io::Cursor::new(text.as_bytes()))
+            .and_then(|()| self.parse_line(String::new()))
+            .and_then(|()| self.parse_line(String::new()));
+        self.context = saved;
+        result
     }
 
     /// Principal interface for executing a parsed makefile, given a list of targets.

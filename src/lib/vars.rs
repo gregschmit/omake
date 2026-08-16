@@ -99,11 +99,25 @@ pub const DEFAULT_RECURSIVE_VARS: [(&str, &str); 36] = [
 /// The "raw" environment variables, coming from the OS.
 pub type Env = HashMap<String, String>;
 
-/// A single variable, with a value and a flag indicating whether it is recursive.
+/// Where a variable's definition came from, reported by `$(origin ...)`. omake does not yet track
+/// command-line assignments or the `override` directive, so those origins are absent; automatic
+/// variables are recognized by name in the `origin` function rather than stored here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Origin {
+    /// A built-in default (e.g. `CC`, `MAKE`).
+    Default,
+    /// Inherited from the process environment.
+    Environment,
+    /// Assigned in a makefile.
+    File,
+}
+
+/// A single variable: its value, whether it is recursively expanded, and where it came from.
 #[derive(Clone, Debug)]
 pub struct Var {
     pub value: String,
     pub recursive: bool,
+    pub origin: Origin,
 }
 
 /// Wrap a [`HashMap`] and a default `blank` value, providing an easy way to get variables, handling
@@ -130,31 +144,34 @@ impl Vars {
             blank: Var {
                 value: "".to_string(),
                 recursive: false,
+                origin: Origin::File,
             },
             default_vars: HashMap::new(),
         };
 
         // Set default vars.
         for (k, v) in DEFAULT_VARS {
-            vars.set(k, v, false).unwrap();
+            vars.set_origin(k, v, false, Origin::Default).unwrap();
             vars.default_vars.insert(k.to_string(), v.to_string());
         }
 
         // Set default recursive vars.
         for (k, v) in DEFAULT_RECURSIVE_VARS {
-            vars.set(k, v, true).unwrap();
+            vars.set_origin(k, v, true, Origin::Default).unwrap();
         }
 
         // Set `SHELL` to `/bin/sh` by default.
-        vars.set("SHELL", "/bin/sh", false).unwrap();
+        vars.set_origin("SHELL", "/bin/sh", false, Origin::Default)
+            .unwrap();
 
         // Set default `SUFFIXES` and `.SUFFIXES`.
-        vars.set("SUFFIXES", &DEFAULT_SUFFIXES.join(" "), false)
+        let suffixes = DEFAULT_SUFFIXES.join(" ");
+        vars.set_origin("SUFFIXES", &suffixes, false, Origin::Default)
             .unwrap();
-        vars.set(".SUFFIXES", &DEFAULT_SUFFIXES.join(" "), false)
+        vars.set_origin(".SUFFIXES", &suffixes, false, Origin::Default)
             .unwrap();
 
-        // Use `set` to initialize data.
+        // Use `set` to initialize data (treated as file-origin, like a makefile assignment).
         for (k, v) in init {
             let _ = vars.set(k, v, false);
         }
@@ -188,8 +205,20 @@ impl Vars {
             .retain(|k, _| k.is_empty() || !k.bytes().all(|b| b.is_ascii_digit()));
     }
 
-    /// Public interface for setting variables.
+    /// Public interface for setting variables. The origin is recorded as `File` (a makefile
+    /// assignment); use [`Vars::set_origin`] for other origins.
     pub fn set<S: Into<String>>(&mut self, k: S, v: S, recursive: bool) -> Result<(), String> {
+        self.set_origin(k, v, recursive, Origin::File)
+    }
+
+    /// Set a variable, recording where it came from (for `$(origin ...)`).
+    pub fn set_origin<S: Into<String>>(
+        &mut self,
+        k: S,
+        v: S,
+        recursive: bool,
+        origin: Origin,
+    ) -> Result<(), String> {
         let k = k.into().trim().to_string();
         let mut v = v.into();
 
@@ -213,6 +242,7 @@ impl Vars {
             Var {
                 value: v,
                 recursive,
+                origin,
             },
         );
         Ok(())
@@ -229,9 +259,10 @@ impl From<Env> for Vars {
                 continue;
             }
 
-            // Route through `set` so environment variables get the same validation and special-key
-            // handling (e.g. blank-means-default) as makefile assignments. Skip invalid names.
-            let _ = vars.set(k, v, false);
+            // Route through `set_origin` so environment variables get the same validation and
+            // special-key handling (e.g. blank-means-default) as makefile assignments, and are
+            // recorded with `Environment` origin. Skip invalid names.
+            let _ = vars.set_origin(k, v, false, Origin::Environment);
         }
 
         vars

@@ -2,7 +2,18 @@
 
 use std::process::Command;
 
-use crate::vars::Vars;
+use crate::vars::{Origin, Vars};
+
+/// Mutable state carried through a single top-level expansion.
+#[derive(Default)]
+struct Expander {
+    /// Names of recursive variables currently being expanded — the cycle guard that rejects a
+    /// variable referencing itself (directly or through a chain) instead of overflowing the stack.
+    expanding: Vec<String>,
+    /// Text collected by `$(eval ...)`, to be parsed as makefile syntax by the caller once the
+    /// expansion (and its borrow of the variables) finishes.
+    evals: Vec<String>,
+}
 
 /// A stack frame used to track the previous buffer when expanding potentially nested expressions
 /// (i.e., either `$()` or `${}`). Single variable expansions (e.g., `$X`) are handled inline
@@ -39,16 +50,24 @@ struct Frame {
 ///     we hit a matching closing delimiter (tracked on the stack frame), we evaluate the buffer,
 ///     pop the previous buffer off the stack, join it with the evaluated value, and keep going.
 pub fn expand(s: &str, vars: &Vars) -> Result<String, String> {
-    expand_inner(s, vars, &mut Vec::new())
+    Ok(expand_collect(s, vars)?.0)
 }
 
-/// Inner expansion that carries `expanding`: the names of recursive variables currently being
-/// expanded. This lets us reject a variable that references itself (directly or through a chain)
-/// instead of recursing until the stack overflows.
+/// Like [`expand`], but also returns the text collected by any `$(eval ...)` calls, for the caller
+/// (the makefile parser) to evaluate. Plain [`expand`] discards it, so `$(eval)` is a no-op in
+/// contexts that cannot process it (e.g. recipe expansion).
+pub fn expand_collect(s: &str, vars: &Vars) -> Result<(String, Vec<String>), String> {
+    let mut ctx = Expander::default();
+    let result = expand_inner(s, vars, &mut ctx)?;
+    Ok((result, ctx.evals))
+}
+
+/// Inner expansion that carries the [`Expander`] context (recursive-variable cycle guard and the
+/// `$(eval)` sink).
 // Not a `pop_if`: the raw-mode frame is only popped when its matching close is reached, not on
 // every character it consumes.
 #[allow(clippy::manual_pop_if)]
-fn expand_inner(s: &str, vars: &Vars, expanding: &mut Vec<String>) -> Result<String, String> {
+fn expand_inner(s: &str, vars: &Vars, ctx: &mut Expander) -> Result<String, String> {
     let mut stack: Vec<Frame> = vec![];
     let mut current_buffer: String = String::with_capacity(s.len());
     let mut hit_variable: bool = false;
@@ -72,7 +91,7 @@ fn expand_inner(s: &str, vars: &Vars, expanding: &mut Vec<String>) -> Result<Str
                     let (func, raw_args) = raw
                         .split_once(char::is_whitespace)
                         .expect("raw_mode is only set after a name and whitespace were seen");
-                    let result = call_control(func, raw_args, opener, vars, expanding)?
+                    let result = call_control(func, raw_args, opener, vars, ctx)?
                         .expect("raw_mode is only set for control functions");
                     current_buffer = stack.pop().unwrap().previous_buffer;
                     current_buffer.push_str(&result);
@@ -178,7 +197,7 @@ fn expand_inner(s: &str, vars: &Vars, expanding: &mut Vec<String>) -> Result<Str
                     }
                     let mut args = Vec::with_capacity(arity);
                     for part in parts {
-                        args.push(expand_inner(part, vars, expanding)?);
+                        args.push(expand_inner(part, vars, ctx)?);
                     }
                     let result = call_function(func, &args)?;
                     current_buffer = stack.pop().unwrap().previous_buffer;
@@ -208,12 +227,12 @@ fn expand_inner(s: &str, vars: &Vars, expanding: &mut Vec<String>) -> Result<Str
 
                 // Handle recursive variable expansion, guarding against a cycle.
                 let value = if var.recursive {
-                    if expanding.contains(&name) {
+                    if ctx.expanding.contains(&name) {
                         return Err(format!("Recursive variable '{name}' references itself."));
                     }
-                    expanding.push(name.clone());
-                    recursive_result = expand_inner(var.value.as_str(), vars, expanding)?;
-                    expanding.pop();
+                    ctx.expanding.push(name.clone());
+                    recursive_result = expand_inner(var.value.as_str(), vars, ctx)?;
+                    ctx.expanding.pop();
                     &recursive_result
                 } else {
                     &var.value
@@ -316,6 +335,8 @@ fn is_control_function(name: &str) -> bool {
             | "call"
             | "value"
             | "flavor"
+            | "origin"
+            | "eval"
             | "info"
             | "warning"
             | "error"
@@ -331,21 +352,23 @@ fn call_control(
     raw_args: &str,
     open: char,
     vars: &Vars,
-    expanding: &mut Vec<String>,
+    ctx: &mut Expander,
 ) -> Result<Option<String>, String> {
     let result = match name {
-        "shell" => func_shell(raw_args, vars, expanding)?,
-        "if" => func_if(raw_args, open, vars, expanding)?,
-        "or" => func_or(raw_args, open, vars, expanding)?,
-        "and" => func_and(raw_args, open, vars, expanding)?,
-        "foreach" => func_foreach(raw_args, open, vars, expanding)?,
-        "call" => func_call(raw_args, open, vars, expanding)?,
-        "value" => func_value(raw_args, vars, expanding)?,
-        "flavor" => func_flavor(raw_args, vars, expanding)?,
-        "info" => func_diagnostic(raw_args, vars, expanding, Stream::Stdout)?,
-        "warning" => func_diagnostic(raw_args, vars, expanding, Stream::Stderr)?,
+        "shell" => func_shell(raw_args, vars, ctx)?,
+        "if" => func_if(raw_args, open, vars, ctx)?,
+        "or" => func_or(raw_args, open, vars, ctx)?,
+        "and" => func_and(raw_args, open, vars, ctx)?,
+        "foreach" => func_foreach(raw_args, open, vars, ctx)?,
+        "call" => func_call(raw_args, open, vars, ctx)?,
+        "value" => func_value(raw_args, vars, ctx)?,
+        "flavor" => func_flavor(raw_args, vars, ctx)?,
+        "origin" => func_origin(raw_args, vars, ctx)?,
+        "eval" => func_eval(raw_args, vars, ctx)?,
+        "info" => func_diagnostic(raw_args, vars, ctx, Stream::Stdout)?,
+        "warning" => func_diagnostic(raw_args, vars, ctx, Stream::Stderr)?,
         // `$(error TEXT)` aborts: expand the message and return it as an error.
-        "error" => return Err(expand_inner(raw_args.trim_start(), vars, expanding)?),
+        "error" => return Err(expand_inner(raw_args.trim_start(), vars, ctx)?),
         _ => return Ok(None),
     };
     Ok(Some(result))
@@ -356,8 +379,8 @@ fn call_control(
 /// right before such a newline is dropped; a lone CR is kept). An empty command runs nothing.
 ///
 /// Note: unlike GNU make, this does not set `.SHELLSTATUS` (expansion has only a shared `&Vars`).
-fn func_shell(raw_args: &str, vars: &Vars, expanding: &mut Vec<String>) -> Result<String, String> {
-    let command = expand_inner(raw_args, vars, expanding)?;
+fn func_shell(raw_args: &str, vars: &Vars, ctx: &mut Expander) -> Result<String, String> {
+    let command = expand_inner(raw_args, vars, ctx)?;
     if command.trim().is_empty() {
         return Ok(String::new());
     }
@@ -395,12 +418,7 @@ fn func_shell(raw_args: &str, vars: &Vars, expanding: &mut Vec<String>) -> Resul
 
 /// `$(if COND,THEN[,ELSE])`: if COND (arg-text trimmed, then expanded) is non-empty, expand and
 /// return THEN, else ELSE (or empty). Only the taken branch is expanded; THEN/ELSE keep whitespace.
-fn func_if(
-    raw_args: &str,
-    open: char,
-    vars: &Vars,
-    expanding: &mut Vec<String>,
-) -> Result<String, String> {
+fn func_if(raw_args: &str, open: char, vars: &Vars, ctx: &mut Expander) -> Result<String, String> {
     let parts = split_function_args(raw_args, 3, open);
     if parts.len() < 2 {
         return Err(format!(
@@ -408,23 +426,18 @@ fn func_if(
             parts.len()
         ));
     }
-    if !expand_inner(parts[0].trim(), vars, expanding)?.is_empty() {
-        expand_inner(parts[1], vars, expanding)
+    if !expand_inner(parts[0].trim(), vars, ctx)?.is_empty() {
+        expand_inner(parts[1], vars, ctx)
     } else {
-        expand_inner(parts.get(2).copied().unwrap_or(""), vars, expanding)
+        expand_inner(parts.get(2).copied().unwrap_or(""), vars, ctx)
     }
 }
 
 /// `$(or A,B,...)`: return the first argument (arg-text trimmed, then expanded) that is non-empty,
 /// short-circuiting. `$(and A,B,...)`: empty on the first empty argument, else the last one.
-fn func_or(
-    raw_args: &str,
-    open: char,
-    vars: &Vars,
-    expanding: &mut Vec<String>,
-) -> Result<String, String> {
+fn func_or(raw_args: &str, open: char, vars: &Vars, ctx: &mut Expander) -> Result<String, String> {
     for part in split_function_args(raw_args, usize::MAX, open) {
-        let value = expand_inner(part.trim(), vars, expanding)?;
+        let value = expand_inner(part.trim(), vars, ctx)?;
         if !value.is_empty() {
             return Ok(value);
         }
@@ -432,15 +445,10 @@ fn func_or(
     Ok(String::new())
 }
 
-fn func_and(
-    raw_args: &str,
-    open: char,
-    vars: &Vars,
-    expanding: &mut Vec<String>,
-) -> Result<String, String> {
+fn func_and(raw_args: &str, open: char, vars: &Vars, ctx: &mut Expander) -> Result<String, String> {
     let mut last = String::new();
     for part in split_function_args(raw_args, usize::MAX, open) {
-        last = expand_inner(part.trim(), vars, expanding)?;
+        last = expand_inner(part.trim(), vars, ctx)?;
         if last.is_empty() {
             return Ok(String::new());
         }
@@ -454,7 +462,7 @@ fn func_foreach(
     raw_args: &str,
     open: char,
     vars: &Vars,
-    expanding: &mut Vec<String>,
+    ctx: &mut Expander,
 ) -> Result<String, String> {
     let parts = split_function_args(raw_args, 3, open);
     if parts.len() < 3 {
@@ -463,16 +471,16 @@ fn func_foreach(
             parts.len()
         ));
     }
-    let var = expand_inner(parts[0], vars, expanding)?;
+    let var = expand_inner(parts[0], vars, ctx)?;
     let var = var.trim();
-    let list = expand_inner(parts[1], vars, expanding)?;
+    let list = expand_inner(parts[1], vars, ctx)?;
     let text = parts[2];
 
     let mut scope = vars.clone();
     let mut results = Vec::new();
     for word in list.split_whitespace() {
         scope.set(var, word, false)?;
-        results.push(expand_inner(text, &scope, expanding)?);
+        results.push(expand_inner(text, &scope, ctx)?);
     }
     Ok(results.join(" "))
 }
@@ -484,16 +492,16 @@ fn func_call(
     raw_args: &str,
     open: char,
     vars: &Vars,
-    expanding: &mut Vec<String>,
+    ctx: &mut Expander,
 ) -> Result<String, String> {
     let parts = split_function_args(raw_args, usize::MAX, open);
-    let name = expand_inner(parts[0], vars, expanding)?;
+    let name = expand_inner(parts[0], vars, ctx)?;
     let name = name.trim();
 
     // Positional parameters, expanded once in the caller's scope.
     let mut params = Vec::with_capacity(parts.len().saturating_sub(1));
     for param in &parts[1..] {
-        params.push(expand_inner(param, vars, expanding)?);
+        params.push(expand_inner(param, vars, ctx)?);
     }
 
     // A call to a built-in function (not shadowed by a variable) forwards the parameters as its
@@ -504,7 +512,7 @@ fn func_call(
         }
         if is_control_function(name) {
             let joined = params.join(",");
-            let result = call_control(name, &joined, open, vars, expanding)?;
+            let result = call_control(name, &joined, open, vars, ctx)?;
             return Ok(result.unwrap_or_default());
         }
     }
@@ -518,13 +526,13 @@ fn func_call(
     for (index, value) in params.into_iter().enumerate() {
         scope.set((index + 1).to_string(), value, false)?;
     }
-    expand_inner(&body, &scope, expanding)
+    expand_inner(&body, &scope, ctx)
 }
 
 /// Look up a variable name for `$(value)`/`$(flavor)`: leading whitespace of the argument is
 /// stripped but trailing is significant, so a name with trailing whitespace can never match.
-fn lookup_name(raw_args: &str, vars: &Vars, expanding: &mut Vec<String>) -> Result<String, String> {
-    let expanded = expand_inner(raw_args, vars, expanding)?;
+fn lookup_name(raw_args: &str, vars: &Vars, ctx: &mut Expander) -> Result<String, String> {
+    let expanded = expand_inner(raw_args, vars, ctx)?;
     let name = expanded.trim_start();
     // A trailing space makes the name unmatchable (real variable names have none).
     Ok(if name == name.trim_end() {
@@ -535,8 +543,8 @@ fn lookup_name(raw_args: &str, vars: &Vars, expanding: &mut Vec<String>) -> Resu
 }
 
 /// `$(value VAR)`: the raw, unexpanded value stored for VAR (no reference/function expansion).
-fn func_value(raw_args: &str, vars: &Vars, expanding: &mut Vec<String>) -> Result<String, String> {
-    let name = lookup_name(raw_args, vars, expanding)?;
+fn func_value(raw_args: &str, vars: &Vars, ctx: &mut Expander) -> Result<String, String> {
+    let name = lookup_name(raw_args, vars, ctx)?;
     Ok(vars.get(&name).value.clone())
 }
 
@@ -544,8 +552,8 @@ fn func_value(raw_args: &str, vars: &Vars, expanding: &mut Vec<String>) -> Resul
 ///
 /// Note: omake flavors environment and built-in default variables as `simple`, whereas GNU make
 /// reports them `recursive` — omake's variable store keeps only a recursive flag, not the origin.
-fn func_flavor(raw_args: &str, vars: &Vars, expanding: &mut Vec<String>) -> Result<String, String> {
-    let name = lookup_name(raw_args, vars, expanding)?;
+fn func_flavor(raw_args: &str, vars: &Vars, ctx: &mut Expander) -> Result<String, String> {
+    let name = lookup_name(raw_args, vars, ctx)?;
     let flavor = if !vars.is_set(&name) {
         "undefined"
     } else if vars.get(&name).recursive {
@@ -554,6 +562,52 @@ fn func_flavor(raw_args: &str, vars: &Vars, expanding: &mut Vec<String>) -> Resu
         "simple"
     };
     Ok(flavor.to_string())
+}
+
+/// `$(origin VAR)`: where VAR was defined — `undefined`, `default`, `environment`, `file`, or
+/// `automatic`. (GNU's `command line`, `override`, and `environment override` origins need
+/// features omake lacks; automatic variables are recognized by name.)
+fn func_origin(raw_args: &str, vars: &Vars, ctx: &mut Expander) -> Result<String, String> {
+    let name = lookup_name(raw_args, vars, ctx)?;
+    let origin = if !vars.is_set(&name) {
+        // An automatic variable is `undefined` until it is actually bound (i.e. inside a recipe),
+        // matching GNU make.
+        "undefined"
+    } else if is_automatic_var(&name) {
+        "automatic"
+    } else {
+        match vars.get(&name).origin {
+            Origin::Default => "default",
+            Origin::Environment => "environment",
+            Origin::File => "file",
+        }
+    };
+    Ok(origin.to_string())
+}
+
+/// Whether `name` is an automatic variable (`$@`, `$<`, `$^`, ... and the `D`/`F` variants). When
+/// one is bound (in a recipe), `$(origin)` reports it as `automatic` rather than by its stored
+/// origin.
+fn is_automatic_var(name: &str) -> bool {
+    const CORE: [&str; 8] = ["@", "%", "<", "?", "^", "+", "|", "*"];
+    CORE.contains(&name)
+        || (name.len() == 2 && name.ends_with(['D', 'F']) && CORE.contains(&&name[..1]))
+}
+
+/// `$(eval TEXT)`: expand TEXT, then hand the result to the makefile parser (via the eval sink;
+/// the caller drains it after expansion finishes). Expands to the empty string.
+///
+/// Note: the effect is applied after the enclosing expansion, so a variable defined by `$(eval)` is
+/// visible on later lines but not within the same expression (GNU make applies it immediately). One
+/// consequence: a single-dollar accumulator inside a `$(foreach ...,$(eval ...))` loop (each
+/// iteration reading a variable a prior iteration wrote via `$(VAR)`) does not accumulate; the
+/// portable double-dollar form (`$$(VAR)`) does. Only makefile-parse contexts that go through
+/// `Makefile::expand_str` (assignments, rule lines, standalone lines) drain the sink; a `$(eval)`
+/// in a recipe or a condition/`include` operand is a no-op.
+fn func_eval(raw_args: &str, vars: &Vars, ctx: &mut Expander) -> Result<String, String> {
+    let text = expand_inner(raw_args, vars, ctx)?;
+    ctx.evals.push(text);
+    Ok(String::new())
 }
 
 /// Which stream a diagnostic function writes to.
@@ -565,15 +619,15 @@ enum Stream {
 /// `$(info TEXT)` (stdout) / `$(warning TEXT)` (stderr): print the expanded message and return the
 /// empty string. Leading whitespace of TEXT is stripped; trailing whitespace is preserved.
 ///
-/// Note: GNU prefixes `$(warning)` with `file:line:`; omake's expander has no source context, so the
-/// message is printed without that prefix.
+/// Note: GNU prefixes `$(warning)` with `file:line:`; omake's expander has no source context, so
+/// the message is printed without that prefix.
 fn func_diagnostic(
     raw_args: &str,
     vars: &Vars,
-    expanding: &mut Vec<String>,
+    ctx: &mut Expander,
     stream: Stream,
 ) -> Result<String, String> {
-    let message = expand_inner(raw_args.trim_start(), vars, expanding)?;
+    let message = expand_inner(raw_args.trim_start(), vars, ctx)?;
     match stream {
         Stream::Stdout => println!("{message}"),
         Stream::Stderr => eprintln!("{message}"),
@@ -1208,5 +1262,30 @@ mod tests {
         let v = Vars::new([("FOO", "x")]);
         assert_eq!(expand("$(flavor FOO )", &v).unwrap(), "undefined");
         assert_eq!(expand("$(value FOO )", &v).unwrap(), "");
+    }
+
+    #[test]
+    fn test_origin_and_eval() {
+        let mut vars = Vars::new([]); // includes built-in defaults (CC, ...)
+        vars.set_origin("ENVV", "x", false, Origin::Environment)
+            .unwrap();
+        vars.set("FILEV", "y", false).unwrap(); // File origin
+
+        assert_eq!(expand("$(origin NOPE)", &vars).unwrap(), "undefined");
+        assert_eq!(expand("$(origin CC)", &vars).unwrap(), "default");
+        assert_eq!(expand("$(origin ENVV)", &vars).unwrap(), "environment");
+        assert_eq!(expand("$(origin FILEV)", &vars).unwrap(), "file");
+        // An automatic variable is `undefined` until bound; `automatic` once set (in a recipe).
+        assert_eq!(expand("$(origin @)", &vars).unwrap(), "undefined");
+        let mut recipe = vars.clone();
+        recipe.set("@", "target.o", false).unwrap();
+        assert_eq!(expand("$(origin @)", &recipe).unwrap(), "automatic");
+        // Trailing whitespace makes the name unmatchable.
+        assert_eq!(expand("$(origin FILEV )", &vars).unwrap(), "undefined");
+
+        // `$(eval)` collects the expanded text (for the parser to evaluate) and expands to empty.
+        let (result, evals) = expand_collect("[$(eval X := 1)]", &vars).unwrap();
+        assert_eq!(result, "[]");
+        assert_eq!(evals, vec!["X := 1".to_string()]);
     }
 }

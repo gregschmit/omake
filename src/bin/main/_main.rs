@@ -13,7 +13,7 @@ use clap::Parser;
 
 use args::Args;
 
-use omake::{Context, DefaultLogger, Env, Logger, Makefile, Opts, Vars};
+use omake::{Context, DefaultLogger, Env, Logger, Makefile, Opts, Origin, Vars};
 
 /// An ordered list of filenames used to search for a makefile.
 const MAKEFILE_SEARCH: [&str; 6] = [
@@ -191,8 +191,14 @@ fn main() {
     // Build variables from the (updated) environment, then define `MAKE` (for `$(MAKE) -C subdir`)
     // and set `MAKELEVEL` to this level (children see it incremented, via the exported env above).
     let mut vars: Vars = env::vars().collect::<Env>().into();
-    let _ = vars.set("MAKE", make_path.as_str(), false);
-    let _ = vars.set("MAKELEVEL", level.to_string().as_str(), false);
+    // `MAKE` is a built-in default; `MAKELEVEL` comes from the environment (`$(origin ...)`).
+    let _ = vars.set_origin("MAKE", make_path.as_str(), false, Origin::Default);
+    let _ = vars.set_origin(
+        "MAKELEVEL",
+        level.to_string().as_str(),
+        false,
+        Origin::Environment,
+    );
 
     // Parse the makefile.
     let makefile = match Makefile::new(makefile_fn, opts, vars, DefaultLogger {}) {
