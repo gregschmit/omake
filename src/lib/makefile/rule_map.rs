@@ -58,6 +58,16 @@ pub struct Rule {
     pub double_colon: bool,
 }
 
+/// The result of running (or, under `-q`, question-checking) a rule's recipe.
+#[derive(Default)]
+pub struct RecipeOutcome {
+    /// Command lines echoed or run — feeds the "up to date" / "Nothing to be done" summary.
+    pub commands_run: usize,
+    /// Under `-q`, whether the target was found out of date (a non-`+` recipe line was reached, or a
+    /// forced `+` line failed). Always false in normal mode.
+    pub needs_rebuild: bool,
+}
+
 impl Rule {
     /// Execute this rule's recipe for a specific `target` (one rule may have several targets, and
     /// automatic variables like `$@` depend on which one is being built). `self.stem` is the `%`
@@ -72,7 +82,7 @@ impl Rule {
         target: &str,
         pattern_build: bool,
         scope: &Vars,
-    ) -> Result<usize, MakeError> {
+    ) -> Result<RecipeOutcome, MakeError> {
         // Build a per-target variable scope: the incoming scope (makefile variables plus any
         // target-specific ones) plus automatic variables. `private` target-specific variables are
         // added here — they scope to this recipe only, so they are excluded from the inherited scope
@@ -84,6 +94,7 @@ impl Rule {
         self.set_automatic_vars(&mut vars, makefile, target, &self.stem);
 
         let mut commands_run = 0;
+        let needs_rebuild = false;
 
         // For `.DELETE_ON_ERROR:`, remember the target file's state so a failing recipe can tell
         // whether it modified the target (and should therefore delete it).
@@ -157,6 +168,16 @@ impl Rule {
                 if command.is_empty() {
                     continue;
                 }
+
+                // Question mode (-q): a `+` line still runs, but the first non-`+` line means the
+                // target is out of date — abort the recipe without echoing or running it.
+                if makefile.opts.question && !force {
+                    return Ok(RecipeOutcome {
+                        commands_run,
+                        needs_rebuild: true,
+                    });
+                }
+
                 // A real command line: it will be echoed and/or run, so it counts as work done.
                 commands_run += 1;
 
@@ -203,6 +224,13 @@ impl Rule {
                                 exit_reason(&res),
                             ));
                         }
+                    } else if makefile.opts.question {
+                        // Under -q, a failed forced (`+`) command means "out of date" (exit 1), not
+                        // a build error (exit 2). Abort the recipe.
+                        return Ok(RecipeOutcome {
+                            commands_run,
+                            needs_rebuild: true,
+                        });
                     } else {
                         self.remove_target_on_error(makefile, target, pattern_build, mtime_before);
                         let msg = match res.code() {
@@ -238,7 +266,10 @@ impl Rule {
             }
         }
 
-        Ok(commands_run)
+        Ok(RecipeOutcome {
+            commands_run,
+            needs_rebuild,
+        })
     }
 
     /// Under `.DELETE_ON_ERROR:`, delete `target` if a failing recipe created or modified it (so a
@@ -653,7 +684,7 @@ impl RuleMap {
 
     /// Execute the given `targets` in order, sharing build state so each is built at most once and
     /// circular dependencies are detected rather than recursed into forever.
-    pub fn execute<L>(&self, makefile: &Makefile<L>, targets: &[String]) -> Result<(), MakeError>
+    pub fn execute<L>(&self, makefile: &Makefile<L>, targets: &[String]) -> Result<bool, MakeError>
     where
         L: Logger,
     {
@@ -674,8 +705,12 @@ impl RuleMap {
             }
 
             // If nothing ran for this goal, report it: "up to date" when the goal carries a recipe
-            // of its own, else "Nothing to be done" (matching GNU make).
-            if state.recipes_run == recipes_before && !state.failed.contains(target) {
+            // of its own, else "Nothing to be done" (matching GNU make). Question mode (`-q`) prints
+            // no summary — the exit code carries the answer.
+            if !makefile.opts.question
+                && state.recipes_run == recipes_before
+                && !state.failed.contains(target)
+            {
                 let message = if self.has_recipe(makefile, target) {
                     format!("'{target}' is up to date.")
                 } else {
@@ -723,7 +758,7 @@ impl RuleMap {
                 Context::new(),
             ));
         }
-        Ok(())
+        Ok(state.needs_rebuild)
     }
 
     /// Build a single target, guarding against re-building (memoization) and circular dependencies.
@@ -823,7 +858,9 @@ impl RuleMap {
                         context: Context::new(),
                         double_colon: false,
                     };
-                    state.recipes_run += rule.execute(makefile, target, false, scope)?;
+                    let outcome = rule.execute(makefile, target, false, scope)?;
+                    state.recipes_run += outcome.commands_run;
+                    state.needs_rebuild |= outcome.needs_rebuild;
                     return Ok(());
                 }
                 return Err(MakeError::new(
@@ -917,7 +954,9 @@ impl RuleMap {
             }
 
             if target_mtime_opt.is_none() || should_execute {
-                state.recipes_run += rule.execute(makefile, target, false, scope)?;
+                let outcome = rule.execute(makefile, target, false, scope)?;
+                state.recipes_run += outcome.commands_run;
+                state.needs_rebuild |= outcome.needs_rebuild;
             }
         }
 
@@ -1148,7 +1187,9 @@ impl RuleMap {
                 context: prule.context.clone(),
                 double_colon: false,
             };
-            state.recipes_run += rule.execute(makefile, target, true, scope)?;
+            let outcome = rule.execute(makefile, target, true, scope)?;
+            state.recipes_run += outcome.commands_run;
+            state.needs_rebuild |= outcome.needs_rebuild;
 
             // A file just built by an implicit rule that was absent beforehand and is only a chain
             // link (not a goal) is an invented intermediate; record it for deletion after the build.
@@ -1190,6 +1231,8 @@ struct ExecState {
     /// Count of rules whose (non-empty) recipe ran, so a goal that ran nothing can report "up to
     /// date" / "Nothing to be done".
     recipes_run: usize,
+    /// Under `-q`, whether any built target was found out of date (drives the exit-1 result).
+    needs_rebuild: bool,
     /// The top-level goals; a goal is never treated as an intermediate file.
     goals: HashSet<String>,
     /// Intermediate files invented this run (built by an implicit rule as a non-goal chain link,

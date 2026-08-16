@@ -73,6 +73,10 @@ pub struct Args {
     #[arg(short = 'I', long = "include-dir", value_name = "DIR")]
     pub include_dir: Vec<String>,
 
+    /// Run no recipe; exit 0 if targets are up to date, 1 otherwise.
+    #[arg(short = 'q', long)]
+    pub question: bool,
+
     /// Don't execute recipes; just print them.
     #[arg(
         short = 'n',
@@ -137,6 +141,7 @@ impl From<Args> for Opts {
             environment_overrides: args.environment_overrides,
             touch: args.touch,
             include_dirs: fold_include_dirs(&args.include_dir),
+            question: args.question,
             old_file: args.old_file,
             new_file: args.new_file,
         }

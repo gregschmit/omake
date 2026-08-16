@@ -116,6 +116,7 @@ fn apply_makeflags(opts: &mut Opts, makeflags: &str) {
             'B' => opts.always_make = true,
             's' => opts.silent = true,
             't' => opts.touch = true,
+            'q' => opts.question = true,
             'e' => opts.environment_overrides = true,
             // `-R` (no built-in variables) implies `-r` (no built-in rules).
             'r' => opts.no_builtin_rules = true,
@@ -247,6 +248,9 @@ fn encode_makeflags(opts: &Opts) -> String {
     }
     if opts.just_print {
         flags.push('n');
+    }
+    if opts.question {
+        flags.push('q');
     }
     if opts.no_builtin_rules {
         flags.push('r');
@@ -424,6 +428,10 @@ fn main() {
         }
     }
 
+    // `opts` is moved into the makefile below; remember whether question mode is on for the exit
+    // code.
+    let question = opts.question;
+
     // Parse the makefile.
     let makefile = match Makefile::new(makefile_fn, opts, vars, logger.clone()) {
         Err(e) => exit_with(&logger, &e.msg, Some(e.context)),
@@ -443,7 +451,13 @@ fn main() {
             .unwrap_or_else(|e| exit_with(&logger, &format!("Chdir failed: {e}."), None));
     }
 
-    if let Err(e) = result {
-        exit_with(&logger, &e.msg, Some(e.context));
+    match result {
+        Err(e) => exit_with(&logger, &e.msg, Some(e.context)),
+        // `-q` (question mode): exit 1 if any target was found out of date, else 0.
+        Ok(needs_rebuild) => {
+            if question && needs_rebuild {
+                std::process::exit(1);
+            }
+        }
     }
 }

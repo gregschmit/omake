@@ -23,6 +23,7 @@ mod t37_no_builtins;
 mod t38_ignored_error;
 mod t39_touch;
 mod t3_old_files;
+mod t40_question;
 mod t4_just_print;
 mod t5_silent;
 mod t6_ignore_errors;

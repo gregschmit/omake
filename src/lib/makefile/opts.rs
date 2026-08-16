@@ -32,6 +32,10 @@ pub struct Opts {
     /// Directories searched for `include`d makefiles (`-I`), in order, after the current directory.
     pub include_dirs: Vec<String>,
 
+    /// Question mode (`-q`): run no recipes; exit 0 if all goals are up to date, 1 if any needs
+    /// rebuilding, 2 on error.
+    pub question: bool,
+
     /// Consider FILE to be very old and do not remake it.
     pub old_file: Vec<String>,
 

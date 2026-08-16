@@ -773,8 +773,9 @@ impl<L: Logger> Makefile<L> {
         result
     }
 
-    /// Principal interface for executing a parsed makefile, given a list of targets.
-    pub fn execute(&self, mut targets: Vec<String>) -> Result<(), MakeError> {
+    /// Principal interface for executing a parsed makefile, given a list of targets. Returns whether
+    /// any target was found out of date (meaningful under `-q`, which builds nothing).
+    pub fn execute(&self, mut targets: Vec<String>) -> Result<bool, MakeError> {
         // Set targets list to default target if none were provided.
         if targets.is_empty() {
             match &self.default_target {
