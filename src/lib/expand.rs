@@ -577,6 +577,7 @@ fn func_origin(raw_args: &str, vars: &Vars, ctx: &mut Expander) -> Result<String
         match vars.get(&name).origin {
             Origin::Default => "default",
             Origin::Environment => "environment",
+            Origin::EnvironmentOverride => "environment override",
             Origin::File => "file",
             Origin::CommandLine => "command line",
             Origin::Override => "override",

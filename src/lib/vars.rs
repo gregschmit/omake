@@ -109,6 +109,9 @@ pub enum Origin {
     Environment,
     /// Assigned in a makefile.
     File,
+    /// Inherited from the environment under `-e`, which ranks the environment above makefile
+    /// assignments (but still below the command line and `override`).
+    EnvironmentOverride,
     /// Assigned on the command line (`make FOO=bar`).
     CommandLine,
     /// Assigned with the `override` directive.
@@ -124,8 +127,9 @@ impl Origin {
             Origin::Default => 0,
             Origin::Environment => 1,
             Origin::File => 2,
-            Origin::CommandLine => 3,
-            Origin::Override => 4,
+            Origin::EnvironmentOverride => 3,
+            Origin::CommandLine => 4,
+            Origin::Override => 5,
         }
     }
 }
@@ -154,6 +158,10 @@ pub struct Vars {
     /// Stashing a map of [`DEFAULT_VARS`] here to make lookup fast since we sometimes need to
     /// revert a value back to the default.
     default_vars: HashMap<String, String>,
+
+    /// Under `-e`, environment variables outrank makefile assignments (see
+    /// [`set_origin`](Self::set_origin)).
+    env_override: bool,
 }
 
 impl Vars {
@@ -181,6 +189,7 @@ impl Vars {
                 exported: false,
             },
             default_vars: HashMap::new(),
+            env_override: false,
         };
 
         // Set default vars. The dotted specials (`.RECIPEPREFIX`, `.SHELLFLAGS`) are always defined;
@@ -284,6 +293,19 @@ impl Vars {
             }
         }
 
+        // Under `-e`, an environment variable outranks an unconditional makefile assignment: keep
+        // the environment value but record that a makefile assignment was overridden (so
+        // `$(origin)` reports "environment override"). A `?=`/conditional that finds the variable
+        // already set never reaches here, so a pure environment variable keeps "environment".
+        if self.env_override
+            && origin == Origin::File
+            && let Some(existing) = self.map.get_mut(&k)
+            && existing.origin == Origin::Environment
+        {
+            existing.origin = Origin::EnvironmentOverride;
+            return Ok(());
+        }
+
         // Precedence: a lower-ranked origin cannot overwrite a higher-ranked binding (so a makefile
         // assignment is a no-op against a command-line or `override` variable). Equal ranks
         // overwrite, allowing normal reassignment.
@@ -323,12 +345,16 @@ impl Vars {
 impl Vars {
     /// Build the variable set from the OS environment. `builtin_vars` is false under `-R`, which
     /// omits make's built-in variables so they do not shadow (or appear as) real definitions.
-    pub fn from_env(env: Env, builtin_vars: bool) -> Self {
+    /// `env_override` is true under `-e`, which ranks environment variables above makefile
+    /// assignments: a later unconditional makefile assignment to an environment variable is rejected
+    /// and its origin becomes `EnvironmentOverride` (see [`set_origin`](Self::set_origin)).
+    pub fn from_env(env: Env, builtin_vars: bool, env_override: bool) -> Self {
         let mut vars = if builtin_vars {
             Self::new([])
         } else {
             Self::new_without_builtins([])
         };
+        vars.env_override = env_override;
 
         for (k, v) in env {
             // Don't ever load `SHELL` from the environment.
@@ -337,8 +363,8 @@ impl Vars {
             }
 
             // Route through `set_origin` so environment variables get the same validation and
-            // special-key handling (e.g. blank-means-default) as makefile assignments, and are
-            // recorded with `Environment` origin. Skip invalid names.
+            // special-key handling (e.g. blank-means-default) as makefile assignments. Skip invalid
+            // names.
             let _ = vars.set_origin(k, v, false, Origin::Environment);
         }
 
@@ -348,7 +374,7 @@ impl Vars {
 
 impl From<Env> for Vars {
     fn from(env: Env) -> Self {
-        Self::from_env(env, true)
+        Self::from_env(env, true, false)
     }
 }
 
@@ -376,5 +402,52 @@ mod tests {
         assert_eq!(vars.get(".RECIPEPREFIX").value, "B");
         vars.set(".RECIPEPREFIX", "", false).unwrap();
         assert_eq!(vars.get(".RECIPEPREFIX").value, "\t");
+    }
+
+    #[test]
+    fn test_no_builtins_omits_tool_vars() {
+        // `-R`: tool variables are absent, but the operational specials remain.
+        let vars = Vars::new_without_builtins([]);
+        assert_eq!(vars.get("CC").value, "");
+        assert_eq!(vars.get("CC").origin, Origin::File); // the `blank` fallback
+        assert_eq!(vars.get("COMPILE.c").value, "");
+        assert_eq!(vars.get(".RECIPEPREFIX").value, "\t");
+        assert_eq!(vars.get("SHELL").value, "/bin/sh");
+    }
+
+    #[test]
+    fn test_env_override() {
+        // `-e`: an environment variable outranks an unconditional makefile assignment, which is
+        // rejected and re-tagged `EnvironmentOverride`. A pure environment variable stays
+        // `Environment`; the command line still wins.
+        let env: Env = [("FROMFILE", "env"), ("PUREENV", "env")]
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        let mut vars = Vars::from_env(env, true, true);
+
+        vars.set("FROMFILE", "file", false).unwrap(); // makefile `=`, rejected under -e
+        assert_eq!(vars.get("FROMFILE").value, "env");
+        assert_eq!(vars.get("FROMFILE").origin, Origin::EnvironmentOverride);
+
+        assert_eq!(vars.get("PUREENV").origin, Origin::Environment);
+
+        vars.set_origin("FROMFILE", "cmd", false, Origin::CommandLine)
+            .unwrap();
+        assert_eq!(vars.get("FROMFILE").value, "cmd");
+        assert_eq!(vars.get("FROMFILE").origin, Origin::CommandLine);
+    }
+
+    #[test]
+    fn test_no_env_override_by_default() {
+        // Without `-e`, a makefile assignment beats the environment (the default).
+        let env: Env = [("V", "env")]
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        let mut vars = Vars::from_env(env, true, false);
+        vars.set("V", "file", false).unwrap();
+        assert_eq!(vars.get("V").value, "file");
+        assert_eq!(vars.get("V").origin, Origin::File);
     }
 }

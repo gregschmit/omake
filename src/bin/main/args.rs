@@ -61,6 +61,10 @@ pub struct Args {
     #[arg(short = 'R', long = "no-builtin-variables")]
     pub no_builtin_variables: bool,
 
+    /// Environment variables override makefiles.
+    #[arg(short = 'e', long = "environment-overrides")]
+    pub environment_overrides: bool,
+
     /// Don't execute recipes; just print them.
     #[arg(
         short = 'n',
@@ -108,6 +112,7 @@ impl From<Args> for Opts {
             // `-R` (no built-in variables) implies `-r` (no built-in rules).
             no_builtin_rules: args.no_builtin_rules || args.no_builtin_variables,
             no_builtin_variables: args.no_builtin_variables,
+            environment_overrides: args.environment_overrides,
             old_file: args.old_file,
             new_file: args.new_file,
         }

@@ -23,6 +23,9 @@ pub struct Opts {
     /// Do not define the built-in variables (`-R`); implies `no_builtin_rules`.
     pub no_builtin_variables: bool,
 
+    /// Let environment variables override makefile assignments (`-e`).
+    pub environment_overrides: bool,
+
     /// Consider FILE to be very old and do not remake it.
     pub old_file: Vec<String>,
 

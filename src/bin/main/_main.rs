@@ -115,6 +115,7 @@ fn apply_makeflags(opts: &mut Opts, makeflags: &str) {
             'i' => opts.ignore_errors = true,
             'B' => opts.always_make = true,
             's' => opts.silent = true,
+            'e' => opts.environment_overrides = true,
             // `-R` (no built-in variables) implies `-r` (no built-in rules).
             'r' => opts.no_builtin_rules = true,
             'R' => {
@@ -224,6 +225,9 @@ fn encode_makeflags(opts: &Opts) -> String {
     let mut flags = String::new();
     if opts.always_make {
         flags.push('B');
+    }
+    if opts.environment_overrides {
+        flags.push('e');
     }
     if opts.ignore_errors {
         flags.push('i');
@@ -366,8 +370,12 @@ fn main() {
 
     // Build variables from the (updated) environment, then define `MAKE` (for `$(MAKE) -C subdir`)
     // and set `MAKELEVEL` to this level (children see it incremented, via the exported env above).
-    // Under `-R` the built-in variables are omitted.
-    let mut vars = Vars::from_env(env::vars().collect::<Env>(), !opts.no_builtin_variables);
+    // Under `-R` the built-in variables are omitted; under `-e` the environment outranks makefiles.
+    let mut vars = Vars::from_env(
+        env::vars().collect::<Env>(),
+        !opts.no_builtin_variables,
+        opts.environment_overrides,
+    );
     // `MAKE` is a built-in default; `MAKELEVEL` comes from the environment (`$(origin ...)`).
     let _ = vars.set_origin("MAKE", make_path.as_str(), false, Origin::Default);
     let _ = vars.set_origin(
