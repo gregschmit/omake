@@ -361,6 +361,10 @@ impl<L: Logger> Makefile<L> {
                     r.has_recipe = true;
                     if !cmd.trim().is_empty() {
                         r.recipe.push(cmd.to_string());
+                        // `line_index` is the first physical line of this logical recipe line, which
+                        // matches gmake's failing-recipe line reporting (continuations report the
+                        // first line; a canned recipe reports its invocation line).
+                        r.recipe_lines.push(self.context.line_index.unwrap_or(0));
                     }
                 }
             }
@@ -605,6 +609,7 @@ impl<L: Logger> Makefile<L> {
                 prerequisites: deps_list(&normal_deps),
                 order_only: deps_list(&order_deps),
                 recipe: vec![],
+                recipe_lines: vec![],
                 has_recipe: false,
                 stem: String::new(),
                 target_pattern,
@@ -1435,6 +1440,7 @@ impl<L: Logger> Makefile<L> {
                 prerequisites,
                 order_only,
                 recipe: rule.recipe.clone(),
+                recipe_lines: rule.recipe_lines.clone(),
                 has_recipe: rule.has_recipe,
                 stem,
                 target_pattern: None,

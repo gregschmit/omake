@@ -40,6 +40,9 @@ pub struct Rule {
     /// rebuild.
     pub order_only: Vec<String>,
     pub recipe: Vec<String>,
+    /// 0-based source line index of each stored recipe entry (parallel to `recipe`), used to report
+    /// the failing recipe line on error. Kept in lockstep with `recipe`.
+    pub recipe_lines: Vec<usize>,
     /// Whether a recipe section was present, even if it holds no command lines (e.g. `target:;` or
     /// a target followed by a blank recipe line). GNU make treats such a target as "having commands"
     /// — it reports it up to date rather than "Nothing to be done" — so this is tracked separately
@@ -104,7 +107,8 @@ impl Rule {
         // removed (even if inherited from omake's own environment).
         let (env_adds, env_removes) = makefile.exported_env(&vars);
 
-        for raw in self.recipe.iter() {
+        debug_assert_eq!(self.recipe.len(), self.recipe_lines.len());
+        for (raw, &recipe_line) in self.recipe.iter().zip(self.recipe_lines.iter()) {
             // Command modifiers (`@` silence, `-` ignore errors, `+` run even under `--just-print`)
             // that appear literally at the start of the recipe line — before expansion — apply to
             // EVERY line the recipe expands to, so `@$(canned)` silences all of a multi-line canned
@@ -172,7 +176,11 @@ impl Rule {
                     };
                     if let Some(msg) = error {
                         self.remove_target_on_error(makefile, target, pattern_build, mtime_before);
-                        return Err(MakeError::new(&msg, self.context.clone()));
+                        // Report the failing recipe line (not the rule header), like gmake.
+                        let mut ctx = self.context.clone();
+                        ctx.line_index = Some(recipe_line);
+                        ctx.content = Some(raw.clone());
+                        return Err(MakeError::new(&msg, ctx));
                     }
                 }
             }
@@ -364,6 +372,8 @@ struct PatternRule {
     /// Order-only prerequisite patterns.
     order_only_patterns: Vec<String>,
     recipe: Vec<String>,
+    /// Source line index of each recipe entry (parallel to `recipe`), for failing-recipe location.
+    recipe_lines: Vec<usize>,
     context: Context,
 }
 
@@ -450,6 +460,7 @@ impl RuleMap {
                     prereq_patterns,
                     order_only_patterns: vec![],
                     recipe: vec![recipe.to_string()],
+                    recipe_lines: vec![0],
                     context: Context::new(),
                 });
             }
@@ -468,6 +479,7 @@ impl RuleMap {
                         prereq_patterns: rule.prerequisites.clone(),
                         order_only_patterns: rule.order_only.clone(),
                         recipe: rule.recipe.clone(),
+                        recipe_lines: rule.recipe_lines.clone(),
                         context: rule.context.clone(),
                     };
 
@@ -545,6 +557,7 @@ impl RuleMap {
                     );
                 }
                 existing.recipe = rule.recipe.clone();
+                existing.recipe_lines = rule.recipe_lines.clone();
                 existing.stem = rule.stem.clone();
                 existing.context = rule.context.clone();
             } else {
@@ -722,6 +735,7 @@ impl RuleMap {
                         targets: vec![target.to_string()],
                         prerequisites: vec![],
                         order_only: vec![],
+                        recipe_lines: vec![0; default.len()],
                         recipe: default.to_vec(),
                         has_recipe: true,
                         stem: String::new(),
@@ -1048,6 +1062,7 @@ impl RuleMap {
                 order_only,
                 has_recipe: !prule.recipe.is_empty(),
                 recipe: prule.recipe.clone(),
+                recipe_lines: prule.recipe_lines.clone(),
                 stem: stem.to_string(),
                 target_pattern: None,
                 context: prule.context.clone(),
