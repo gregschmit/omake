@@ -22,6 +22,14 @@ const BUILTIN_RULES: &[(&str, &[&str], &str)] = &[
     ("%", &["%.o"], "$(LINK.o) $^ $(LOADLIBES) $(LDLIBS) -o $@"),
 ];
 
+/// Prerequisites borrowed from a recipe-less explicit rule when its target uses a matching pattern
+/// rule's recipe (GNU make's implicit-rule-with-explicit-prerequisites behaviour).
+#[derive(Default)]
+struct BorrowedPrereqs {
+    normal: Vec<String>,
+    order_only: Vec<String>,
+}
+
 /// A parsed rule from a makefile.
 #[derive(Debug, Clone)]
 pub struct Rule {
@@ -562,7 +570,8 @@ impl RuleMap {
                 // No explicit rule. Try pattern rules first (they can rebuild an existing target
                 // when a prerequisite is newer).
                 if let Some((idx, stem)) = self.match_pattern_rule(makefile, target) {
-                    return self.build_from_pattern(makefile, target, idx, &stem, state);
+                    let borrowed = BorrowedPrereqs::default();
+                    return self.build_from_pattern(makefile, target, idx, &stem, &borrowed, state);
                 }
                 // An existing file is a source and is up to date; a target declared only via
                 // `.PHONY` is a valid empty target; otherwise fall back to `.DEFAULT`, or error.
@@ -600,6 +609,27 @@ impl RuleMap {
                 .info(&format!("Target '{target}' is up to date (old)."), None);
             state.recipes_run += 1;
             return Ok(());
+        }
+
+        // If the explicit rule(s) supply prerequisites but no recipe, GNU make lets the target
+        // borrow a matching pattern/built-in rule's recipe, merging the explicit prerequisites in
+        // after the pattern-derived ones. Implicit rules never apply to a phony target.
+        let has_recipe = rule_indices.iter().any(|i| self.rules[*i].has_recipe);
+        if !has_recipe
+            && !makefile.is_phony(target)
+            && let Some((idx, stem)) = self.match_pattern_rule(makefile, target)
+        {
+            let borrowed = BorrowedPrereqs {
+                normal: rule_indices
+                    .iter()
+                    .flat_map(|i| self.rules[*i].prerequisites.clone())
+                    .collect(),
+                order_only: rule_indices
+                    .iter()
+                    .flat_map(|i| self.rules[*i].order_only.clone())
+                    .collect(),
+            };
+            return self.build_from_pattern(makefile, target, idx, &stem, &borrowed, state);
         }
 
         for i in rule_indices {
@@ -664,31 +694,29 @@ impl RuleMap {
 
     /// Whether `target` "has commands" for the up-to-date vs Nothing-to-be-done summary (used when a
     /// goal needed no work). Like GNU make: a phony target is never up to date; otherwise the target
-    /// has commands if it has an explicit rule with a recipe section (even an empty one), or an
-    /// applicable implicit (pattern/built-in) rule with a recipe.
+    /// has commands if it has an explicit rule with a recipe section (even an empty one), a
+    /// recipe-less explicit rule that can borrow a matching pattern recipe, or (with no explicit
+    /// rule) an applicable implicit rule with a recipe, else a non-empty `.DEFAULT`.
     fn has_recipe<L: Logger>(&self, makefile: &Makefile<L>, target: &str) -> bool {
         if makefile.is_phony(target) {
             return false;
         }
-        // An explicit rule decides on its own (gmake does not fall back to a pattern or `.DEFAULT`
-        // for the wording once the target has a rule). A double-colon target's wording keys on its
-        // first entry; a normal target (one recipe, possibly split across prereq-only stanzas)
-        // counts a recipe from any entry.
+        let borrowable = || {
+            self.match_pattern_rule(makefile, target)
+                .is_some_and(|(idx, _)| !self.pattern_rules[idx].recipe.is_empty())
+        };
+        // An explicit rule decides on its own (gmake does not fall back to `.DEFAULT` once the
+        // target has a rule). A double-colon target's wording keys on its first entry; a normal
+        // target counts a recipe from any entry, or borrows a pattern recipe if it has none.
         if let Some(indices) = self.by_target.get(target) {
             if self.rules[indices[0]].double_colon {
-                return self.rules[indices[0]].has_recipe;
+                return self.rules[indices[0]].has_recipe || borrowable();
             }
-            return indices.iter().any(|i| self.rules[*i].has_recipe);
+            return indices.iter().any(|i| self.rules[*i].has_recipe) || borrowable();
         }
         // No explicit rule: an applicable implicit (pattern/built-in) rule with a recipe, else
         // `.DEFAULT`, whose recipe (if any) supplies the target's commands.
-        if self
-            .match_pattern_rule(makefile, target)
-            .is_some_and(|(idx, _)| !self.pattern_rules[idx].recipe.is_empty())
-        {
-            return true;
-        }
-        !makefile.default_recipe().is_empty()
+        borrowable() || !makefile.default_recipe().is_empty()
     }
 
     /// Find the first pattern rule whose target pattern matches `target` and whose (stem-expanded)
@@ -745,18 +773,24 @@ impl RuleMap {
         })
     }
 
-    /// Build `target` using the pattern rule at `idx` with the given `stem`.
+    /// Build `target` using the pattern rule at `idx` with the given `stem`. `borrowed` holds
+    /// prerequisites from a recipe-less explicit rule for `target`; they are appended after the
+    /// pattern-derived ones, so `$<` stays the pattern's first prerequisite and `$^` lists the
+    /// pattern prerequisite(s) then the explicit ones (matching GNU make).
     fn build_from_pattern<L: Logger>(
         &self,
         makefile: &Makefile<L>,
         target: &str,
         idx: usize,
         stem: &str,
+        borrowed: &BorrowedPrereqs,
         state: &mut ExecState,
     ) -> Result<(), MakeError> {
         let prule = &self.pattern_rules[idx];
-        let prereqs = prule.prerequisites(stem);
-        let order_only = prule.order_only(stem);
+        let mut prereqs = prule.prerequisites(stem);
+        prereqs.extend(borrowed.normal.iter().cloned());
+        let mut order_only = prule.order_only(stem);
+        order_only.extend(borrowed.order_only.iter().cloned());
         let target_mtime = makefile.get_mtime(target);
         let mut should_execute = makefile.opts.always_make;
 
