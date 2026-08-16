@@ -284,6 +284,15 @@ impl Rule {
     }
 }
 
+/// A copy of `rule` scoped to a single `target`, so each target of a multi-target rule is stored
+/// (and later merged) independently, matching GNU make.
+fn single_target(rule: &Rule, target: &str) -> Rule {
+    Rule {
+        targets: vec![target.to_string()],
+        ..rule.clone()
+    }
+}
+
 /// Split an expanded recipe into individual command lines. A newline preceded by an odd number of
 /// backslashes is a continuation and is kept within the command (the shell handles it); any other
 /// newline separates commands (as with a `define` used as a canned recipe).
@@ -458,34 +467,66 @@ impl RuleMap {
         self.mentioned.extend(rule.prerequisites.iter().cloned());
         self.mentioned.extend(rule.order_only.iter().cloned());
 
-        // Load rule into the storage vector and get a reference to it and the insertion index.
-        let index = self.rules.len();
-        self.rules.push(rule);
-        let rule = self.rules.last().unwrap();
-
-        // Load each target into `by_target` hashmap and catch some basic validation errors.
+        // Each target of a rule is stored as its own rule instance, since GNU make treats the
+        // targets of a multi-target rule (`a b: x`) independently: a later stanza extending one
+        // target must not affect its siblings. Several single-colon stanzas for one target are then
+        // *merged* — prerequisites are combined with the recipe-bearing stanza's first, then the
+        // others in definition order; a later recipe overrides an earlier one (with a warning).
+        // Double-colon rules stay independent.
         for target in &rule.targets {
-            match self.by_target.get_mut(target) {
-                None => {
-                    self.by_target.insert(target.to_owned(), vec![index]);
-                }
-                Some(rule_indices) => {
-                    // If there is an existing set of rules for this target, catch user mixing
-                    // single and double-colon rules.
-                    let first = &self.rules[rule_indices.first().unwrap().to_owned()];
-                    if first.double_colon != rule.double_colon {
-                        return Err(MakeError::new(
-                            "Cannot define rules using `:` and `::` on the same target.",
-                            rule.context.clone(),
-                        ));
-                    }
+            let Some(first) = self.by_target.get(target).map(|v| v[0]) else {
+                let index = self.rules.len();
+                self.rules.push(single_target(&rule, target));
+                self.by_target.insert(target.to_owned(), vec![index]);
+                continue;
+            };
 
-                    if rule.double_colon {
-                        rule_indices.push(index);
-                    } else {
-                        logger.warn("Ignoring duplicate definition.", Some(&rule.context));
-                    }
+            if self.rules[first].double_colon != rule.double_colon {
+                return Err(MakeError::new(
+                    "Cannot define rules using `:` and `::` on the same target.",
+                    rule.context.clone(),
+                ));
+            }
+
+            if rule.double_colon {
+                let index = self.rules.len();
+                self.rules.push(single_target(&rule, target));
+                self.by_target.get_mut(target).unwrap().push(index);
+                continue;
+            }
+
+            let old_recipe = !self.rules[first].recipe.is_empty();
+            let old_context = self.rules[first].context.clone();
+            let existing = &mut self.rules[first];
+            if rule.has_recipe {
+                // This stanza carries the recipe: its prerequisites go in front, and it supplies the
+                // recipe (even an empty one, which clears the old) plus its stem/context (so a static
+                // pattern stanza overriding a plain one keeps its `$*`).
+                existing
+                    .prerequisites
+                    .splice(0..0, rule.prerequisites.iter().cloned());
+                existing
+                    .order_only
+                    .splice(0..0, rule.order_only.iter().cloned());
+                existing.has_recipe = true;
+                if old_recipe {
+                    logger.warn(
+                        &format!("overriding recipe for target '{target}'"),
+                        Some(&rule.context),
+                    );
+                    logger.warn(
+                        &format!("ignoring old recipe for target '{target}'"),
+                        Some(&old_context),
+                    );
                 }
+                existing.recipe = rule.recipe.clone();
+                existing.stem = rule.stem.clone();
+                existing.context = rule.context.clone();
+            } else {
+                existing
+                    .prerequisites
+                    .extend(rule.prerequisites.iter().cloned());
+                existing.order_only.extend(rule.order_only.iter().cloned());
             }
         }
 
