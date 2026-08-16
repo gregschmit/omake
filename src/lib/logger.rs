@@ -15,6 +15,12 @@ pub trait Logger {
     /// Write the formatted message somewhere.
     fn write(&self, msg: String);
 
+    /// The program-name prefix on each message. GNU make uses its own invocation name and, in a
+    /// sub-make, a `[N]` recursion-level suffix (e.g. `make[1]`). The default has no level.
+    fn prefix(&self) -> String {
+        "make".to_string()
+    }
+
     /// Log an `INFO` message.
     fn info(&self, msg: &str, context: Option<&Context>) {
         self.write(self.format_log(INFO, msg, context));
@@ -50,16 +56,34 @@ pub trait Logger {
         };
 
         // Return the formatted message.
-        format!("make: {level_display} {context_label}| {msg}{context_line}")
+        format!(
+            "{}: {level_display} {context_label}| {msg}{context_line}",
+            self.prefix()
+        )
     }
 }
 
-/// Uses the default implementation and outputs to `stderr`.
-pub struct DefaultLogger {}
+/// Uses the default implementation and outputs to `stderr`. Carries the program's invocation name
+/// and recursion level for the message prefix.
+#[derive(Clone)]
+pub struct DefaultLogger {
+    /// The program's invocation name (argv[0] basename), used as the message prefix like GNU make.
+    pub program: String,
+    /// The recursion level (`MAKELEVEL`); a non-zero level adds a `[N]` suffix to the prefix.
+    pub level: u32,
+}
 
 /// By default, print to `stderr`.
 impl Logger for DefaultLogger {
     fn write(&self, msg: String) {
         eprintln!("{msg}");
+    }
+
+    fn prefix(&self) -> String {
+        if self.level > 0 {
+            format!("{}[{}]", self.program, self.level)
+        } else {
+            self.program.clone()
+        }
     }
 }

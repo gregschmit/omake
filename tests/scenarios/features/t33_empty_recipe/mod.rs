@@ -5,7 +5,7 @@
 crate::system_test_cases!({
     args: &["built"],
     expected_stdout: "",
-    expected_stderr: "make: INFO  | 'built' is up to date.\n",
+    expected_stderr: "omake: INFO  | 'built' is up to date.\n",
     expected_files: &[],
     pre_hook: {
         std::fs::write("tests/scenarios/features/t33_empty_recipe/built", "").unwrap();

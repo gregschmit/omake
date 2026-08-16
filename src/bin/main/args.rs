@@ -72,6 +72,14 @@ pub struct Args {
     )]
     pub new_file: Vec<String>,
 
+    /// Print the working directory before and after other processing (the default with `-C`).
+    #[arg(short = 'w', long = "print-directory")]
+    pub print_directory: bool,
+
+    /// Turn off `-w`, even if it was turned on implicitly.
+    #[arg(long = "no-print-directory")]
+    pub no_print_directory: bool,
+
     /// Print software license.
     #[arg(long)]
     pub license: bool,

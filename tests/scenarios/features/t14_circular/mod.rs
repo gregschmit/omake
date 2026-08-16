@@ -3,7 +3,7 @@
 crate::system_test_cases!({
     args: &["a"],
     expected_stdout: "make-b\nmake-a\n",
-    expected_stderr: "make: WARN  | Circular b <- a dependency dropped.\n",
+    expected_stderr: "omake: WARN  | Circular b <- a dependency dropped.\n",
     expected_files: &[],
     expected_code: Some(0),
 });

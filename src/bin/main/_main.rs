@@ -72,6 +72,17 @@ fn find_makefile() -> Option<PathBuf> {
     None
 }
 
+/// The program's invocation name (argv[0] basename), used as the message prefix like GNU make
+/// (`make: ...`, or `omake: ...` when invoked as `omake`).
+fn program_name() -> String {
+    env::args()
+        .next()
+        .as_deref()
+        .and_then(|a| std::path::Path::new(a).file_name())
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "make".to_string())
+}
+
 /// The program's own invocation path, for `$(MAKE)`. A relative path that contains a separator is
 /// made absolute against the current directory (so it survives a later `-C` chdir); a bare
 /// PATH-resolved name (e.g. `omake`) is left as-is. We avoid `current_exe` because, at least on
@@ -197,7 +208,15 @@ fn exit_with(logger: &DefaultLogger, msg: &str, context: Option<Context>) -> ! {
 
 fn main() {
     let args = Args::parse();
-    let logger = DefaultLogger {};
+    // The recursion level (`MAKELEVEL`) and invocation name feed the message prefix (`make[N]:`).
+    let level: u32 = env::var("MAKELEVEL")
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(0);
+    let logger = DefaultLogger {
+        program: program_name(),
+        level,
+    };
 
     if args.license {
         println!("{LICENSE}");
@@ -207,6 +226,11 @@ fn main() {
     // Resolve the program's own path for `$(MAKE)` before any `-C` chdir, so a relative invocation
     // path stays valid when a recipe recurses from another directory.
     let make_path = resolve_make_path();
+
+    // GNU make prints "Entering/Leaving directory" around a `-C` chdir, unless `--no-print-directory`
+    // (the messages are on by default when a directory is given, and `-w` forces them on).
+    let print_directory =
+        !args.no_print_directory && (args.print_directory || !args.directory.is_empty());
 
     // Change to another directory, if specified by the arguments.
     let original_dir = if args.directory.is_empty() {
@@ -221,9 +245,15 @@ fn main() {
             .directory
             .iter()
             .fold(PathBuf::new(), |dir, d| dir.join(d));
-        logger.info(&format!("Chdir to `{}`.", dir.display()), None);
         env::set_current_dir(&dir)
             .unwrap_or_else(|e| exit_with(&logger, &format!("Chdir failed: {e}."), None));
+        if print_directory && let Ok(now) = env::current_dir() {
+            println!(
+                "{}: Entering directory '{}'",
+                logger.prefix(),
+                now.display()
+            );
+        }
 
         Some(cwd)
     };
@@ -239,10 +269,6 @@ fn main() {
     let mut opts: Opts = args.clone().into();
     let parent_makeflags = env::var("MAKEFLAGS").unwrap_or_default();
     apply_makeflags(&mut opts, &parent_makeflags);
-    let level: u32 = env::var("MAKELEVEL")
-        .ok()
-        .and_then(|s| s.trim().parse().ok())
-        .unwrap_or(0);
 
     // A command-line token containing `=` is a variable assignment (`make FOO=bar`), not a goal.
     // These also arrive from a parent make via `MAKEFLAGS` (after `--`), so sub-makes inherit them.
@@ -297,7 +323,7 @@ fn main() {
     }
 
     // Parse the makefile.
-    let makefile = match Makefile::new(makefile_fn, opts, vars, DefaultLogger {}) {
+    let makefile = match Makefile::new(makefile_fn, opts, vars, logger.clone()) {
         Err(e) => exit_with(&logger, &e.msg, Some(e.context)),
         Ok(m) => m,
     };
@@ -307,9 +333,12 @@ fn main() {
         exit_with(&logger, &e.msg, Some(e.context));
     }
 
-    // Go back to the original directory, if we changed directory previously.
+    // Go back to the original directory, if we changed directory previously. The "Leaving" message
+    // names the directory being left (the current one), not the one returned to.
     if let Some(cwd) = original_dir {
-        logger.info(&format!("Chdir back to `{}`.", cwd.display()), None);
+        if print_directory && let Ok(now) = env::current_dir() {
+            println!("{}: Leaving directory '{}'", logger.prefix(), now.display());
+        }
         env::set_current_dir(&cwd)
             .unwrap_or_else(|e| exit_with(&logger, &format!("Chdir failed: {e}."), None));
     }

@@ -18,7 +18,7 @@ crate::system_test_cases!(
     {
         args: &["noop"],
         expected_stdout: "",
-        expected_stderr: "make: INFO  | Nothing to be done for 'noop'.\n",
+        expected_stderr: "omake: INFO  | Nothing to be done for 'noop'.\n",
         expected_files: &[],
         expected_code: Some(0),
     },

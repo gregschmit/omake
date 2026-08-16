@@ -1,2 +1,2 @@
 all:
-	@$(MAKE) -C sub
+	@$(MAKE) --no-print-directory -C sub
