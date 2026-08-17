@@ -512,6 +512,17 @@ impl<L: Logger> Makefile<L> {
                 .map_err(|e| MakeError::new(&e, self.context.clone()))?;
             match kind {
                 BsdMessage::Error => return Err(MakeError::new(&msg, self.context.clone())),
+                // bmake writes `.info`/`.warning` as `<prog>: "<file>" line <N>: <msg>` to stderr.
+                BsdMessage::Warning | BsdMessage::Info if self.opts.compat == Compat::Bsd => {
+                    let file = self
+                        .context
+                        .path
+                        .as_ref()
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_default();
+                    let line = self.context.line_index.map(|l| l + 1).unwrap_or(0);
+                    eprintln!("{}: \"{file}\" line {line}: {msg}", self.logger.prefix());
+                }
                 BsdMessage::Warning => self.logger.warn(&msg, Some(&self.context)),
                 BsdMessage::Info => self.logger.info(&msg, Some(&self.context)),
             }
