@@ -34,7 +34,9 @@ chmod +x "$wrapper"
 rm -f "$UNIT"/*.out "$UNIT"/*.rawout "$UNIT"/*.status 2>/dev/null
 
 echo "bmake unit-tests (NetBSD, bmake 20230711) vs omake --compat=bsd:"
-out="$(bmake TEST_MAKE="$wrapper" test 2>&1)"
+# Redirect stdin from /dev/null: a recipe that reads stdin (e.g. a bare `sed` when omake does not
+# yet expand a bmake variable to the filename) would otherwise block and hang the whole suite.
+out="$(bmake TEST_MAKE="$wrapper" test </dev/null 2>&1)"
 failed_line="$(printf '%s\n' "$out" | sed -n 's/^Failed tests: //p' | tail -1)"
 nfail=$(printf '%s' "$failed_line" | wc -w)
 

@@ -66,7 +66,7 @@ Progress (reproduce with `tests/conformance/run_gmake` / `run_bmake`):
 | Suite    | Version  | omake (native) | omake `--compat` |
 |----------|----------|----------------|------------------|
 | GNU make | 4.4.1    | 498 / 1337     | **717 / 1337**   |
-| BSD make | 20230711 | 2 / 396        | **68 / 396**     |
+| BSD make | 20230711 | 2 / 396        | **69 / 396**     |
 
 These numbers should only go up. The remaining GNU gaps are mostly deeper features —
 `.SECONDEXPANSION` for pattern rules, chained implicit-rule search, makefile remaking — plus a few
