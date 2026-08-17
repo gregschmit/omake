@@ -63,9 +63,9 @@ gaps rather than output-format noise.
 
 Progress (reproduce with `tests/conformance/run_gmake` / `run_bmake`):
 
-|  Suite   | Version  | omake (native) | omake `--compat` |
+| Suite    | Version  | omake (native) | omake `--compat` |
 |----------|----------|----------------|------------------|
-| GNU make | 4.4.1    | 498 / 1337     | **637 / 1337**   |
+| GNU make | 4.4.1    | 498 / 1337     | **674 / 1337**   |
 | BSD make | 20230711 | 2 / 396        | 2 / 396          |
 
 These numbers should only go up. The remaining GNU gaps are mostly deeper features —
