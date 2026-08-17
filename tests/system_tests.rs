@@ -18,6 +18,25 @@ struct SystemTestCase {
     pub expected_files: HashMap<String, String>,
     /// Expected process exit code (`None` skips the check).
     pub expected_code: Option<i32>,
+    /// Byte-for-byte contents of every file in the scenario directory *before* the run, so `Drop`
+    /// can restore any git-tracked fixture a recipe overwrote (and delete files the recipe
+    /// created).
+    snapshot: HashMap<String, Vec<u8>>,
+}
+
+/// Snapshot the (top-level) regular files of a scenario directory as `name -> bytes`.
+fn snapshot_dir(path: &str) -> HashMap<String, Vec<u8>> {
+    let mut snapshot = HashMap::new();
+    if let Ok(entries) = fs::read_dir(path) {
+        for entry in entries.flatten() {
+            if entry.file_type().is_ok_and(|t| t.is_file())
+                && let Ok(bytes) = fs::read(entry.path())
+            {
+                snapshot.insert(entry.file_name().to_string_lossy().into_owned(), bytes);
+            }
+        }
+    }
+    snapshot
 }
 
 impl SystemTestCase {
@@ -32,9 +51,13 @@ impl SystemTestCase {
         expected_files: &[(&str, &str)],
         expected_code: Option<i32>,
     ) {
+        // Trim leading/trailing slashes in `path`.
+        let path = path.trim_matches('/').to_string();
+        // Snapshot before running so `Drop` can restore fixtures the recipe modifies (taken here,
+        // after any `pre_hook` has set the directory up).
+        let snapshot = snapshot_dir(&path);
         let system_test = Self {
-            // Trim leading/trailing slashes in `path`.
-            path: path.trim_matches('/').to_string(),
+            path,
             args: args.iter().map(|a| a.to_string()).collect::<Vec<_>>(),
             expected_stdout: expected_stdout.into(),
             expected_stderr: expected_stderr.into(),
@@ -43,6 +66,7 @@ impl SystemTestCase {
                 .map(|(f, c)| (f.to_string(), c.to_string()))
                 .collect::<HashMap<_, _>>(),
             expected_code,
+            snapshot,
         };
         system_test.run();
     }
@@ -112,8 +136,24 @@ impl SystemTestCase {
 /// where the stack is unwinded and the `SystemTestCase` is therefore dropped.
 impl Drop for SystemTestCase {
     fn drop(&mut self) {
-        for filename in self.expected_files.keys() {
-            let _ = fs::remove_file(self.relative_path(filename));
+        // Remove files the run created (those absent from the pre-run snapshot).
+        if let Ok(entries) = fs::read_dir(&self.path) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if !self.snapshot.contains_key(&name)
+                    && entry.file_type().is_ok_and(|t| t.is_file())
+                {
+                    let _ = fs::remove_file(entry.path());
+                }
+            }
+        }
+        // Restore any snapshotted fixture the run modified or deleted, to its original bytes (only
+        // when it actually differs, to avoid needless writes / mtime churn).
+        for (name, bytes) in &self.snapshot {
+            let path = self.relative_path(name);
+            if fs::read(&path).ok().as_deref() != Some(bytes.as_slice()) {
+                let _ = fs::write(&path, bytes);
+            }
         }
     }
 }
