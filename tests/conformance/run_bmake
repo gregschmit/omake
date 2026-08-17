@@ -23,8 +23,18 @@ UNIT="$CONF_DIR/.bmake-src/usr.bin/make/unit-tests"
 cd "$UNIT"
 total=$(grep -cE '^TESTS[[:space:]]*\+=' Makefile)
 
+# The harness runs each test under `env -i` (a sanitized environment), which strips OMAKE_COMPAT.
+# So force `--compat=bsd` with a wrapper binary (basename `omake`, so the harness' make-name
+# normalization still matches). The `.out`/`.rawout`/`.status` artifacts are cached against the
+# unchanged `.mk` files, so remove them to re-run every test with the current binary.
+wrapdir="$UNIT/.omake-wrap"; mkdir -p "$wrapdir"
+wrapper="$wrapdir/omake"
+printf '#!/bin/sh\nexec "%s" --compat=bsd "$@"\n' "$OMAKE" > "$wrapper"
+chmod +x "$wrapper"
+rm -f "$UNIT"/*.out "$UNIT"/*.rawout "$UNIT"/*.status 2>/dev/null
+
 echo "bmake unit-tests (NetBSD, bmake 20230711) vs omake --compat=bsd:"
-out="$(OMAKE_COMPAT=bsd bmake TEST_MAKE="$OMAKE" test 2>&1)"
+out="$(bmake TEST_MAKE="$wrapper" test 2>&1)"
 failed_line="$(printf '%s\n' "$out" | sed -n 's/^Failed tests: //p' | tail -1)"
 nfail=$(printf '%s' "$failed_line" | wc -w)
 

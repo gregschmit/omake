@@ -11,7 +11,7 @@ use std::path::PathBuf;
 
 use clap::Parser;
 
-use args::Args;
+use args::{Args, CompatArg};
 
 use omake::{
     Compat, Context, DefaultLogger, Env, Logger, MakeError, Makefile, Opts, Origin, Vars, makeflags,
@@ -312,9 +312,18 @@ fn main() {
     // encoded as `--no-print-directory` in `MAKEFLAGS`: a child re-derives it from the inherited `s`.
     let silent = args.silent || makeflags_has_short_flag(&parent_makeflags, 's');
     let force_no_print = explicit_no_print || (silent && !force_print);
+    // bmake never prints the "Entering/Leaving directory" banner (even with `-C`), so suppress it
+    // under `--compat=bsd`. Resolve the compat target early — the flag, else the `OMAKE_COMPAT`
+    // environment a sub-make (or the conformance harness) sets.
+    let bsd_compat = match args.compat {
+        Some(CompatArg::Bsd) => true,
+        Some(_) => false,
+        None => env::var("OMAKE_COMPAT").ok().as_deref() == Some("bsd"),
+    };
     // The messages are on for `-C`, `-w`, or a sub-make (`MAKELEVEL > 0`), unless turned off above.
-    let print_directory =
-        !force_no_print && (force_print || !args.directory.is_empty() || level > 0);
+    let print_directory = !bsd_compat
+        && !force_no_print
+        && (force_print || !args.directory.is_empty() || level > 0);
 
     // Change to another directory, if specified by the arguments.
     let original_dir = if args.directory.is_empty() {

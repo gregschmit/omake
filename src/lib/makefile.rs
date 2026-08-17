@@ -374,7 +374,8 @@ impl<L: Logger> Makefile<L> {
         // stripped here so directives like `ifeq (a,b) # note` parse correctly.
         if !line.starts_with(&recipe_prefix) {
             let stripped = strip_inline_comment(&line);
-            let trimmed = stripped.trim();
+            let trimmed = normalize_dot_directive(stripped.trim());
+            let trimmed = trimmed.as_ref();
             if directive_keyword(trimmed).is_some() {
                 return self.handle_conditional(trimmed);
             }
@@ -485,6 +486,9 @@ impl<L: Logger> Makefile<L> {
         if trimmed_line.starts_with(COMMENT_INDICATOR) || trimmed_line.is_empty() {
             return Ok(());
         }
+        // bmake allows whitespace between a leading `.` and the directive keyword (`.  error`).
+        let trimmed_line = normalize_dot_directive(trimmed_line);
+        let trimmed_line = trimmed_line.as_ref();
 
         // Handle `include` / `-include` / `sinclude` directives.
         if let Some((optional, names)) = parse_include(trimmed_line) {
@@ -2396,6 +2400,19 @@ fn strip_one_trailing_backslash(line: &str) -> String {
 fn split_inline_recipe(raw: &str) -> Option<&str> {
     let colon = raw.find(':')?;
     raw[colon + 1..].split_once(';').map(|(_, recipe)| recipe)
+}
+
+/// bmake allows whitespace between a leading `.` and the directive keyword (`.  error`, `. if`).
+/// Collapse it to `.keyword` so the directive matchers (which expect no gap) recognize the line.
+/// Lines that do not start with `.` + whitespace + a letter are returned unchanged.
+fn normalize_dot_directive(s: &str) -> std::borrow::Cow<'_, str> {
+    if let Some(rest) = s.strip_prefix('.') {
+        let after = rest.trim_start();
+        if after.len() != rest.len() && after.starts_with(|c: char| c.is_ascii_alphabetic()) {
+            return std::borrow::Cow::Owned(format!(".{after}"));
+        }
+    }
+    std::borrow::Cow::Borrowed(s)
 }
 
 /// Remove an inline comment (from the first unescaped `#` to end of line). An escaped `\#` becomes
