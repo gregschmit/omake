@@ -666,8 +666,15 @@ impl<L: Logger> Makefile<L> {
                 (deps_list(&normal_deps), deps_list(&order_deps))
             };
 
+            // Grouped targets: `a b &: prereqs` — a trailing `&` token marks the group, whose single
+            // recipe run builds every listed target. Strip the `&` and record the group.
+            let grouped = targets.split_whitespace().last() == Some("&");
+            let target_list: Vec<String> =
+                glob_words(targets.split_whitespace().filter(|t| *t != "&").map(str::to_string));
+            let group = if grouped { target_list.clone() } else { vec![] };
+
             self.current_rule = Some(Rule {
-                targets: glob_words(targets.split_whitespace().map(str::to_string)),
+                targets: target_list,
                 prerequisites,
                 order_only,
                 recipe: vec![],
@@ -678,6 +685,7 @@ impl<L: Logger> Makefile<L> {
                 second_expand,
                 context: self.context.clone(),
                 double_colon,
+                group,
             });
 
             // Add rule line if we found one.
@@ -1581,6 +1589,7 @@ impl<L: Logger> Makefile<L> {
                 second_expand: rule.second_expand,
                 context: rule.context.clone(),
                 double_colon: rule.double_colon,
+                group: rule.group.clone(),
             };
             self.rule_map.insert(concrete, &*self.logger)?;
         }

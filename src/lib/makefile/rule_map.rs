@@ -59,6 +59,9 @@ pub struct Rule {
     pub second_expand: bool,
     pub context: Context,
     pub double_colon: bool,
+    /// For a grouped-target rule (`a b &: prereqs`), the co-targets built by the single shared recipe
+    /// run — so building one marks the whole group up to date. Empty for an ordinary rule.
+    pub group: Vec<String>,
 }
 
 /// The result of running (or, under `-q`, question-checking) a rule's recipe.
@@ -957,6 +960,7 @@ impl RuleMap {
                         second_expand: false,
                         context: Context::new(),
                         double_colon: false,
+                        group: vec![],
                     };
                     let outcome = rule.execute(makefile, target, false, scope)?;
                     state.recipes_run += outcome.commands_run;
@@ -1076,6 +1080,12 @@ impl RuleMap {
                 let outcome = rule.execute(makefile, target, false, scope)?;
                 state.recipes_run += outcome.commands_run;
                 state.needs_rebuild |= outcome.needs_rebuild;
+            }
+
+            // A grouped-target rule (`a b &: …`) builds every co-target in this one run, so mark the
+            // whole group resolved — a co-target requested later is then already done.
+            for co in &rule.group {
+                state.done.insert(co.clone());
             }
         }
 
@@ -1351,6 +1361,7 @@ impl RuleMap {
                 second_expand: false,
                 context: prule.context.clone(),
                 double_colon: false,
+                group: vec![],
             };
             let outcome = rule.execute(makefile, target, true, scope)?;
             state.recipes_run += outcome.commands_run;
