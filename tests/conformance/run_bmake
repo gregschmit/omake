@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 #
 # Run NetBSD's bmake unit-tests against omake and report a pass/fail summary.
 #
@@ -7,11 +7,13 @@
 # reference. Many failures are expected — omake targets GNU+BSD compatibility, not a bmake clone —
 # so this is a conformance signal, not a pass/fail gate.
 #
-# Usage: run-bmake.sh
+# Usage: run_bmake
 #   OMAKE=/path/to/omake  override the make-under-test.
-set -uo pipefail
+#
+# Portable POSIX sh (dash / BSD sh / macOS sh), not bash-specific.
+set -u
 
-CONF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONF_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 OMAKE="${OMAKE:-$CONF_DIR/../../target/debug/omake}"
 
 command -v bmake >/dev/null || { echo "error: bmake not found (needed to drive the harness)" >&2; exit 1; }

@@ -1,13 +1,15 @@
-#!/usr/bin/env bash
+#!/bin/sh
 #
 # Vendor the GNU make and NetBSD bmake sources at pinned commits, into gitignored directories, for
 # the conformance suites (see README.md). Clones only when missing (or when the pinned commit is not
 # present); otherwise just re-checks out the pinned commit. The vendored trees are never committed.
 #
-# Usage: vendor.sh [gmake|bmake|all]   (default: all)
-set -euo pipefail
+# Usage: vendor [gmake|bmake|all]   (default: all)
+#
+# Portable POSIX sh (dash / BSD sh / macOS sh), not bash-specific.
+set -eu
 
-CONF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONF_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 
 # GNU Make 4.4.1 (matches the gmake we cross-check against).
 GMAKE_URL="https://git.savannah.gnu.org/git/make.git"
@@ -25,7 +27,7 @@ has_commit() { git -C "$1" rev-parse --verify --quiet "$2^{commit}" >/dev/null 2
 
 # Full shallow clone pinned to a specific commit.
 vendor_full() {
-  local dir="$1" url="$2" commit="$3"
+  dir="$1"; url="$2"; commit="$3"
   if has_commit "$dir" "$commit"; then git -C "$dir" checkout --quiet "$commit"; return; fi
   echo "vendoring $url @ $commit -> ${dir##*/}"
   rm -rf "$dir"; git init --quiet "$dir"
@@ -36,7 +38,7 @@ vendor_full() {
 
 # Partial (blob:none) + sparse clone of one subtree of a huge repo, pinned to a commit.
 vendor_sparse() {
-  local dir="$1" url="$2" commit="$3" sparse="$4"
+  dir="$1"; url="$2"; commit="$3"; sparse="$4"
   if has_commit "$dir" "$commit"; then git -C "$dir" checkout --quiet "$commit"; return; fi
   echo "vendoring $url @ $commit ($sparse) -> ${dir##*/}"
   rm -rf "$dir"; git init --quiet "$dir"
