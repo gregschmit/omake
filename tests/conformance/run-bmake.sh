@@ -23,8 +23,8 @@ UNIT="$CONF_DIR/.netbsd-src/usr.bin/make/unit-tests"
 cd "$UNIT"
 total=$(grep -cE '^TESTS[[:space:]]*\+=' Makefile)
 
-echo "bmake unit-tests (NetBSD, bmake 20230711) vs omake:"
-out="$(bmake TEST_MAKE="$OMAKE" test 2>&1)"
+echo "bmake unit-tests (NetBSD, bmake 20230711) vs omake --compat=bsd:"
+out="$(OMAKE_COMPAT=bsd bmake TEST_MAKE="$OMAKE" test 2>&1)"
 failed_line="$(printf '%s\n' "$out" | sed -n 's/^Failed tests: //p' | tail -1)"
 nfail=$(printf '%s' "$failed_line" | wc -w)
 

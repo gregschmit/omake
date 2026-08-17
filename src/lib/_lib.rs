@@ -2,6 +2,7 @@
 //!
 //! This is the library component of the project, responsible for parsing and executing makefiles.
 
+pub mod compat;
 pub mod error;
 pub mod expand;
 pub mod glob;
@@ -9,6 +10,7 @@ pub mod logger;
 pub mod makefile;
 pub mod vars;
 
+pub use compat::Compat;
 pub use error::MakeError;
 pub use logger::{DefaultLogger, Logger, context::Context};
 pub use makefile::{Makefile, opts::Opts};

@@ -1,10 +1,18 @@
 //! This module provides the `clap`-based `Args` struct. This is also used for invocations of
 //! sub-make using `$(MAKE)`.
 
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use const_format::formatcp;
 
-use omake::Opts;
+use omake::{Compat, Opts};
+
+/// `--compat` targets exposed on the command line (native omake is the default when the flag is
+/// absent, so it is not a selectable value here).
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum CompatArg {
+    Gnu,
+    Bsd,
+}
 
 /// The `clap`-based arguments provided by this binary.
 #[derive(Clone, Debug, Parser)]
@@ -85,6 +93,10 @@ pub struct Args {
     #[arg(short = 'j', long = "jobs", value_name = "N", num_args = 0..=1, default_missing_value = "0")]
     pub jobs: Option<Option<u32>>,
 
+    /// Emulate another make's diagnostic output.
+    #[arg(long, value_name = "MAKE")]
+    pub compat: Option<CompatArg>,
+
     /// Don't execute recipes; just print them.
     #[arg(
         short = 'n',
@@ -153,6 +165,11 @@ impl From<Args> for Opts {
             question: args.question,
             // `-j` with no number (or `-j0`) means unlimited (0); `-jN` means N.
             jobs: args.jobs.map(|inner| inner.unwrap_or(0) as usize),
+            compat: match args.compat {
+                Some(CompatArg::Gnu) => Compat::Gnu,
+                Some(CompatArg::Bsd) => Compat::Bsd,
+                None => Compat::Native,
+            },
             old_file: args.old_file,
             new_file: args.new_file,
         }

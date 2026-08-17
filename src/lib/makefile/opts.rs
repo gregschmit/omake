@@ -1,7 +1,12 @@
 //! Options available for makefiles.
 
+use crate::compat::Compat;
+
 #[derive(Debug, Default)]
 pub struct Opts {
+    /// The make whose diagnostic output to emulate (`--compat`); `Native` by default.
+    pub compat: Compat,
+
     /// Unconditionally make all targets.
     pub always_make: bool,
 

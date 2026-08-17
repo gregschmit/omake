@@ -10,6 +10,9 @@ use crate::logger::context::Context;
 pub struct MakeError {
     pub msg: String,
     pub context: Context,
+    /// A pre-formatted line to print verbatim, used by `--compat` to emit a gmake/bmake-exact
+    /// diagnostic. When `None`, the error renders in omake's native `ERROR [file:N] | … caret` form.
+    pub display: Option<String>,
 }
 
 impl MakeError {
@@ -17,7 +20,14 @@ impl MakeError {
         Self {
             msg: msg.to_string(),
             context,
+            display: None,
         }
+    }
+
+    /// Attach a pre-formatted `--compat` line (see [`MakeError::display`]).
+    pub fn with_display(mut self, line: String) -> Self {
+        self.display = Some(line);
+        self
     }
 }
 

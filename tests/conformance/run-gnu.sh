@@ -30,9 +30,11 @@ cp "$TESTS_DIR/run_make_tests.pl" "$runner"
 sed -i 's/^    \$make_path = \$mk;/    # [omake] keep the -make binary/' "$runner"
 perl -0pi -e 's/\$string =~ \/\^\(GNU Make[^;]*;\s*\$testee_version = "\$1\\n";/\$testee_version = "GNU Make 4.4.1\\n"; # [omake]/s' "$runner"
 
-echo "GNU make test suite (4.4.1) vs omake:"
+echo "GNU make test suite (4.4.1) vs omake --compat=gnu:"
 cd "$TESTS_DIR"
-result="$(PERL5LIB="$CONF_DIR/perl-shims" perl "$runner" -make "$OMAKE" "$@" 2>&1)"
+# OMAKE_COMPAT=gnu makes omake (and any recursive $(MAKE)) emit gmake-style diagnostics, so the
+# suite measures real gaps rather than output-format noise.
+result="$(OMAKE_COMPAT=gnu PERL5LIB="$CONF_DIR/perl-shims" perl "$runner" -make "$OMAKE" "$@" 2>&1)"
 # Sum the per-category tallies the driver prints: "(N passed)" when a category fully passes, or
 # "(X/Y passed)" when some of its Y tests failed.
 read -r passed total <<<"$(printf '%s\n' "$result" \

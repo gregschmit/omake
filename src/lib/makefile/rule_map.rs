@@ -244,7 +244,24 @@ impl Rule {
                         let mut ctx = self.context.clone();
                         ctx.line_index = Some(recipe_line);
                         ctx.content = Some(raw.clone());
-                        return Err(MakeError::new(&msg, ctx));
+                        let mut err = MakeError::new(&msg, ctx);
+                        // Under `--compat`, emit the gmake/bmake-exact failure line instead.
+                        let file = self
+                            .context
+                            .path
+                            .as_ref()
+                            .map(|p| p.display().to_string())
+                            .unwrap_or_default();
+                        if let Some(line) = makefile.opts.compat.recipe_error(
+                            &makefile.logger.prefix(),
+                            &file,
+                            recipe_line + 1,
+                            target,
+                            &exit_reason(&res),
+                        ) {
+                            err = err.with_display(line);
+                        }
+                        return Err(err);
                     }
                 }
             }

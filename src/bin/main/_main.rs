@@ -13,7 +13,7 @@ use clap::Parser;
 
 use args::Args;
 
-use omake::{Context, DefaultLogger, Env, Logger, Makefile, Opts, Origin, Vars};
+use omake::{Compat, Context, DefaultLogger, Env, Logger, MakeError, Makefile, Opts, Origin, Vars};
 
 /// An ordered list of filenames used to search for a makefile.
 const MAKEFILE_SEARCH: [&str; 6] = [
@@ -291,6 +291,16 @@ fn exit_with(logger: &DefaultLogger, msg: &str, context: Option<Context>) -> ! {
     std::process::exit(2)
 }
 
+/// Report a `MakeError` and exit 2. Under `--compat` an error may carry a pre-formatted
+/// gmake/bmake-exact line, which is printed verbatim; otherwise omake's native rendering is used.
+fn exit_make_error(logger: &DefaultLogger, err: MakeError) -> ! {
+    if let Some(line) = err.display {
+        eprintln!("{line}");
+        std::process::exit(2);
+    }
+    exit_with(logger, &err.msg, Some(err.context))
+}
+
 fn main() {
     let args = Args::parse();
     // The recursion level (`MAKELEVEL`) and invocation name feed the message prefix (`make[N]:`).
@@ -391,6 +401,24 @@ fn main() {
     if opts.jobs.is_none() {
         opts.jobs = makeflags_jobs(&parent_makeflags);
     }
+    // `--compat` selects the diagnostic-output emulation; if the flag was absent, fall back to the
+    // `OMAKE_COMPAT` environment variable (how a sub-make inherits it — it is not a real make flag,
+    // so it does not travel in `MAKEFLAGS`).
+    if opts.compat == Compat::Native
+        && let Ok(v) = env::var("OMAKE_COMPAT")
+    {
+        opts.compat = match v.as_str() {
+            "gnu" => Compat::Gnu,
+            "bsd" => Compat::Bsd,
+            _ => Compat::Native,
+        };
+    }
+    // Export it so `$(MAKE)`-invoked children emulate the same make.
+    if opts.compat != Compat::Native {
+        let v = if opts.compat == Compat::Gnu { "gnu" } else { "bsd" };
+        // SAFETY: single-threaded startup, before any recipe runs.
+        unsafe { env::set_var("OMAKE_COMPAT", v) };
+    }
 
     // A command-line token containing `=` is a variable assignment (`make FOO=bar`), not a goal.
     // These also arrive from a parent make via `MAKEFLAGS` (after `--`), so sub-makes inherit them.
@@ -475,7 +503,7 @@ fn main() {
 
     // Parse the makefile.
     let makefile = match Makefile::new(makefile_fn, opts, vars, logger.clone()) {
-        Err(e) => exit_with(&logger, &e.msg, Some(e.context)),
+        Err(e) => exit_make_error(&logger, e),
         Ok(m) => m,
     };
 
@@ -493,7 +521,7 @@ fn main() {
     }
 
     match result {
-        Err(e) => exit_with(&logger, &e.msg, Some(e.context)),
+        Err(e) => exit_make_error(&logger, e),
         // `-q` (question mode): exit 1 if any target was found out of date, else 0.
         Ok(needs_rebuild) => {
             if question && needs_rebuild {
