@@ -61,14 +61,19 @@ test suites** of GNU make and NetBSD bmake (vendored on demand at a pinned commi
 switches omake's diagnostic output to match that make, letting the suites measure real behavioral
 gaps rather than output-format noise.
 
-Progress (reproduce with `tests/conformance/run_gmake` / `run_bmake`):
+Progress (reproduce with `tests/conformance/run_gmake` / `run_bmake`, which always run in
+`--compat` mode):
 
-| Suite    | Version  | omake (native) | omake `--compat` |
-|----------|----------|----------------|------------------|
-| GNU make | 4.4.1    | 498 / 1337     | **717 / 1337**   |
-| BSD make | 20230711 | 2 / 396        | **78 / 396**     |
+| Suite    | Version  | omake `--compat` |
+|----------|----------|------------------|
+| GNU make | 4.4.1    | **717 / 1337**   |
+| BSD make | 20230711 | **78 / 396**     |
 
-These numbers should only go up. The remaining GNU gaps are mostly deeper features —
-`.SECONDEXPANSION` for pattern rules, chained implicit-rule search, makefile remaking — plus a few
-more diagnostic formats; bmake's suite pins bmake's exact behavior and output, most of which omake
-does not replicate.
+These are `--compat={gnu,bsd}` scores because that is the only mode the runners use, and the only one
+worth tracking: the suites compare output byte-for-byte, so a plain `omake` (with its *own*
+diagnostic format) scores far lower — but almost entirely from format mismatch, not from mis-running
+the makefile. `--compat` re-dresses the output so the score measures real behavioral/feature gaps
+rather than that noise. The numbers should only go up; the remaining GNU gaps are mostly deeper
+features (`.SECONDEXPANSION` for pattern rules, chained implicit-rule search, some diagnostic
+formats), and bmake's suite pins a lot of bmake internals (`.MAKE.*`, `-d` debug traces, `:C`/`:@`
+modifiers) that omake does not replicate.
