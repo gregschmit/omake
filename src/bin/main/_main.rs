@@ -13,7 +13,9 @@ use clap::Parser;
 
 use args::Args;
 
-use omake::{Compat, Context, DefaultLogger, Env, Logger, MakeError, Makefile, Opts, Origin, Vars};
+use omake::{
+    Compat, Context, DefaultLogger, Env, Logger, MakeError, Makefile, Opts, Origin, Vars, makeflags,
+};
 
 /// An ordered list of filenames used to search for a makefile.
 const MAKEFILE_SEARCH: [&str; 6] = [
@@ -201,19 +203,6 @@ fn parse_cmdline_var(token: &str) -> Option<(&str, bool, &str)> {
     (!name.is_empty()).then_some((name, recursive, value))
 }
 
-/// Backslash-escape whitespace (and the backslash itself) so a `MAKEFLAGS` assignment token
-/// survives whitespace-splitting when a sub-make re-parses it.
-fn escape_makeflag(token: &str) -> String {
-    let mut out = String::with_capacity(token.len());
-    for c in token.chars() {
-        if c == '\\' || c.is_whitespace() {
-            out.push('\\');
-        }
-        out.push(c);
-    }
-    out
-}
-
 /// Extract the variable-assignment tokens from a `MAKEFLAGS` string (everything after the ` -- `
 /// separator), un-escaping each. This is how a parent make passes command-line variables down.
 fn makeflags_assignments(makeflags: &str) -> Vec<String> {
@@ -245,44 +234,19 @@ fn makeflags_assignments(makeflags: &str) -> Vec<String> {
     tokens
 }
 
-/// Encode the effective single-letter flags as `MAKEFLAGS` for sub-makes (e.g. `-k -n` -> "kn"),
-/// in GNU make's canonical order (`B i k n r R s`).
-fn encode_makeflags(opts: &Opts) -> String {
-    let mut flags = String::new();
-    if opts.always_make {
-        flags.push('B');
+/// Fold a makefile's assignment to `MAKEFLAGS` back into the options and re-encode the variable in
+/// canonical form. If the makefile never touched `MAKEFLAGS`, its value still equals the `startup`
+/// encoding, so this returns immediately.
+fn reconcile_makeflags<L: Logger>(makefile: &mut Makefile<L>, startup: &str, assignments: &[String]) {
+    let current = makefile.vars.get("MAKEFLAGS").value.clone();
+    if current == startup {
+        return;
     }
-    if opts.environment_overrides {
-        flags.push('e');
-    }
-    if opts.ignore_errors {
-        flags.push('i');
-    }
-    if opts.keep_going {
-        flags.push('k');
-    } else if opts.no_keep_going {
-        // `-S` occupies the `-k` slot in the cluster (they are the same flag family).
-        flags.push('S');
-    }
-    if opts.just_print {
-        flags.push('n');
-    }
-    if opts.question {
-        flags.push('q');
-    }
-    if opts.no_builtin_rules {
-        flags.push('r');
-    }
-    if opts.no_builtin_variables {
-        flags.push('R');
-    }
-    if opts.silent {
-        flags.push('s');
-    }
-    if opts.touch {
-        flags.push('t');
-    }
-    flags
+    makeflags::merge_decoded(&mut makefile.opts, &current);
+    let canonical = makeflags::encode(&makefile.opts, assignments);
+    let _ = makefile
+        .vars
+        .set_origin("MAKEFLAGS", canonical.as_str(), false, Origin::File);
 }
 
 /// Print an error message and exit with code 2.
@@ -419,6 +383,14 @@ fn main() {
     if opts.jobs.is_none() {
         opts.jobs = makeflags_jobs(&parent_makeflags);
     }
+    // Inherit the argument-bearing / long-only options a parent make passed (`-l`, `-O`, `--debug`,
+    // `--trace`, ...) so they round-trip through this level's `MAKEFLAGS` too. The short cluster,
+    // `-I`, and `-j` are already inherited above.
+    makeflags::inherit_long_options(&mut opts, &parent_makeflags);
+    // Record the resolved print-directory choice for `MAKEFLAGS` encoding (`w` when forced on, or
+    // `--no-print-directory` when explicitly off).
+    opts.print_dir_on = force_print;
+    opts.print_dir_off = explicit_no_print;
     // `--compat` selects the diagnostic-output emulation; if the flag was absent, fall back to the
     // `OMAKE_COMPAT` environment variable (how a sub-make inherits it — it is not a real make flag,
     // so it does not travel in `MAKEFLAGS`).
@@ -450,34 +422,9 @@ fn main() {
         .chain(cmdline_tokens)
         .collect();
 
-    // Re-encode MAKEFLAGS with the command-line assignments after a `--` separator. Whitespace
-    // inside a value is backslash-escaped so a sub-make can recover it (`make 'FOO=a b'`). The
-    // explicit `-w`/`--no-print-directory` choice is propagated so sub-makes inherit it.
-    let mut makeflags = encode_makeflags(&opts);
-    if explicit_no_print {
-        makeflags.push_str(" --no-print-directory");
-    } else if force_print {
-        makeflags.push('w');
-    }
-    // `-I` directories round-trip as ` -Idir` tokens after the flag cluster (gmake form).
-    for dir in &opts.include_dirs {
-        makeflags.push_str(" -I");
-        makeflags.push_str(dir);
-    }
-    // `-j` round-trips as a separate ` -jN` word (` -j` for unlimited), like gmake.
-    match opts.jobs {
-        Some(0) => makeflags.push_str(" -j"),
-        Some(n) => {
-            makeflags.push_str(" -j");
-            makeflags.push_str(&n.to_string());
-        }
-        None => {}
-    }
-    if !cmdline_tokens.is_empty() {
-        makeflags.push_str(" -- ");
-        let escaped: Vec<String> = cmdline_tokens.iter().map(|t| escape_makeflag(t)).collect();
-        makeflags.push_str(&escaped.join(" "));
-    }
+    // Encode MAKEFLAGS in GNU make's canonical order from the effective options, with the
+    // command-line assignments after a ` -- ` separator (see `omake::makeflags`).
+    let makeflags = makeflags::encode(&opts, &cmdline_tokens);
 
     // Export MAKEFLAGS/MAKELEVEL to recipe children (and thus sub-makes). This runs once, at
     // startup on the main thread, before anything reads the environment concurrently.
@@ -525,10 +472,16 @@ fn main() {
     let compat = opts.compat;
 
     // Parse the makefile.
-    let makefile = match Makefile::new(makefile_fns, opts, vars, logger.clone()) {
+    let mut makefile = match Makefile::new(makefile_fns, opts, vars, logger.clone()) {
         Err(e) => exit_make_error(&logger, compat, e),
         Ok(m) => m,
     };
+
+    // GNU make treats `MAKEFLAGS` as a live switch set: a makefile that assigns to it turns those
+    // switches on and the variable is reconstructed canonically. Fold any such assignment back into
+    // the options and re-encode. An untouched `MAKEFLAGS` still equals the startup value, so this is
+    // a no-op in the common case.
+    reconcile_makeflags(&mut makefile, &makeflags, &cmdline_tokens);
 
     // Execute the makefile (command-line variable assignments are not goals).
     let result = makefile.execute(goals);

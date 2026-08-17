@@ -58,9 +58,10 @@ vendored tree.
 
 The tracked pass-rate table lives in the top-level `README.md`. In short (Linux, pinned versions):
 
-- **GNU make suite:** 498/1337 native → **554/1337** with `--compat=gnu`, and climbing as output
-  emulation improves. The remaining gaps are largely unsupported command-line flags (omake rejects
-  flags gmake accepts) plus a few more diagnostic formats.
+- **GNU make suite:** 498/1337 native → **634/1337** with `--compat=gnu`, and climbing as output
+  emulation and feature coverage improve. The remaining gaps are mostly deeper features
+  (`.SECONDEXPANSION` for pattern rules, chained implicit-rule search, makefile remaking) plus a few
+  more diagnostic formats.
 - **bmake unit-tests:** **2/396**. The suite near-exhaustively pins bmake's *exact* behavior and
   output — `.MAKE.*` variables, `:C`/`:@` modifiers, archives, `.SYSPATH`, job debugging — most of
   which omake does not replicate; `--compat=bsd` output emulation is still minimal.

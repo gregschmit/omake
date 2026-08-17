@@ -49,6 +49,33 @@ pub struct Opts {
     /// currently builds serially regardless; kept for the `MAKEFLAGS` round-trip.
     pub jobs: Option<usize>,
 
+    /// Output-sync mode (`-O`): the raw mode word (`none`, `target`, `line`, `recurse`). omake is
+    /// serial, so this only round-trips through `MAKEFLAGS`.
+    pub output_sync: Option<String>,
+
+    /// Load-average limit (`-l`): the raw value (e.g. `2.5`), preserved for the `MAKEFLAGS`
+    /// round-trip. omake is serial, so it has no other effect.
+    pub load_average: Option<String>,
+
+    /// Debug flags from `--debug=FLAGS` (accepted; `MAKEFLAGS` round-trip only). Bare `-d` sets
+    /// [`Opts::debug_all`] instead, which round-trips as a `d` in the short-flag cluster.
+    pub debug: Option<String>,
+
+    /// Bare `-d` (debug everything). Emitted as `d` in the `MAKEFLAGS` short-flag cluster.
+    pub debug_all: bool,
+
+    /// `--trace` (accepted; `MAKEFLAGS` round-trip only).
+    pub trace: bool,
+
+    /// `--warn-undefined-variables` (accepted; `MAKEFLAGS` round-trip only).
+    pub warn_undefined_variables: bool,
+
+    /// Emit `w` in the `MAKEFLAGS` short-flag cluster (an explicit `-w`/`--print-directory`).
+    pub print_dir_on: bool,
+
+    /// Emit `--no-print-directory` in `MAKEFLAGS` (an explicit `--no-print-directory`).
+    pub print_dir_off: bool,
+
     /// Consider FILE to be very old and do not remake it.
     pub old_file: Vec<String>,
 

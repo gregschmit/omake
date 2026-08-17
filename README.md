@@ -53,7 +53,7 @@ against that directory's makefile given the arguments provided and checks STDOUT
 expected STDOUT/STDERR provided to the macro, and also checks the directory against the expected
 files and content provided to the macro.
 
-### Conformance suites
+### Conformance Suites
 
 Beyond the hand-written system tests, `tests/conformance/` runs omake against the **real upstream
 test suites** of GNU make and NetBSD bmake (vendored on demand at a pinned commit; see
@@ -63,11 +63,12 @@ gaps rather than output-format noise.
 
 Progress (reproduce with `tests/conformance/run_gmake` / `run_bmake`):
 
-| Suite | Version | omake (native) | omake `--compat` |
-|-------|---------|----------------|------------------|
-| GNU make | 4.4.1 | 498 / 1337 | **554 / 1337** |
-| bmake | 20230711 | 2 / 396 | 2 / 396 |
+|  Suite   | Version  | omake (native) | omake `--compat` |
+|----------|----------|----------------|------------------|
+| GNU make | 4.4.1    | 498 / 1337     | **634 / 1337**   |
+| BSD make | 20230711 | 2 / 396        | 2 / 396          |
 
-These numbers should only go up. The bulk of the remaining GNU gaps are unsupported command-line
-flags (omake rejects flags gmake accepts) and a few more diagnostic formats; bmake's suite pins
-bmake's exact behavior and output, most of which omake does not replicate.
+These numbers should only go up. The remaining GNU gaps are mostly deeper features —
+`.SECONDEXPANSION` for pattern rules, chained implicit-rule search, makefile remaking — plus a few
+more diagnostic formats; bmake's suite pins bmake's exact behavior and output, most of which omake
+does not replicate.

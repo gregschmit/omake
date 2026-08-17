@@ -45,8 +45,12 @@ pub struct Args {
     #[arg(short = 'p', long = "print-data-base")]
     pub print_data_base: bool,
 
-    /// Print lots of debugging information (accepted; not yet implemented).
-    #[arg(short = 'd', long = "debug", value_name = "FLAGS", num_args = 0..=1, default_missing_value = "a")]
+    /// Print debugging information (accepted; MAKEFLAGS round-trip only).
+    #[arg(short = 'd')]
+    pub debug_short: bool,
+
+    /// Print debugging information for FLAGS (accepted; MAKEFLAGS round-trip only).
+    #[arg(long = "debug", value_name = "FLAGS", num_args = 0..=1, default_missing_value = "a")]
     pub debug: Option<String>,
 
     /// Print tracing information (accepted; not yet implemented).
@@ -59,7 +63,7 @@ pub struct Args {
 
     /// Don't start multiple jobs unless load is below N (accepted; omake is serial).
     #[arg(short = 'l', long = "load-average", visible_alias("max-load"), value_name = "N", num_args = 0..=1)]
-    pub load_average: Option<f64>,
+    pub load_average: Option<Option<f64>>,
 
     /// Synchronize output of parallel jobs (accepted; omake is serial).
     #[arg(short = 'O', long = "output-sync", value_name = "TYPE", num_args = 0..=1, default_missing_value = "target")]
@@ -197,6 +201,19 @@ impl From<Args> for Opts {
             question: args.question,
             // `-j` with no number (or `-j0`) means unlimited (0); `-jN` means N.
             jobs: args.jobs.map(|inner| inner.unwrap_or(0) as usize),
+            output_sync: args.output_sync.clone(),
+            // A bare `-l` (no value) is dropped from `MAKEFLAGS`, like gmake; `-lN` round-trips.
+            load_average: match args.load_average {
+                Some(Some(v)) => Some(format!("{v}")),
+                _ => None,
+            },
+            debug: args.debug.clone(),
+            debug_all: args.debug_short,
+            trace: args.trace,
+            warn_undefined_variables: args.warn_undefined_variables,
+            // Resolved from the print-directory decision in `main`, not the raw flags.
+            print_dir_on: false,
+            print_dir_off: false,
             compat: match args.compat {
                 Some(CompatArg::Gnu) => Compat::Gnu,
                 Some(CompatArg::Bsd) => Compat::Bsd,

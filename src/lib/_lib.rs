@@ -8,6 +8,7 @@ pub mod expand;
 pub mod glob;
 pub mod logger;
 pub mod makefile;
+pub mod makeflags;
 pub mod vars;
 
 pub use compat::Compat;
