@@ -191,9 +191,22 @@ impl<L: Logger> Makefile<L> {
         }
 
         // Open and parse each makefile in order, sharing state. Each file's context is set so errors
-        // report the right filename.
+        // report the right filename. A path of `-` reads the makefile from standard input (only once).
+        let mut read_stdin = false;
         for path in &paths {
             makefile.context = path.clone().into();
+            if path.as_os_str() == "-" {
+                if read_stdin {
+                    return Err(MakeError::new(
+                        "Makefile from standard input specified twice.",
+                        path.clone().into(),
+                    ));
+                }
+                read_stdin = true;
+                let stdin = std::io::stdin();
+                makefile.parse(stdin.lock())?;
+                continue;
+            }
             let file = File::open(path).map_err(|e| {
                 MakeError::new(
                     &format!("Could not read makefile ({e})."),
