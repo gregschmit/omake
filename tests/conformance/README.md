@@ -75,6 +75,6 @@ The tracked pass-rate table lives in the top-level `README.md`. In short (Linux,
   emulation and feature coverage improve. The remaining gaps are mostly deeper features
   (`.SECONDEXPANSION` for pattern rules, chained implicit-rule search, makefile remaking) plus a few
   more diagnostic formats.
-- **bmake unit-tests:** **69/396**. The suite near-exhaustively pins bmake's *exact* behavior and
+- **bmake unit-tests:** **78/396**. The suite near-exhaustively pins bmake's *exact* behavior and
   output — `.MAKE.*` variables, `:C`/`:@` modifiers, archives, `.SYSPATH`, job debugging — most of
   which omake does not replicate; `--compat=bsd` output emulation is still minimal.
