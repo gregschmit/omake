@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+#
+# Run the GNU make test suite against omake and report a pass/fail summary.
+#
+# The suite is a perl driver. It hard-requires the make binary to identify as GNU Make (`make -v`)
+# and re-derives $(MAKE)/$(SHELL) via $(info ...); omake does neither (it does not pretend to be GNU
+# Make). We therefore patch a throwaway copy of the vendored runner's preflight so it accepts omake,
+# and supply a bundled FindBin shim so no extra perl packages are needed. Many tests fail on omake's
+# deliberate divergences from gmake (error wording, streams, $(info) in recipes, ...) — this is a
+# conformance signal, not a pass/fail gate.
+#
+# Usage: run-gnu.sh [category ...]   (default: all)
+#   OMAKE=/path/to/omake  override the make-under-test.
+set -uo pipefail
+
+CONF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+OMAKE="${OMAKE:-$CONF_DIR/../../target/debug/omake}"
+
+command -v perl >/dev/null || { echo "error: perl not found" >&2; exit 1; }
+[ -x "$OMAKE" ] || { echo "error: omake not built at $OMAKE (run: cargo build)" >&2; exit 1; }
+
+"$CONF_DIR/vendor.sh" gnu
+TESTS_DIR="$CONF_DIR/.gnu-make/tests"
+
+# Patch a throwaway copy of the runner: (1) keep the -make binary instead of re-deriving it from
+# $(info $(MAKE)); (2) accept a non-"GNU Make" -v banner. The vendored tree is gitignored, so this
+# copy is never committed.
+runner="$TESTS_DIR/run_make_tests.omake.pl"
+cp "$TESTS_DIR/run_make_tests.pl" "$runner"
+sed -i 's/^    \$make_path = \$mk;/    # [omake] keep the -make binary/' "$runner"
+perl -0pi -e 's/\$string =~ \/\^\(GNU Make[^;]*;\s*\$testee_version = "\$1\\n";/\$testee_version = "GNU Make 4.4.1\\n"; # [omake]/s' "$runner"
+
+echo "GNU make test suite (4.4.1) vs omake:"
+cd "$TESTS_DIR"
+result="$(PERL5LIB="$CONF_DIR/perl-shims" perl "$runner" -make "$OMAKE" "$@" 2>&1)"
+# Sum the per-category tallies the driver prints: "(N passed)" when a category fully passes, or
+# "(X/Y passed)" when some of its Y tests failed.
+read -r passed total <<<"$(printf '%s\n' "$result" \
+  | grep -oE '\([0-9]+(/[0-9]+)? passed\)' \
+  | sed -E 's/[()]//g; s/ passed//' \
+  | awk '{ if ($1 ~ /\//) { split($1,a,"/"); p+=a[1]; t+=a[2] } else { p+=$1; t+=$1 } } END { print p+0, t+0 }')"
+echo "  $passed/$total tests passed"
+printf '%s\n' "$result" | grep -iE "Tests? in [0-9]+ Categor" | tail -1 | sed 's/^/  /'
