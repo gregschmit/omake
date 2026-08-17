@@ -20,6 +20,8 @@ pub enum CompatArg {
     name = "omake",
     version,
     about,
+    // GNU make accepts a repeated flag (last wins for scalars); clap rejects repeats by default.
+    args_override_self = true,
     after_help = formatcp!(
         "License:  {}\nSource:   {}", env!("CARGO_PKG_LICENSE"), env!("CARGO_PKG_REPOSITORY")
     ),
