@@ -325,6 +325,12 @@ fn main() {
         return;
     }
 
+    // `-v` prints the version, like `--version`.
+    if args.show_version {
+        println!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
+        return;
+    }
+
     // Resolve the program's own path for `$(MAKE)` before any `-C` chdir, so a relative invocation
     // path stays valid when a recipe recurses from another directory.
     let make_path = resolve_make_path();
@@ -375,10 +381,11 @@ fn main() {
         );
     }
 
-    // Determine the makefile to read.
-    let makefile_fn = match args.file {
-        None => find_makefile().unwrap_or_else(|| exit_with(&logger, "No makefile found.", None)),
-        Some(ref file) => PathBuf::from(file),
+    // Determine the makefile(s) to read: each `-f` in order, else the first found makefile.
+    let makefile_fns: Vec<PathBuf> = if args.file.is_empty() {
+        vec![find_makefile().unwrap_or_else(|| exit_with(&logger, "No makefile found.", None))]
+    } else {
+        args.file.iter().map(PathBuf::from).collect()
     };
 
     // Merge flags inherited from a parent make (via `MAKEFLAGS`), then re-encode the effective
@@ -510,7 +517,7 @@ fn main() {
     let compat = opts.compat;
 
     // Parse the makefile.
-    let makefile = match Makefile::new(makefile_fn, opts, vars, logger.clone()) {
+    let makefile = match Makefile::new(makefile_fns, opts, vars, logger.clone()) {
         Err(e) => exit_make_error(&logger, compat, e),
         Ok(m) => m,
     };

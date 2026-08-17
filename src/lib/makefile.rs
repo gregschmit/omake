@@ -152,8 +152,10 @@ pub struct Makefile<L: Logger> {
 }
 
 impl<L: Logger> Makefile<L> {
-    /// Principal interface for reading and parsing a makefile.
-    pub fn new(path: PathBuf, opts: Opts, vars: Vars, logger: L) -> Result<Self, MakeError> {
+    /// Principal interface for reading and parsing one or more makefiles (multiple `-f`). The files
+    /// are read in order into shared state, like GNU make; each is terminated and validated
+    /// independently (conditionals do not cross a file boundary).
+    pub fn new(paths: Vec<PathBuf>, opts: Opts, vars: Vars, logger: L) -> Result<Self, MakeError> {
         // Initialize the `Makefile` struct with default values.
         let mut makefile = Self {
             opts,
@@ -174,7 +176,7 @@ impl<L: Logger> Makefile<L> {
             second_expansion: false,
             vars,
             current_rule: None,
-            context: path.clone().into(),
+            context: paths.first().cloned().map(Into::into).unwrap_or_default(),
             cond_stack: Vec::new(),
             defining: None,
             for_capture: None,
@@ -188,11 +190,18 @@ impl<L: Logger> Makefile<L> {
             let _ = makefile.vars.set("SUFFIXES", "", false);
         }
 
-        // Open the makefile and run it through the parser.
-        let file = File::open(&path).map_err(|e| {
-            MakeError::new(&format!("Could not read makefile ({}).", e), path.into())
-        })?;
-        makefile.parse(BufReader::new(file))?;
+        // Open and parse each makefile in order, sharing state. Each file's context is set so errors
+        // report the right filename.
+        for path in &paths {
+            makefile.context = path.clone().into();
+            let file = File::open(path).map_err(|e| {
+                MakeError::new(
+                    &format!("Could not read makefile ({e})."),
+                    path.clone().into(),
+                )
+            })?;
+            makefile.parse(BufReader::new(file))?;
+        }
 
         // Built-in implicit rules are appended after the user's rules so they take lower priority.
         // `-r`/`-R` disables them.

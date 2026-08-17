@@ -31,7 +31,7 @@ pub struct Args {
 
     /// Read FILE as the makefile.
     #[arg(short, long, visible_alias("makefile"))]
-    pub file: Option<String>,
+    pub file: Vec<String>,
 
     /// Ignored for compatibility.
     #[arg(short = 'b')]
@@ -40,6 +40,34 @@ pub struct Args {
     /// Ignored for compatibility.
     #[arg(short = 'm')]
     pub m: Option<Option<String>>,
+
+    /// Print the data base (accepted; not yet implemented).
+    #[arg(short = 'p', long = "print-data-base")]
+    pub print_data_base: bool,
+
+    /// Print lots of debugging information (accepted; not yet implemented).
+    #[arg(short = 'd', long = "debug", value_name = "FLAGS", num_args = 0..=1, default_missing_value = "a")]
+    pub debug: Option<String>,
+
+    /// Print tracing information (accepted; not yet implemented).
+    #[arg(long)]
+    pub trace: bool,
+
+    /// Warn when an undefined variable is referenced (accepted; not yet implemented).
+    #[arg(long = "warn-undefined-variables")]
+    pub warn_undefined_variables: bool,
+
+    /// Don't start multiple jobs unless load is below N (accepted; omake is serial).
+    #[arg(short = 'l', long = "load-average", visible_alias("max-load"), value_name = "N", num_args = 0..=1)]
+    pub load_average: Option<f64>,
+
+    /// Synchronize output of parallel jobs (accepted; omake is serial).
+    #[arg(short = 'O', long = "output-sync", value_name = "TYPE", num_args = 0..=1, default_missing_value = "target")]
+    pub output_sync: Option<String>,
+
+    /// Print the version number (alias for --version).
+    #[arg(short = 'v', long = "show-version")]
+    pub show_version: bool,
 
     /// Unconditionally make all targets.
     #[arg(short = 'B', long)]
