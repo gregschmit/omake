@@ -345,11 +345,16 @@ fn main() {
         );
     }
 
-    // Determine the makefile(s) to read: each `-f` in order, else the first found makefile.
-    let makefile_fns: Vec<PathBuf> = if args.file.is_empty() {
-        vec![find_makefile().unwrap_or_else(|| exit_with(&logger, "No makefile found.", None))]
-    } else {
+    // Determine the makefile(s) to read: each `-f` in order, else the first found makefile. With
+    // `--eval` supplying makefile text, a missing makefile is not an error (gmake behaves the same).
+    let makefile_fns: Vec<PathBuf> = if !args.file.is_empty() {
         args.file.iter().map(PathBuf::from).collect()
+    } else {
+        match find_makefile() {
+            Some(path) => vec![path],
+            None if !args.eval.is_empty() => vec![],
+            None => exit_with(&logger, "No makefile found.", None),
+        }
     };
 
     // Merge flags inherited from a parent make (via `MAKEFLAGS`), then re-encode the effective
@@ -487,7 +492,7 @@ fn main() {
     let compat = opts.compat;
 
     // Parse the makefile.
-    let mut makefile = match Makefile::new(makefile_fns, opts, vars, logger.clone()) {
+    let mut makefile = match Makefile::new(makefile_fns, opts, vars, logger.clone(), &args.eval) {
         Err(e) => exit_make_error(&logger, compat, e),
         Ok(m) => m,
     };

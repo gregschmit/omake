@@ -156,7 +156,13 @@ impl<L: Logger> Makefile<L> {
     /// Principal interface for reading and parsing one or more makefiles (multiple `-f`). The files
     /// are read in order into shared state, like GNU make; each is terminated and validated
     /// independently (conditionals do not cross a file boundary).
-    pub fn new(paths: Vec<PathBuf>, opts: Opts, vars: Vars, logger: L) -> Result<Self, MakeError> {
+    pub fn new(
+        paths: Vec<PathBuf>,
+        opts: Opts,
+        vars: Vars,
+        logger: L,
+        eval: &[String],
+    ) -> Result<Self, MakeError> {
         // Initialize the `Makefile` struct with default values.
         let mut makefile = Self {
             opts,
@@ -189,6 +195,12 @@ impl<L: Logger> Makefile<L> {
         if makefile.opts.no_builtin_rules {
             makefile.suffixes.clear();
             let _ = makefile.vars.set("SUFFIXES", "", false);
+        }
+
+        // `--eval`/`-E` strings are parsed as makefile syntax before any makefile is read.
+        for (i, text) in eval.iter().enumerate() {
+            makefile.context = PathBuf::from(format!("--eval[{i}]")).into();
+            makefile.parse(text.as_bytes())?;
         }
 
         // Open and parse each makefile in order, sharing state. Each file's context is set so errors

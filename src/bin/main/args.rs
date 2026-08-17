@@ -63,6 +63,10 @@ pub struct Args {
     #[arg(long, value_name = "MODE", num_args = 0..=1, default_missing_value = "random")]
     pub shuffle: Option<String>,
 
+    /// Evaluate STRING as makefile syntax (before reading any makefile). May be repeated.
+    #[arg(short = 'E', long = "eval", value_name = "STRING")]
+    pub eval: Vec<String>,
+
     /// Warn when an undefined variable is referenced (accepted; not yet implemented).
     #[arg(long = "warn-undefined-variables")]
     pub warn_undefined_variables: bool,
