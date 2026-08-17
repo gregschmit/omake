@@ -32,9 +32,14 @@ perl -0pi -e 's/\$string =~ \/\^\(GNU Make[^;]*;\s*\$testee_version = "\$1\\n";/
 
 echo "GNU make test suite (4.4.1) vs omake --compat=gnu:"
 cd "$TESTS_DIR"
-# OMAKE_COMPAT=gnu makes omake (and any recursive $(MAKE)) emit gmake-style diagnostics, so the
-# suite measures real gaps rather than output-format noise.
-result="$(OMAKE_COMPAT=gnu PERL5LIB="$CONF_DIR/perl-shims" perl "$runner" -make "$OMAKE" "$@" 2>&1)"
+# The driver runs make in a sanitized environment, so we can't pass compat via OMAKE_COMPAT. Instead
+# use a wrapper binary (basename `omake`, so the suite's make-name normalization still matches) that
+# forces --compat=gnu; omake re-exports OMAKE_COMPAT so recursive $(MAKE) inherits it.
+wrapdir="$TESTS_DIR/.omake-wrap"; mkdir -p "$wrapdir"
+wrapper="$wrapdir/omake"
+printf '#!/bin/sh\nexec "%s" --compat=gnu "$@"\n' "$OMAKE" > "$wrapper"
+chmod +x "$wrapper"
+result="$(PERL5LIB="$CONF_DIR/perl-shims" perl "$runner" -make "$wrapper" "$@" 2>&1)"
 # Sum the per-category tallies the driver prints: "(N passed)" when a category fully passes, or
 # "(X/Y passed)" when some of its Y tests failed.
 read -r passed total <<<"$(printf '%s\n' "$result" \
