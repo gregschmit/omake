@@ -37,4 +37,23 @@ impl Compat {
             Compat::Bsd => Some(format!("*** {reason}")),
         }
     }
+
+    /// The line for a target that has no rule and no file. `needed_by` is the target that required
+    /// it (empty for a top-level goal). `None` in native mode.
+    pub fn no_rule_error(self, prefix: &str, target: &str, needed_by: &str) -> Option<String> {
+        match self {
+            Compat::Native => None,
+            Compat::Gnu => {
+                let by = if needed_by.is_empty() {
+                    String::new()
+                } else {
+                    format!(", needed by '{needed_by}'")
+                };
+                Some(format!(
+                    "{prefix}: *** No rule to make target '{target}'{by}.  Stop."
+                ))
+            }
+            Compat::Bsd => Some(format!("{prefix}: don't know how to make {target}. Stop")),
+        }
+    }
 }

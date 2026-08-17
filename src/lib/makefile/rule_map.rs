@@ -856,7 +856,7 @@ impl RuleMap {
             return Ok(());
         }
 
-        let result = self.build_target(makefile, target, scope, state);
+        let result = self.build_target(makefile, target, parent, scope, state);
 
         state.in_progress.remove(target);
         match result {
@@ -866,7 +866,10 @@ impl RuleMap {
             }
             // Under `--keep-going`, report the failure but continue building unrelated targets.
             Err(e) if makefile.opts.keep_going => {
-                makefile.logger.error(&e.msg, Some(&e.context));
+                match &e.display {
+                    Some(line) => eprintln!("{line}"),
+                    None => makefile.logger.error(&e.msg, Some(&e.context)),
+                }
                 state.failed.insert(target.to_string());
                 state.done.insert(target.to_string());
                 Ok(())
@@ -880,6 +883,7 @@ impl RuleMap {
         &self,
         makefile: &Makefile<L>,
         target: &str,
+        parent: &str,
         scope: &Vars,
         state: &mut ExecState,
     ) -> Result<(), MakeError> {
@@ -934,10 +938,19 @@ impl RuleMap {
                     state.needs_rebuild |= outcome.needs_rebuild;
                     return Ok(());
                 }
-                return Err(MakeError::new(
+                let mut err = MakeError::new(
                     &format!("No rule to make target '{target}'."),
                     Context::new(),
-                ));
+                );
+                if let Some(line) =
+                    makefile
+                        .opts
+                        .compat
+                        .no_rule_error(&makefile.logger.prefix(), target, parent)
+                {
+                    err = err.with_display(line);
+                }
+                return Err(err);
             }
         };
 
