@@ -253,7 +253,8 @@ fn expand_inner(s: &str, vars: &Vars, ctx: &mut Expander) -> Result<String, Stri
                         &transformed
                     }
                     VarAction::Bsd(mods) => {
-                        transformed = apply_bsd_modifiers(value, mods, vars.is_set(&name), &name);
+                        transformed =
+                            apply_bsd_modifiers(value, mods, vars.is_set(&name), &name, vars, ctx)?;
                         &transformed
                     }
                 };
@@ -398,6 +399,14 @@ fn call_control(
 /// Note: unlike GNU make, this does not set `.SHELLSTATUS` (expansion has only a shared `&Vars`).
 fn func_shell(raw_args: &str, vars: &Vars, ctx: &mut Expander) -> Result<String, String> {
     let command = expand_inner(raw_args, vars, ctx)?;
+    run_shell_command(&command, vars, ctx)
+}
+
+/// Run `command` through `$(SHELL) $(.SHELLFLAGS)` and return its stdout with all trailing newlines
+/// removed and each remaining newline turned into a space (a CR right before such a newline is
+/// dropped; a lone CR is kept). An empty command runs nothing. Shared by `$(shell)` and the BSD
+/// `:!cmd!` / `:sh` modifiers.
+fn run_shell_command(command: &str, vars: &Vars, ctx: &mut Expander) -> Result<String, String> {
     if command.trim().is_empty() {
         return Ok(String::new());
     }
@@ -411,7 +420,7 @@ fn func_shell(raw_args: &str, vars: &Vars, ctx: &mut Expander) -> Result<String,
         .collect();
     let output = Command::new(&shell)
         .args(&flags)
-        .arg(&command)
+        .arg(command)
         // Capture stdout only; let the command's stderr reach the terminal, like GNU make.
         .stderr(std::process::Stdio::inherit())
         .output()
@@ -891,6 +900,10 @@ enum Modifier {
     TreatWords {
         single: bool,
     },
+    /// `:!cmd!` — replace the value with the output of running `cmd` through the shell.
+    ShellCmd(String),
+    /// `:sh` — run the current value as a shell command and replace it with the output.
+    ShellValue,
 }
 
 /// A `:[...]` word-selection request.
@@ -978,9 +991,26 @@ fn take_modifier(s: &str) -> Option<(Modifier, &str)> {
             Some(b'r') => simple(2, Modifier::Sort { reverse: true }),
             _ => simple(1, Modifier::Sort { reverse: false }),
         },
+        b's' if s.as_bytes().get(1) == Some(&b'h') => simple(2, Modifier::ShellValue),
         b'S' => take_subst(s),
+        b'!' => take_shell_cmd(s),
+        // NOTE: `:@var@body@` (loop) is not handled here: the body references the loop variable
+        // (`$var`), but omake inline-expands the whole `${...}` before parsing modifiers, so the
+        // reference is gone by build time. Supporting it needs the var-ref path to keep the raw
+        // modifier text and expand modifier arguments lazily.
         _ => None,
     }
+}
+
+/// Parse a `:!cmd!` shell-command modifier (`s` starts at the first `!`).
+fn take_shell_cmd(s: &str) -> Option<(Modifier, &str)> {
+    let (cmd, rest) = split_once_char(&s[1..], '!')?;
+    let rest = match rest.strip_prefix(':') {
+        Some(r) => r,
+        None if rest.is_empty() => "",
+        None => return None,
+    };
+    Some((Modifier::ShellCmd(cmd.to_string()), rest))
 }
 
 /// Parse a `:S<sep>from<sep>to<sep>[1g]` substitution modifier.
@@ -1074,8 +1104,16 @@ fn apply_word_sel(ws: &[&str], sel: WordSel) -> String {
 }
 
 /// Apply a chain of BSD modifiers to `value` (`is_set` is whether the variable is defined, for
-/// `:U`).
-fn apply_bsd_modifiers(value: &str, mods: &[Modifier], is_set: bool, name: &str) -> String {
+/// `:U`). `vars`/`ctx` are needed by the modifiers that re-expand text or run a shell (`:@`, `:!`,
+/// `:sh`).
+fn apply_bsd_modifiers(
+    value: &str,
+    mods: &[Modifier],
+    is_set: bool,
+    name: &str,
+    vars: &Vars,
+    ctx: &mut Expander,
+) -> Result<String, String> {
     let mut val = value.to_string();
     let mut set = is_set;
     // `:tW`/`:[*]` make following modifiers treat the value as a single word (`:[@]`/`:tw` undo
@@ -1169,9 +1207,16 @@ fn apply_bsd_modifiers(value: &str, mods: &[Modifier], is_set: bool, name: &str)
                     _ => {}
                 }
             }
+            // `:!cmd!` — the value becomes the output of `cmd`; `:sh` runs the value itself.
+            Modifier::ShellCmd(cmd) => {
+                let command = expand_inner(cmd, vars, ctx)?;
+                val = run_shell_command(&command, vars, ctx)?;
+                set = true;
+            }
+            Modifier::ShellValue => val = run_shell_command(&val, vars, ctx)?,
         }
     }
-    val
+    Ok(val)
 }
 
 /// Literal substring substitution for a `:S` modifier (`^`/`$` anchor to the word's bounds).
