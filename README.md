@@ -65,7 +65,7 @@ Progress (reproduce with `tests/conformance/run_gmake` / `run_bmake`):
 
 | Suite | Version | omake (native) | omake `--compat` |
 |-------|---------|----------------|------------------|
-| GNU make | 4.4.1 | 498 / 1337 | **533 / 1337** |
+| GNU make | 4.4.1 | 498 / 1337 | **545 / 1337** |
 | bmake | 20230711 | 2 / 396 | 2 / 396 |
 
 These numbers should only go up. The bulk of the remaining GNU gaps are unsupported command-line
