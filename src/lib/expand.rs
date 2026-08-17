@@ -873,6 +873,21 @@ enum Modifier {
     Sort { reverse: bool },
     /// `:u` — merge adjacent duplicate words (like `uniq`, not a full deduplication).
     Unique,
+    /// `:[...]` — word selection: `#` (count), `*` (join to one word), `@` (split to words),
+    /// `N`/`-N` (a single word, 1-indexed from the start/end), or `N..M` (an inclusive range).
+    Words(WordSel),
+    /// `:tW` (treat the value as a single word) / `:tw` (as many words) for following modifiers.
+    TreatWords { single: bool },
+}
+
+/// A `:[...]` word-selection request.
+#[derive(Clone, Copy)]
+enum WordSel {
+    Count,
+    Star,
+    At,
+    Index(i32),
+    Range(i32, i32),
 }
 
 /// Determine the variable name and the action (GNU substitution reference or BSD modifiers) from a
@@ -933,6 +948,13 @@ fn take_modifier(s: &str) -> Option<(Modifier, &str)> {
         b'R' => simple(1, Modifier::Root),
         b't' if s.as_bytes().get(1) == Some(&b'l') => simple(2, Modifier::Lower),
         b't' if s.as_bytes().get(1) == Some(&b'u') => simple(2, Modifier::Upper),
+        b't' if s.as_bytes().get(1) == Some(&b'W') => {
+            simple(2, Modifier::TreatWords { single: true })
+        }
+        b't' if s.as_bytes().get(1) == Some(&b'w') => {
+            simple(2, Modifier::TreatWords { single: false })
+        }
+        b'[' => take_words(s),
         b'M' => arg(Modifier::Match),
         b'N' => arg(Modifier::NoMatch),
         b'U' => arg(Modifier::Default),
@@ -983,10 +1005,66 @@ fn split_once_char(s: &str, sep: char) -> Option<(&str, &str)> {
     Some((&s[..i], &s[i + sep.len_utf8()..]))
 }
 
+/// Parse a `:[...]` word-selection modifier (`s` starts at the `[`).
+fn take_words(s: &str) -> Option<(Modifier, &str)> {
+    let close = s.find(']')?;
+    let content = &s[1..close];
+    let after = &s[close + 1..];
+    let rest = match after.strip_prefix(':') {
+        Some(r) => r,
+        None if after.is_empty() => "",
+        None => return None,
+    };
+    let sel = match content {
+        "#" => WordSel::Count,
+        "*" => WordSel::Star,
+        "@" => WordSel::At,
+        _ => match content.split_once("..") {
+            Some((a, b)) => WordSel::Range(a.trim().parse().ok()?, b.trim().parse().ok()?),
+            None => WordSel::Index(content.trim().parse().ok()?),
+        },
+    };
+    Some((Modifier::Words(sel), rest))
+}
+
+/// Apply a `:[...]` selection to a word list (`ws`), returning the resulting value.
+fn apply_word_sel(ws: &[&str], sel: WordSel) -> String {
+    let n = ws.len() as i32;
+    // 1-indexed, negative counts from the end.
+    let idx = |x: i32| if x < 0 { n + x } else { x - 1 };
+    match sel {
+        WordSel::Count => ws.len().to_string(),
+        WordSel::Star | WordSel::At | WordSel::Index(0) => ws.join(" "),
+        WordSel::Index(i) => {
+            let j = idx(i);
+            if (0..n).contains(&j) {
+                ws[j as usize].to_string()
+            } else {
+                String::new()
+            }
+        }
+        WordSel::Range(a, b) => {
+            let (ia, ib) = (idx(a), idx(b));
+            if !(0..n).contains(&ia) || !(0..n).contains(&ib) {
+                return String::new();
+            }
+            if ia <= ib {
+                ws[ia as usize..=ib as usize].join(" ")
+            } else {
+                let mut v: Vec<&str> = ws[ib as usize..=ia as usize].to_vec();
+                v.reverse();
+                v.join(" ")
+            }
+        }
+    }
+}
+
 /// Apply a chain of BSD modifiers to `value` (`is_set` is whether the variable is defined, for `:U`).
 fn apply_bsd_modifiers(value: &str, mods: &[Modifier], is_set: bool, name: &str) -> String {
     let mut val = value.to_string();
     let mut set = is_set;
+    // `:tW`/`:[*]` make following modifiers treat the value as a single word (`:[@]`/`:tw` undo it).
+    let mut single_word = false;
     // Empty results drop out of the word list, matching bmake.
     let map_words = |val: &str, f: &dyn Fn(&str) -> String| {
         val.split_whitespace()
@@ -1057,6 +1135,23 @@ fn apply_bsd_modifiers(value: &str, mods: &[Modifier], is_set: bool, name: &str)
                     }
                 }
                 val = out.join(" ");
+            }
+            Modifier::TreatWords { single } => single_word = *single,
+            Modifier::Words(sel) => {
+                // The current word list — one word under `:tW`/`:[*]`, else whitespace-split.
+                let ws: Vec<&str> = if single_word && !val.trim().is_empty() {
+                    vec![val.as_str()]
+                } else if single_word {
+                    vec![]
+                } else {
+                    val.split_whitespace().collect()
+                };
+                val = apply_word_sel(&ws, *sel);
+                match sel {
+                    WordSel::Star | WordSel::Index(0) => single_word = true,
+                    WordSel::At => single_word = false,
+                    _ => {}
+                }
             }
         }
     }
