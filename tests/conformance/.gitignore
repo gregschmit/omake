@@ -1,0 +1,3 @@
+# Vendored upstream test-suite sources, cloned on demand by ./vendor (never committed).
+/.gmake-src/
+/.bmake-src/

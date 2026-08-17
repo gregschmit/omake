@@ -61,7 +61,7 @@ test suites** of GNU make and NetBSD bmake (vendored on demand at a pinned commi
 switches omake's diagnostic output to match that make, letting the suites measure real behavioral
 gaps rather than output-format noise.
 
-Progress (reproduce with `tests/conformance/run-gnu.sh` / `run-bmake.sh`):
+Progress (reproduce with `tests/conformance/run_gmake` / `run_bmake`):
 
 | Suite | Version | omake (native) | omake `--compat` |
 |-------|---------|----------------|------------------|

@@ -2,10 +2,6 @@
 /Makefile
 /TODO.md
 
-# Vendored conformance test-suite sources (cloned on demand by tests/conformance/vendor.sh).
-/tests/conformance/.gnu-make/
-/tests/conformance/.netbsd-src/
-
 # Created by https://www.toptal.com/developers/gitignore/api/rust,macos,windows,vim,emacs
 # Edit at https://www.toptal.com/developers/gitignore?templates=rust,macos,windows,vim,emacs
 

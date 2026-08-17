@@ -4,7 +4,7 @@ Runs omake against the **real** upstream test suites of GNU make and NetBSD bmak
 conformance signal beyond the hand-written scenarios in `tests/scenarios/`.
 
 The upstream sources are **vendored on demand** (cloned at a pinned commit into a gitignored
-directory) — they are never committed. `vendor.sh` clones only when missing and always checks out the
+directory) — they are never committed. `vendor` clones only when missing and always checks out the
 pinned commit.
 
 | Suite | Source | Pinned commit | Version |
@@ -18,13 +18,13 @@ Both are pinned to match the `gmake`/`bmake` binaries these tests cross-check ag
 
 ```sh
 cargo build                       # build the omake binary under test
-tests/conformance/run-bmake.sh    # NetBSD bmake unit-tests
-tests/conformance/run-gnu.sh      # GNU make test suite
+tests/conformance/run_bmake    # NetBSD bmake unit-tests
+tests/conformance/run_gmake      # GNU make test suite
 ```
 
-Both honor a `OMAKE=/path/to/omake` override. `run-gnu.sh` also takes optional category arguments
-(e.g. `run-gnu.sh features/comments functions/wildcard`); `run-bmake.sh` runs the whole suite.
-`vendor.sh [gnu|bmake|all]` vendors without running.
+Both honor a `OMAKE=/path/to/omake` override. `run_gmake` also takes optional category arguments
+(e.g. `run_gmake features/comments functions/wildcard`); `run_bmake` runs the whole suite.
+`vendor [gmake|bmake|all]` vendors without running.
 
 ### Prerequisites
 

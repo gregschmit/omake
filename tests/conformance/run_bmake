@@ -17,8 +17,8 @@ OMAKE="${OMAKE:-$CONF_DIR/../../target/debug/omake}"
 command -v bmake >/dev/null || { echo "error: bmake not found (needed to drive the harness)" >&2; exit 1; }
 [ -x "$OMAKE" ] || { echo "error: omake not built at $OMAKE (run: cargo build)" >&2; exit 1; }
 
-"$CONF_DIR/vendor.sh" bmake
-UNIT="$CONF_DIR/.netbsd-src/usr.bin/make/unit-tests"
+"$CONF_DIR/vendor" bmake
+UNIT="$CONF_DIR/.bmake-src/usr.bin/make/unit-tests"
 
 cd "$UNIT"
 total=$(grep -cE '^TESTS[[:space:]]*\+=' Makefile)

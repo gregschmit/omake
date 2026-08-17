@@ -4,22 +4,22 @@
 # the conformance suites (see README.md). Clones only when missing (or when the pinned commit is not
 # present); otherwise just re-checks out the pinned commit. The vendored trees are never committed.
 #
-# Usage: vendor.sh [gnu|bmake|all]   (default: all)
+# Usage: vendor.sh [gmake|bmake|all]   (default: all)
 set -euo pipefail
 
 CONF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # GNU Make 4.4.1 (matches the gmake we cross-check against).
-GNU_URL="https://git.savannah.gnu.org/git/make.git"
-GNU_COMMIT="d66a65ad5a0e31b287f53930b0f09e31801f1613"
-GNU_DIR="$CONF_DIR/.gnu-make"
+GMAKE_URL="https://git.savannah.gnu.org/git/make.git"
+GMAKE_COMMIT="d66a65ad5a0e31b287f53930b0f09e31801f1613"
+GMAKE_DIR="$CONF_DIR/.gmake-src"
 
 # NetBSD src at the netbsd-10 tip, whose usr.bin/make is bmake 20230711 (matches the installed
 # bmake). The tree is huge, so we sparse+partial clone only usr.bin/make.
-NETBSD_URL="https://github.com/NetBSD/src.git"
-NETBSD_COMMIT="1d2eff37050c088093399be0526404544f166cab"
-NETBSD_DIR="$CONF_DIR/.netbsd-src"
-NETBSD_SPARSE="usr.bin/make"
+BMAKE_URL="https://github.com/NetBSD/src.git"
+BMAKE_COMMIT="1d2eff37050c088093399be0526404544f166cab"
+BMAKE_DIR="$CONF_DIR/.bmake-src"
+BMAKE_SPARSE="usr.bin/make"
 
 has_commit() { git -C "$1" rev-parse --verify --quiet "$2^{commit}" >/dev/null 2>&1; }
 
@@ -48,11 +48,11 @@ vendor_sparse() {
 }
 
 case "${1:-all}" in
-  gnu)   vendor_full   "$GNU_DIR"    "$GNU_URL"    "$GNU_COMMIT" ;;
-  bmake) vendor_sparse "$NETBSD_DIR" "$NETBSD_URL" "$NETBSD_COMMIT" "$NETBSD_SPARSE" ;;
+  gmake) vendor_full   "$GMAKE_DIR" "$GMAKE_URL" "$GMAKE_COMMIT" ;;
+  bmake) vendor_sparse "$BMAKE_DIR" "$BMAKE_URL" "$BMAKE_COMMIT" "$BMAKE_SPARSE" ;;
   all)
-    vendor_full   "$GNU_DIR"    "$GNU_URL"    "$GNU_COMMIT"
-    vendor_sparse "$NETBSD_DIR" "$NETBSD_URL" "$NETBSD_COMMIT" "$NETBSD_SPARSE"
+    vendor_full   "$GMAKE_DIR"    "$GMAKE_URL"    "$GMAKE_COMMIT"
+    vendor_sparse "$BMAKE_DIR" "$BMAKE_URL" "$BMAKE_COMMIT" "$BMAKE_SPARSE"
     ;;
-  *) echo "usage: $0 [gnu|bmake|all]" >&2; exit 2 ;;
+  *) echo "usage: $0 [gmake|bmake|all]" >&2; exit 2 ;;
 esac

@@ -19,8 +19,8 @@ OMAKE="${OMAKE:-$CONF_DIR/../../target/debug/omake}"
 command -v perl >/dev/null || { echo "error: perl not found" >&2; exit 1; }
 [ -x "$OMAKE" ] || { echo "error: omake not built at $OMAKE (run: cargo build)" >&2; exit 1; }
 
-"$CONF_DIR/vendor.sh" gnu
-TESTS_DIR="$CONF_DIR/.gnu-make/tests"
+"$CONF_DIR/vendor" gmake
+TESTS_DIR="$CONF_DIR/.gmake-src/tests"
 
 # Patch a throwaway copy of the runner: (1) keep the -make binary instead of re-deriving it from
 # $(info $(MAKE)); (2) accept a non-"GNU Make" -v banner. The vendored tree is gitignored, so this
