@@ -59,6 +59,10 @@ pub struct Args {
     #[arg(long)]
     pub trace: bool,
 
+    /// Consider symbolic links' target times (accepted; omake uses regular mtimes).
+    #[arg(short = 'L', long = "check-symlink-times")]
+    pub check_symlink_times: bool,
+
     /// Perform a topological sort variant on goals/prereqs (accepted; omake builds in listed
     /// order).
     #[arg(long, value_name = "MODE", num_args = 0..=1, default_missing_value = "random")]
@@ -101,7 +105,12 @@ pub struct Args {
     pub keep_going: bool,
 
     /// Turn off -k (the default; cancels a `-k` inherited via MAKEFLAGS).
-    #[arg(short = 'S', long = "no-keep-going", overrides_with = "keep_going")]
+    #[arg(
+        short = 'S',
+        long = "no-keep-going",
+        visible_alias("stop"),
+        overrides_with = "keep_going"
+    )]
     pub no_keep_going: bool,
 
     /// Don't echo recipes as they are run.
