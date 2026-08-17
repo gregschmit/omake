@@ -2,7 +2,7 @@
 
 use crate::compat::Compat;
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct Opts {
     /// The make whose diagnostic output to emulate (`--compat`); `Native` by default.
     pub compat: Compat,

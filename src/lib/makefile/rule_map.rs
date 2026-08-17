@@ -859,6 +859,31 @@ impl RuleMap {
         Ok(state.needs_rebuild)
     }
 
+    /// Whether `name` can be (re)made — it has a rule with a recipe (explicit, a borrowed pattern
+    /// recipe, or an applicable implicit rule). Makefile remaking uses this to tell a buildable
+    /// makefile from a plain source file (which is never remade).
+    pub fn can_remake<L: Logger>(&self, makefile: &Makefile<L>, name: &str) -> bool {
+        self.has_recipe(makefile, name)
+    }
+
+    /// Build the makefiles named in `targets` for the remaking phase, without the "up to date" /
+    /// "Nothing to be done" summary (gmake stays silent unless a makefile is actually rebuilt). A
+    /// failing makefile recipe is fatal.
+    pub fn remake_quietly<L: Logger>(
+        &self,
+        makefile: &Makefile<L>,
+        targets: &[String],
+    ) -> Result<(), MakeError> {
+        let mut state = ExecState {
+            goals: targets.iter().cloned().collect(),
+            ..Default::default()
+        };
+        for target in targets {
+            self.execute_target(makefile, target, "", &makefile.vars, &mut state)?;
+        }
+        Ok(())
+    }
+
     /// Build a single target, guarding against re-building (memoization) and circular dependencies.
     /// `parent` is the target that required this one (for the circular-dependency diagnostic).
     fn execute_target<L: Logger>(

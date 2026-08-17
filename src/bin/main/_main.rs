@@ -443,65 +443,82 @@ fn main() {
         env::set_var("MAKELEVEL", (level + 1).to_string());
     }
 
-    // Build variables from the (updated) environment, then define `MAKE` (for `$(MAKE) -C subdir`)
-    // and set `MAKELEVEL` to this level (children see it incremented, via the exported env above).
-    // Under `-R` the built-in variables are omitted; under `-e` the environment outranks makefiles.
-    let mut vars = Vars::from_env(
-        env::vars().collect::<Env>(),
-        !opts.no_builtin_variables,
-        opts.environment_overrides,
-    );
-    // `MAKE` is a built-in default; `MAKELEVEL` comes from the environment (`$(origin ...)`).
-    let _ = vars.set_origin("MAKE", make_path.as_str(), false, Origin::Default);
-    // `CURDIR` is the current directory (after any `-C` chdir), like gmake.
-    if let Ok(cwd) = env::current_dir() {
-        let _ = vars.set_origin("CURDIR", &cwd.to_string_lossy(), false, Origin::File);
-    }
-    let _ = vars.set_origin(
-        "MAKELEVEL",
-        level.to_string().as_str(),
-        false,
-        Origin::Environment,
-    );
-    // `MAKECMDGOALS` holds the goals named on the command line (not variable assignments), in order.
-    let _ = vars.set_origin("MAKECMDGOALS", &goals.join(" "), false, Origin::File);
-    // `MAKEOVERRIDES` holds the command-line (and inherited) variable assignments, in the same
-    // reversed order gmake emits them in `MAKEFLAGS`.
-    let _ = vars.set_origin(
-        "MAKEOVERRIDES",
-        &makeflags_assignments_enc.join(" "),
-        false,
-        Origin::Environment,
-    );
-    // Command-line variables override makefile assignments (via origin precedence) and are
-    // auto-exported to recipes. A `:=` (simple) value is expanded once, immediately.
-    for token in &cmdline_tokens {
-        if let Some((name, recursive, value)) = parse_cmdline_var(token) {
-            let stored = if recursive {
-                value.to_string()
-            } else {
-                omake::expand::expand(value, &vars).unwrap_or_else(|_| value.to_string())
-            };
-            let _ = vars.set_origin(name, stored.as_str(), recursive, Origin::CommandLine);
-        }
-    }
-
-    // `opts` is moved into the makefile below; remember whether question mode is on for the exit
-    // code.
+    // The command-line goals as `MAKECMDGOALS` (unchanged across a restart).
+    let makecmdgoals = goals.join(" ");
     let question = opts.question;
     let compat = opts.compat;
 
-    // Parse the makefile.
-    let mut makefile = match Makefile::new(makefile_fns, opts, vars, logger.clone(), &args.eval) {
-        Err(e) => exit_make_error(&logger, compat, e),
-        Ok(m) => m,
+    // Build variables from the (updated) environment and parse the makefile(s). This runs once per
+    // "restart" (makefile remaking re-parses from a clean state), with `MAKE_RESTARTS` set on a
+    // re-parse. Under `-R` the built-in variables are omitted; under `-e` the environment outranks
+    // makefiles.
+    let build_makefile = |restarts: u32| -> Result<Makefile<DefaultLogger>, MakeError> {
+        let mut vars = Vars::from_env(
+            env::vars().collect::<Env>(),
+            !opts.no_builtin_variables,
+            opts.environment_overrides,
+        );
+        // `MAKE` is a built-in default; `MAKELEVEL` comes from the environment (`$(origin ...)`).
+        let _ = vars.set_origin("MAKE", make_path.as_str(), false, Origin::Default);
+        // `CURDIR` is the current directory (after any `-C` chdir), like gmake.
+        if let Ok(cwd) = env::current_dir() {
+            let _ = vars.set_origin("CURDIR", &cwd.to_string_lossy(), false, Origin::File);
+        }
+        let _ = vars.set_origin("MAKELEVEL", level.to_string().as_str(), false, Origin::Environment);
+        let _ = vars.set_origin("MAKECMDGOALS", &makecmdgoals, false, Origin::File);
+        // `MAKEOVERRIDES` holds the command-line (and inherited) variable assignments, in the same
+        // reversed order gmake emits them in `MAKEFLAGS`.
+        let _ = vars.set_origin(
+            "MAKEOVERRIDES",
+            &makeflags_assignments_enc.join(" "),
+            false,
+            Origin::Environment,
+        );
+        // `MAKE_RESTARTS` counts how many times makefile remaking re-parsed (unset on the first pass).
+        if restarts > 0 {
+            let _ = vars.set_origin(
+                "MAKE_RESTARTS",
+                restarts.to_string().as_str(),
+                false,
+                Origin::Environment,
+            );
+        }
+        // Command-line variables override makefile assignments (via origin precedence) and are
+        // auto-exported to recipes. A `:=` (simple) value is expanded once, immediately.
+        for token in &cmdline_tokens {
+            if let Some((name, recursive, value)) = parse_cmdline_var(token) {
+                let stored = if recursive {
+                    value.to_string()
+                } else {
+                    omake::expand::expand(value, &vars).unwrap_or_else(|_| value.to_string())
+                };
+                let _ = vars.set_origin(name, stored.as_str(), recursive, Origin::CommandLine);
+            }
+        }
+
+        let mut makefile =
+            Makefile::new(makefile_fns.clone(), opts.clone(), vars, logger.clone(), &args.eval)?;
+        // GNU make treats `MAKEFLAGS` as a live switch set: a makefile that assigns to it turns those
+        // switches on and the variable is reconstructed canonically. A no-op in the common case.
+        reconcile_makeflags(&mut makefile, &makeflags, &makeflags_assignments_enc);
+        Ok(makefile)
     };
 
-    // GNU make treats `MAKEFLAGS` as a live switch set: a makefile that assigns to it turns those
-    // switches on and the variable is reconstructed canonically. Fold any such assignment back into
-    // the options and re-encode. An untouched `MAKEFLAGS` still equals the startup value, so this is
-    // a no-op in the common case.
-    reconcile_makeflags(&mut makefile, &makeflags, &makeflags_assignments_enc);
+    // Parse, then remake the makefiles themselves; if any was rebuilt, re-parse (a "restart") so the
+    // new contents take effect. The cap guards against a makefile rule that never settles.
+    const RESTART_LIMIT: u32 = 100;
+    let mut restarts = 0u32;
+    let makefile = loop {
+        let mut makefile = match build_makefile(restarts) {
+            Err(e) => exit_make_error(&logger, compat, e),
+            Ok(m) => m,
+        };
+        match makefile.remake_makefiles() {
+            Err(e) => exit_make_error(&logger, compat, e),
+            Ok(true) if restarts < RESTART_LIMIT => restarts += 1,
+            Ok(_) => break makefile,
+        }
+    };
 
     // Execute the makefile (command-line variable assignments are not goals).
     let result = makefile.execute(goals);

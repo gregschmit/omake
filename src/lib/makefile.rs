@@ -150,6 +150,11 @@ pub struct Makefile<L: Logger> {
     defining: Option<DefineCapture>,
     for_capture: Option<ForCapture>,
     include_depth: usize,
+    /// `include`d makefiles missing at parse time, as `(name, optional, directive-context)`. After
+    /// parsing, [`Makefile::remake_makefiles`] tries to build them; a non-optional one still missing
+    /// with no rule is fatal. A deferred missing include lets a rule generate the file, then a
+    /// restart reads it (GNU make's makefile-remaking).
+    missing_includes: Vec<(String, bool, Context)>,
 }
 
 impl<L: Logger> Makefile<L> {
@@ -188,6 +193,7 @@ impl<L: Logger> Makefile<L> {
             defining: None,
             for_capture: None,
             include_depth: 0,
+            missing_includes: Vec::new(),
         };
 
         // `-r`/`-R` clears the default suffix list before reading the makefile, so no default suffix
@@ -884,6 +890,70 @@ impl<L: Logger> Makefile<L> {
         self.rule_map.execute(self, &targets)
     }
 
+    /// GNU make's makefile remaking: after parsing, rebuild any makefile (one that was read, or a
+    /// deferred missing `include`) that has a rule and is out of date. Returns whether anything was
+    /// rebuilt — the caller then re-parses (a "restart") so the updated makefiles take effect. A
+    /// non-optional `include` that is still missing and has no rule to build it is fatal.
+    pub fn remake_makefiles(&mut self) -> Result<bool, MakeError> {
+        let missing = std::mem::take(&mut self.missing_includes);
+
+        // Candidate makefiles: those read so far (`MAKEFILE_LIST`), plus deferred missing includes.
+        let mut names: Vec<String> = Vec::new();
+        let push = |n: &str, names: &mut Vec<String>| {
+            if !names.iter().any(|m| m == n) {
+                names.push(n.to_string());
+            }
+        };
+        for n in self.vars.get("MAKEFILE_LIST").value.clone().split_whitespace() {
+            push(n, &mut names);
+        }
+        for (n, _, _) in &missing {
+            push(n, &mut names);
+        }
+
+        // Only makefiles with a rule are remade; a plain source makefile (no rule) is left alone.
+        let buildable: Vec<String> = names
+            .into_iter()
+            .filter(|n| self.rule_map.can_remake(self, n))
+            .collect();
+
+        let before: Vec<Option<SystemTime>> = buildable.iter().map(|n| self.get_mtime(n)).collect();
+        if !buildable.is_empty() {
+            self.rule_map.remake_quietly(self, &buildable)?;
+        }
+        let changed = buildable
+            .iter()
+            .zip(&before)
+            .any(|(n, b)| self.get_mtime(n) != *b);
+
+        // A required missing include still absent with no rule to build it is fatal. gmake prints a
+        // "No such file or directory" notice (locating the `include` directive) before the error.
+        for (name, optional, ctx) in &missing {
+            if !optional && self.get_mtime(name).is_none() && !self.rule_map.can_remake(self, name) {
+                if let (Some(path), Some(line)) = (&ctx.path, ctx.line_index) {
+                    eprintln!(
+                        "{}:{}: {name}: No such file or directory",
+                        path.display(),
+                        line + 1
+                    );
+                }
+                let mut err = MakeError::new(
+                    &format!("No rule to make target '{name}'."),
+                    self.context.clone(),
+                );
+                if let Some(line) =
+                    self.opts
+                        .compat
+                        .no_rule_error(&self.logger.prefix(), name, "")
+                {
+                    err = err.with_display(line);
+                }
+                return Err(err);
+            }
+        }
+        Ok(changed)
+    }
+
     /// Whether the parser is currently in an active (non-skipped) conditional branch.
     fn cond_active(&self) -> bool {
         self.cond_stack.last().is_none_or(|c| c.active)
@@ -1251,13 +1321,12 @@ impl<L: Logger> Makefile<L> {
                 }
             },
             None => {
-                if optional {
-                    return Ok(());
-                }
-                return Err(MakeError::new(
-                    &format!("Could not include {name} (No such file or directory)."),
-                    self.context.clone(),
-                ));
+                // Missing: defer to the makefile-remaking phase — a rule may generate it, then a
+                // restart reads it. If it stays unbuildable, a non-optional include is fatal (checked
+                // after parsing, in `remake_makefiles`).
+                self.missing_includes
+                    .push((name.to_string(), optional, self.context.clone()));
+                return Ok(());
             }
         };
 
