@@ -253,7 +253,7 @@ fn expand_inner(s: &str, vars: &Vars, ctx: &mut Expander) -> Result<String, Stri
                         &transformed
                     }
                     VarAction::Bsd(mods) => {
-                        transformed = apply_bsd_modifiers(value, mods, vars.is_set(&name));
+                        transformed = apply_bsd_modifiers(value, mods, vars.is_set(&name), &name);
                         &transformed
                     }
                 };
@@ -867,6 +867,12 @@ enum Modifier {
     Root,
     /// `:Uvalue` — use `value` if the variable is undefined.
     Default(String),
+    /// `:L` — the value becomes the variable's name.
+    Name,
+    /// `:O` / `:Or` — sort the words lexicographically (ascending / descending).
+    Sort { reverse: bool },
+    /// `:u` — merge adjacent duplicate words (like `uniq`, not a full deduplication).
+    Unique,
 }
 
 /// Determine the variable name and the action (GNU substitution reference or BSD modifiers) from a
@@ -930,6 +936,13 @@ fn take_modifier(s: &str) -> Option<(Modifier, &str)> {
         b'M' => arg(Modifier::Match),
         b'N' => arg(Modifier::NoMatch),
         b'U' => arg(Modifier::Default),
+        b'L' => simple(1, Modifier::Name),
+        b'u' => simple(1, Modifier::Unique),
+        // `:O` sorts ascending, `:Or` descending. `:Ox` (shuffle) is not supported.
+        b'O' => match s.as_bytes().get(1) {
+            Some(b'r') => simple(2, Modifier::Sort { reverse: true }),
+            _ => simple(1, Modifier::Sort { reverse: false }),
+        },
         b'S' => take_subst(s),
         _ => None,
     }
@@ -971,7 +984,7 @@ fn split_once_char(s: &str, sep: char) -> Option<(&str, &str)> {
 }
 
 /// Apply a chain of BSD modifiers to `value` (`is_set` is whether the variable is defined, for `:U`).
-fn apply_bsd_modifiers(value: &str, mods: &[Modifier], is_set: bool) -> String {
+fn apply_bsd_modifiers(value: &str, mods: &[Modifier], is_set: bool, name: &str) -> String {
     let mut val = value.to_string();
     let mut set = is_set;
     // Empty results drop out of the word list, matching bmake.
@@ -1022,6 +1035,29 @@ fn apply_bsd_modifiers(value: &str, mods: &[Modifier], is_set: bool) -> String {
             Modifier::Tail => val = map_words(&val, &|w| path_tail(w).to_string()),
             Modifier::Ext => val = map_words(&val, &|w| path_ext(w).to_string()),
             Modifier::Root => val = map_words(&val, &|w| path_root(w).to_string()),
+            // `:L` yields the variable's name (which then flows through the rest of the chain).
+            Modifier::Name => {
+                val = name.to_string();
+                set = true;
+            }
+            Modifier::Sort { reverse } => {
+                let mut words: Vec<&str> = val.split_whitespace().collect();
+                words.sort_unstable();
+                if *reverse {
+                    words.reverse();
+                }
+                val = words.join(" ");
+            }
+            // `:u` merges *adjacent* duplicate words (like `uniq`), not a global deduplication.
+            Modifier::Unique => {
+                let mut out: Vec<&str> = Vec::new();
+                for w in val.split_whitespace() {
+                    if out.last() != Some(&w) {
+                        out.push(w);
+                    }
+                }
+                val = out.join(" ");
+            }
         }
     }
     val

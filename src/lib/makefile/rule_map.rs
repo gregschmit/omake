@@ -816,10 +816,16 @@ impl RuleMap {
             {
                 let message = if self.has_recipe(makefile, target) {
                     format!("'{target}' is up to date.")
+                } else if makefile.opts.compat == crate::compat::Compat::Bsd {
+                    // bmake is silent for a target with no commands; "Nothing to be done" is a
+                    // GNU-ism it never emits.
+                    String::new()
                 } else {
                     format!("Nothing to be done for '{target}'.")
                 };
-                makefile.logger.notice(&message);
+                if !message.is_empty() {
+                    makefile.logger.notice(&message);
+                }
             }
         }
 
