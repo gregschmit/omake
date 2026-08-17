@@ -458,6 +458,8 @@ fn main() {
         false,
         Origin::Environment,
     );
+    // `MAKECMDGOALS` holds the goals named on the command line (not variable assignments), in order.
+    let _ = vars.set_origin("MAKECMDGOALS", &goals.join(" "), false, Origin::File);
     // Command-line variables override makefile assignments (via origin precedence) and are
     // auto-exported to recipes. A `:=` (simple) value is expanded once, immediately.
     for token in &cmdline_tokens {

@@ -195,6 +195,7 @@ impl<L: Logger> Makefile<L> {
         let mut read_stdin = false;
         for path in &paths {
             makefile.context = path.clone().into();
+            makefile.append_makefile_list(&path.to_string_lossy());
             if path.as_os_str() == "-" {
                 if read_stdin {
                     return Err(MakeError::new(
@@ -438,6 +439,16 @@ impl<L: Logger> Makefile<L> {
                         && !target.contains('%')
                     {
                         self.default_target = Some(target.clone());
+                        // `.DEFAULT_GOAL` tracks the first eligible target, unless the makefile has
+                        // already set it explicitly (then that value sticks).
+                        if self.vars.get(".DEFAULT_GOAL").value.trim().is_empty() {
+                            let _ = self.vars.set_origin(
+                                ".DEFAULT_GOAL",
+                                target,
+                                false,
+                                Origin::File,
+                            );
+                        }
                     }
                 }
             }
@@ -828,17 +839,18 @@ impl<L: Logger> Makefile<L> {
     /// Principal interface for executing a parsed makefile, given a list of targets. Returns whether
     /// any target was found out of date (meaningful under `-q`, which builds nothing).
     pub fn execute(&self, mut targets: Vec<String>) -> Result<bool, MakeError> {
-        // Set targets list to default target if none were provided.
+        // Set targets list to the default goal if none were provided. `.DEFAULT_GOAL` (which the
+        // parser keeps in sync with the first eligible target, but the makefile may override or
+        // clear) is the source of truth.
         if targets.is_empty() {
-            match &self.default_target {
-                None => {
-                    return Err(MakeError::new(
-                        "No target specified and no default target found.",
-                        Context::new(),
-                    ));
-                }
-                Some(t) => targets.push(t.clone()),
+            let goal = self.vars.get(".DEFAULT_GOAL").value.trim().to_string();
+            if goal.is_empty() {
+                return Err(MakeError::new(
+                    "No target specified and no default target found.",
+                    Context::new(),
+                ));
             }
+            targets.push(goal);
         }
 
         self.rule_map.execute(self, &targets)
@@ -1169,6 +1181,19 @@ impl<L: Logger> Makefile<L> {
             .find(|cand| cand.exists())
     }
 
+    /// Append a makefile name to `MAKEFILE_LIST` (space-separated), as each makefile is read.
+    fn append_makefile_list(&mut self, name: &str) {
+        let current = &self.vars.get("MAKEFILE_LIST").value;
+        let updated = if current.is_empty() {
+            name.to_string()
+        } else {
+            format!("{current} {name}")
+        };
+        let _ = self
+            .vars
+            .set_origin("MAKEFILE_LIST", &updated, false, Origin::File);
+    }
+
     /// Parse a single named file into the current parser state. A missing file is an error unless
     /// `optional`. The name is used verbatim (already expanded and, for BSD `.include`, unquoted),
     /// so filenames may contain spaces.
@@ -1208,9 +1233,15 @@ impl<L: Logger> Makefile<L> {
             }
         };
 
-        // Parse the included file with its own context, restoring ours afterwards.
+        // Parse the included file with its own context, restoring ours afterwards. Its resolved
+        // path joins `MAKEFILE_LIST` (before it is parsed, like gmake).
         let cond_depth = self.cond_stack.len();
         let saved = self.context.clone();
+        let listed = resolved
+            .as_deref()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|| name.to_string());
+        self.append_makefile_list(&listed);
         self.context = resolved.unwrap_or_else(|| PathBuf::from(name)).into();
         self.include_depth += 1;
         let result = self.parse_reader(BufReader::new(file));
