@@ -24,7 +24,20 @@ tests/conformance/run_gmake      # GNU make test suite
 
 Both honor a `OMAKE=/path/to/omake` override. `run_gmake` also takes optional category arguments
 (e.g. `run_gmake features/comments functions/wildcard`); `run_bmake` runs the whole suite.
-`vendor [gmake|bmake|all]` vendors without running.
+`vendor [gmake|bmake|all]` vendors without running. All three are portable POSIX `sh` (they run on
+Linux, macOS, and the BSDs, not just under bash).
+
+### Regression gate
+
+The pass counts are pinned as an opt-in `cargo` test so a regression fails CI without slowing the
+normal (fast, dependency-free) `cargo test` loop:
+
+```sh
+cargo test --test conformance_regression -- --ignored
+```
+
+It runs both suites and asserts the pass count stays at or above the recorded baselines (bump the
+constants in `tests/conformance_regression.rs` as the numbers improve).
 
 ### Prerequisites
 

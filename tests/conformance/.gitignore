@@ -3,5 +3,5 @@
 /.bmake-src/
 
 # Local triage helpers (ad-hoc failure-classification workflows), not part of the suite.
-/.triage-workflow.js
+/.gmake-triage.js
 /.bmake-triage.js
