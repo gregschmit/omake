@@ -1033,8 +1033,8 @@ fn apply_bsd_modifiers(value: &str, mods: &[Modifier], is_set: bool, name: &str)
             }
             Modifier::Head => val = map_words(&val, &|w| path_head(w).to_string()),
             Modifier::Tail => val = map_words(&val, &|w| path_tail(w).to_string()),
-            Modifier::Ext => val = map_words(&val, &|w| path_ext(w).to_string()),
-            Modifier::Root => val = map_words(&val, &|w| path_root(w).to_string()),
+            Modifier::Ext => val = map_words(&val, &|w| bsd_ext(w).to_string()),
+            Modifier::Root => val = map_words(&val, &|w| bsd_root(w).to_string()),
             // `:L` yields the variable's name (which then flows through the rest of the chain).
             Modifier::Name => {
                 val = name.to_string();
@@ -1118,24 +1118,18 @@ fn path_tail(word: &str) -> &str {
     }
 }
 
-/// Extension of a word without the dot (`:E`); empty when the basename has no `.`.
-fn path_ext(word: &str) -> &str {
-    let base = path_tail(word);
-    match base.rfind('.') {
-        Some(i) => &base[i + 1..],
-        None => "",
+/// bmake's `:R` (root) and `:E` (extension): unlike gmake's `$(basename)`/`$(suffix)`, they split at
+/// the last `.` anywhere in the word, ignoring any `/` (`a.b/c` -> root `a`, ext `b/c`).
+fn bsd_root(word: &str) -> &str {
+    match word.rfind('.') {
+        Some(i) => &word[..i],
+        None => word,
     }
 }
-
-/// Root of a word — everything but the extension (`:R`).
-fn path_root(word: &str) -> &str {
-    let dot = path_tail(word).rfind('.');
-    match dot {
-        Some(i) => {
-            let cut = word.len() - (path_tail(word).len() - i);
-            &word[..cut]
-        }
-        None => word,
+fn bsd_ext(word: &str) -> &str {
+    match word.rfind('.') {
+        Some(i) => &word[i + 1..],
+        None => "",
     }
 }
 
