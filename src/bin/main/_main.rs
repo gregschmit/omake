@@ -291,11 +291,18 @@ fn exit_with(logger: &DefaultLogger, msg: &str, context: Option<Context>) -> ! {
     std::process::exit(2)
 }
 
-/// Report a `MakeError` and exit 2. Under `--compat` an error may carry a pre-formatted
-/// gmake/bmake-exact line, which is printed verbatim; otherwise omake's native rendering is used.
-fn exit_make_error(logger: &DefaultLogger, err: MakeError) -> ! {
+/// Report a `MakeError` and exit 2. Under `--compat`, an error may carry a pre-formatted
+/// gmake/bmake-exact line (recipe failure, missing rule); any other error is rendered by
+/// [`Compat::fatal_error`]. In native mode the error uses omake's `ERROR … | caret` form.
+fn exit_make_error(logger: &DefaultLogger, compat: Compat, err: MakeError) -> ! {
     if let Some(line) = err.display {
         eprintln!("{line}");
+        std::process::exit(2);
+    }
+    let file = err.context.path.as_ref().map(|p| p.display().to_string());
+    let line = err.context.line_index.map(|l| l + 1);
+    if let Some(rendered) = compat.fatal_error(&logger.prefix(), file.as_deref(), line, &err.msg) {
+        eprintln!("{rendered}");
         std::process::exit(2);
     }
     exit_with(logger, &err.msg, Some(err.context))
@@ -500,10 +507,11 @@ fn main() {
     // `opts` is moved into the makefile below; remember whether question mode is on for the exit
     // code.
     let question = opts.question;
+    let compat = opts.compat;
 
     // Parse the makefile.
     let makefile = match Makefile::new(makefile_fn, opts, vars, logger.clone()) {
-        Err(e) => exit_make_error(&logger, e),
+        Err(e) => exit_make_error(&logger, compat, e),
         Ok(m) => m,
     };
 
@@ -521,7 +529,7 @@ fn main() {
     }
 
     match result {
-        Err(e) => exit_make_error(&logger, e),
+        Err(e) => exit_make_error(&logger, compat, e),
         // `-q` (question mode): exit 1 if any target was found out of date, else 0.
         Ok(needs_rebuild) => {
             if question && needs_rebuild {

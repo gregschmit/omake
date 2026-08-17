@@ -38,6 +38,36 @@ impl Compat {
         }
     }
 
+    /// The line for a fatal error that is not a recipe failure or a missing rule (e.g. `$(error)`,
+    /// a parse error, or a setup error). A makefile-content error carries a `file`/`line`; a setup
+    /// error (no makefile, etc.) does not and uses the program prefix. `None` in native mode.
+    pub fn fatal_error(
+        self,
+        prefix: &str,
+        file: Option<&str>,
+        line: Option<usize>,
+        msg: &str,
+    ) -> Option<String> {
+        // gmake/bmake append their own "Stop"/period, so drop a trailing one from omake's message.
+        let text = msg.trim_end().trim_end_matches('.');
+        match self {
+            Compat::Native => None,
+            // gmake: `file:line: *** msg.  Stop.` for content, `<prog>: *** msg.  Stop.` otherwise.
+            Compat::Gnu => {
+                let loc = match (file, line) {
+                    (Some(f), Some(l)) => format!("{f}:{l}"),
+                    _ => prefix.to_string(),
+                };
+                Some(format!("{loc}: *** {text}.  Stop."))
+            }
+            // bmake: `<prog>: "file" line N: msg` for content, `<prog>: msg` otherwise.
+            Compat::Bsd => Some(match (file, line) {
+                (Some(f), Some(l)) => format!("{prefix}: \"{f}\" line {l}: {text}"),
+                _ => format!("{prefix}: {text}"),
+            }),
+        }
+    }
+
     /// The line for a target that has no rule and no file. `needed_by` is the target that required
     /// it (empty for a top-level goal). `None` in native mode.
     pub fn no_rule_error(self, prefix: &str, target: &str, needed_by: &str) -> Option<String> {
