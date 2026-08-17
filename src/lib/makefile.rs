@@ -1326,6 +1326,19 @@ impl<L: Logger> Makefile<L> {
             return Ok(());
         }
 
+        // `override undefine` of a command-line variable does not fully remove it: gmake keeps a
+        // "residual environment copy" (the value stays, the origin drops to environment, and it
+        // remains exported to recipe children).
+        if override_ && self.vars.get(name).origin == Origin::CommandLine {
+            let var = self.vars.remove(name).expect("origin implies it is set");
+            let _ = self
+                .vars
+                .set_origin(name, &var.value, var.recursive, Origin::Environment);
+            self.exported.insert(name.to_string());
+            self.unexported.remove(name);
+            return Ok(());
+        }
+
         self.vars.remove(name);
         // Drop it from recipe children too (it was exported, an env var, or neither).
         self.exported.remove(name);

@@ -27,3 +27,4 @@ mod t43_shellstatus;
 mod t44_suffixes;
 mod t45_include_dir;
 mod t46_secondexpansion;
+mod t47_override_undefine;
