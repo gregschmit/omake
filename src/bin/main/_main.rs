@@ -412,19 +412,24 @@ fn main() {
 
     // A command-line token containing `=` is a variable assignment (`make FOO=bar`), not a goal.
     // These also arrive from a parent make via `MAKEFLAGS` (after `--`), so sub-makes inherit them.
-    let (cmdline_tokens, goals): (Vec<String>, Vec<String>) = args
+    let (argv_assignments, goals): (Vec<String>, Vec<String>) = args
         .targets
         .iter()
         .cloned()
         .partition(|t| parse_cmdline_var(t).is_some());
+    // For *setting* the variables, keep natural order (parent's first, then this command line's) so
+    // a `:=` assignment sees earlier ones.
     let cmdline_tokens: Vec<String> = makeflags_assignments(&parent_makeflags)
         .into_iter()
-        .chain(cmdline_tokens)
+        .chain(argv_assignments)
         .collect();
+    // For *encoding* `MAKEFLAGS`, GNU make emits the assignments in reverse (a quirk of its internal
+    // prepend-to-list). This flips the order at each `$(MAKE)` level, which gmake reproduces.
+    let makeflags_assignments_enc: Vec<String> = cmdline_tokens.iter().rev().cloned().collect();
 
     // Encode MAKEFLAGS in GNU make's canonical order from the effective options, with the
     // command-line assignments after a ` -- ` separator (see `omake::makeflags`).
-    let makeflags = makeflags::encode(&opts, &cmdline_tokens);
+    let makeflags = makeflags::encode(&opts, &makeflags_assignments_enc);
 
     // Export MAKEFLAGS/MAKELEVEL to recipe children (and thus sub-makes). This runs once, at
     // startup on the main thread, before anything reads the environment concurrently.
@@ -481,7 +486,7 @@ fn main() {
     // switches on and the variable is reconstructed canonically. Fold any such assignment back into
     // the options and re-encode. An untouched `MAKEFLAGS` still equals the startup value, so this is
     // a no-op in the common case.
-    reconcile_makeflags(&mut makefile, &makeflags, &cmdline_tokens);
+    reconcile_makeflags(&mut makefile, &makeflags, &makeflags_assignments_enc);
 
     // Execute the makefile (command-line variable assignments are not goals).
     let result = makefile.execute(goals);
