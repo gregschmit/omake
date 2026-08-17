@@ -8,3 +8,8 @@ root = true
 end_of_line = lf
 trim_trailing_whitespace = true
 insert_final_newline = true
+
+# Prose is hand-wrapped at 100 columns. Rust is left to rustfmt (which occasionally keeps a line a
+# little over 100, and that's fine), so no line-length rule for *.rs.
+[*.md]
+max_line_length = 100

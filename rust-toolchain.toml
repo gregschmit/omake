@@ -1,2 +1,5 @@
 [toolchain]
-channel = "stable"
+# Nightly is used so rustfmt's `wrap_comments`/`comment_width` (still unstable) apply. Pinned for
+# reproducibility; bump the date to update. The code itself still compiles on stable.
+channel = "nightly-2026-08-16"
+components = ["rustfmt", "clippy"]

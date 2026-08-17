@@ -11,7 +11,8 @@ pub struct MakeError {
     pub msg: String,
     pub context: Context,
     /// A pre-formatted line to print verbatim, used by `--compat` to emit a gmake/bmake-exact
-    /// diagnostic. When `None`, the error renders in omake's native `ERROR [file:N] | … caret` form.
+    /// diagnostic. When `None`, the error renders in omake's native `ERROR [file:N] | … caret`
+    /// form.
     pub display: Option<String>,
 }
 

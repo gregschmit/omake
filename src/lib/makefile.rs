@@ -87,14 +87,15 @@ struct TargetVar {
     value: String,
     /// `override` makes it beat a command-line variable (origin `Override` vs `File`).
     is_override: bool,
-    /// `export` also adds the variable to the target's (and its prerequisites') recipe environment.
+    /// `export` also adds the variable to the target's (and its prerequisites') recipe
+    /// environment.
     is_export: bool,
     /// `private` scopes the variable to the target's own recipe; prerequisites do not inherit it.
     is_private: bool,
 }
 
-/// Pattern-specific variable assignments (`%.o: VAR = value`): the assignments apply to every target
-/// matching the `%` pattern (split into `prefix`/`suffix`).
+/// Pattern-specific variable assignments (`%.o: VAR = value`): the assignments apply to every
+/// target matching the `%` pattern (split into `prefix`/`suffix`).
 #[derive(Debug, Clone)]
 struct PatternVar {
     prefix: String,
@@ -151,9 +152,9 @@ pub struct Makefile<L: Logger> {
     for_capture: Option<ForCapture>,
     include_depth: usize,
     /// `include`d makefiles missing at parse time, as `(name, optional, directive-context)`. After
-    /// parsing, [`Makefile::remake_makefiles`] tries to build them; a non-optional one still missing
-    /// with no rule is fatal. A deferred missing include lets a rule generate the file, then a
-    /// restart reads it (GNU make's makefile-remaking).
+    /// parsing, [`Makefile::remake_makefiles`] tries to build them; a non-optional one still
+    /// missing with no rule is fatal. A deferred missing include lets a rule generate the
+    /// file, then a restart reads it (GNU make's makefile-remaking).
     missing_includes: Vec<(String, bool, Context)>,
 }
 
@@ -196,8 +197,8 @@ impl<L: Logger> Makefile<L> {
             missing_includes: Vec::new(),
         };
 
-        // `-r`/`-R` clears the default suffix list before reading the makefile, so no default suffix
-        // rules apply (the makefile can still add its own via `.SUFFIXES:`).
+        // `-r`/`-R` clears the default suffix list before reading the makefile, so no default
+        // suffix rules apply (the makefile can still add its own via `.SUFFIXES:`).
         if makefile.opts.no_builtin_rules {
             makefile.suffixes.clear();
             let _ = makefile.vars.set("SUFFIXES", "", false);
@@ -209,8 +210,9 @@ impl<L: Logger> Makefile<L> {
             makefile.parse(text.as_bytes())?;
         }
 
-        // Open and parse each makefile in order, sharing state. Each file's context is set so errors
-        // report the right filename. A path of `-` reads the makefile from standard input (only once).
+        // Open and parse each makefile in order, sharing state. Each file's context is set so
+        // errors report the right filename. A path of `-` reads the makefile from standard
+        // input (only once).
         let mut read_stdin = false;
         for path in &paths {
             makefile.context = path.clone().into();
@@ -398,9 +400,10 @@ impl<L: Logger> Makefile<L> {
                 Some(r) => {
                     // Strip the recipe prefix and store the command RAW; recipes are expanded at
                     // execution time (so later variable definitions and automatic variables like
-                    // `$@` resolve). A blank recipe line is not stored, but its presence still marks
-                    // the rule as having a recipe section (gmake treats `target:;` and a bare blank
-                    // recipe line as "has commands").
+                    // `$@` resolve). A blank recipe line is not stored, but its presence still
+                    // marks the rule as having a recipe section (gmake treats
+                    // `target:;` and a bare blank recipe line as "has
+                    // commands").
                     let cmd = line
                         .strip_prefix(recipe_prefix)
                         .expect("line known to start with a recipe prefix");
@@ -408,9 +411,10 @@ impl<L: Logger> Makefile<L> {
                     r.has_recipe = true;
                     if !cmd.trim().is_empty() {
                         r.recipe.push(cmd.to_string());
-                        // `line_index` is the first physical line of this logical recipe line, which
-                        // matches gmake's failing-recipe line reporting (continuations report the
-                        // first line; a canned recipe reports its invocation line).
+                        // `line_index` is the first physical line of this logical recipe line,
+                        // which matches gmake's failing-recipe line
+                        // reporting (continuations report the first line; a
+                        // canned recipe reports its invocation line).
                         r.recipe_lines.push(self.context.line_index.unwrap_or(0));
                     }
                 }
@@ -419,13 +423,15 @@ impl<L: Logger> Makefile<L> {
         }
 
         // Strip inline comments (`#` to end of line) on non-recipe lines. Recipe lines keep `#` so
-        // it can reach the shell, and they already returned above. The raw line is kept so an inline
-        // `;`-recipe on a rule can recover its (un-stripped) text, where `#` is not a comment.
+        // it can reach the shell, and they already returned above. The raw line is kept so an
+        // inline `;`-recipe on a rule can recover its (un-stripped) text, where `#` is not
+        // a comment.
         let raw_line = line;
         let line = strip_inline_comment(&raw_line);
 
-        // A BSD `.for VAR... in ITEM...` header does not terminate the pending rule — its body (which
-        // may be recipe lines) belongs to that rule — so start capturing before the rule-finalize.
+        // A BSD `.for VAR... in ITEM...` header does not terminate the pending rule — its body
+        // (which may be recipe lines) belongs to that rule — so start capturing before the
+        // rule-finalize.
         if let Some((vars, list)) = parse_for(line.trim()) {
             let expanded =
                 expand(list, &self.vars).map_err(|e| MakeError::new(&e, self.context.clone()))?;
@@ -441,12 +447,13 @@ impl<L: Logger> Makefile<L> {
         // Anything other than recipe lines terminate a rule definition.
         if let Some(mut rule) = self.current_rule.take() {
             // Collect any special dot-target directives from this rule (this may update the suffix
-            // list via `.SUFFIXES`, which the suffix-rule rewrite below then uses). A static pattern
-            // rule is never a special/suffix rule, so skip both for it.
+            // list via `.SUFFIXES`, which the suffix-rule rewrite below then uses). A static
+            // pattern rule is never a special/suffix rule, so skip both for it.
             if rule.target_pattern.is_none() {
                 self.collect_special_targets(&rule);
 
-                // Rewrite a suffix rule (e.g. `.c.o:`) into the equivalent pattern rule (`%.o: %.c`).
+                // Rewrite a suffix rule (e.g. `.c.o:`) into the equivalent pattern rule (`%.o:
+                // %.c`).
                 self.rewrite_suffix_rule(&mut rule);
             }
 
@@ -462,12 +469,9 @@ impl<L: Logger> Makefile<L> {
                         // `.DEFAULT_GOAL` tracks the first eligible target, unless the makefile has
                         // already set it explicitly (then that value sticks).
                         if self.vars.get(".DEFAULT_GOAL").value.trim().is_empty() {
-                            let _ = self.vars.set_origin(
-                                ".DEFAULT_GOAL",
-                                target,
-                                false,
-                                Origin::File,
-                            );
+                            let _ =
+                                self.vars
+                                    .set_origin(".DEFAULT_GOAL", target, false, Origin::File);
                         }
                     }
                 }
@@ -504,9 +508,9 @@ impl<L: Logger> Makefile<L> {
             return self.include_file(expanded.trim(), optional);
         }
 
-        // Handle BSD `.error MSG` (fatal) / `.warning MSG` / `.info MSG` (non-fatal) directives. The
-        // message is variable-expanded, and (like the conditionals above) only fires in an active
-        // branch — reached here after the `cond_active()` guard.
+        // Handle BSD `.error MSG` (fatal) / `.warning MSG` / `.info MSG` (non-fatal) directives.
+        // The message is variable-expanded, and (like the conditionals above) only fires in
+        // an active branch — reached here after the `cond_active()` guard.
         if let Some((kind, message)) = parse_bsd_message(trimmed_line) {
             let msg = expand(message, &self.vars)
                 .map_err(|e| MakeError::new(&e, self.context.clone()))?;
@@ -626,9 +630,10 @@ impl<L: Logger> Makefile<L> {
 
             // A second colon in the dependency part introduces a static pattern rule
             // (`targets: target-pattern: prereq-patterns`). The `:` of a `:=`/`::=` target-specific
-            // assignment is not a separator (`parse_assignment` recognizes those), so it is skipped.
-            // GNU make requires the target pattern to contain `%` (fatal error otherwise); it is
-            // checked after expansion, so a variable target pattern (`$(P): %.c`) is still detected.
+            // assignment is not a separator (`parse_assignment` recognizes those), so it is
+            // skipped. GNU make requires the target pattern to contain `%` (fatal error
+            // otherwise); it is checked after expansion, so a variable target pattern
+            // (`$(P): %.c`) is still detected.
             let target_pattern = if parse_assignment(deps).is_none()
                 && let Some((tpat, ppat)) = deps.split_once(':')
             {
@@ -653,9 +658,9 @@ impl<L: Logger> Makefile<L> {
             // Expand variables (evaluating any `$(eval ...)`), split into words, then glob each
             // word against the filesystem (a word with no match keeps its literal form, like GNU
             // make). Wildcards resolve at parse time, so only files present when the makefile is
-            // read are matched. In a static pattern rule the `%`-bearing prerequisite *patterns* are
-            // kept literal (the `%` is substituted per target at finalization); plain words still
-            // glob like ordinary prerequisites.
+            // read are matched. In a static pattern rule the `%`-bearing prerequisite *patterns*
+            // are kept literal (the `%` is substituted per target at finalization);
+            // plain words still glob like ordinary prerequisites.
             let targets = self.expand_str(targets)?;
             let normal_deps = self.expand_str(normal_deps)?;
             let order_deps = self.expand_str(order_deps)?;
@@ -687,9 +692,10 @@ impl<L: Logger> Makefile<L> {
             };
 
             // Under second expansion, defer word-splitting and globbing to build time — the second
-            // pass may change word boundaries (`$$(LIST)`), and for a pattern or static-pattern rule
-            // the stem replaces `%` first. The once-expanded prerequisite line is stored verbatim
-            // and re-expanded then (see `resolve_second_expansion` / `build_from_pattern`).
+            // pass may change word boundaries (`$$(LIST)`), and for a pattern or static-pattern
+            // rule the stem replaces `%` first. The once-expanded prerequisite line is
+            // stored verbatim and re-expanded then (see `resolve_second_expansion` /
+            // `build_from_pattern`).
             let second_expand = self.second_expansion;
             let deferred = |s: &str| {
                 if s.trim().is_empty() {
@@ -704,11 +710,16 @@ impl<L: Logger> Makefile<L> {
                 (deps_list(&normal_deps), deps_list(&order_deps))
             };
 
-            // Grouped targets: `a b &: prereqs` — a trailing `&` token marks the group, whose single
-            // recipe run builds every listed target. Strip the `&` and record the group.
+            // Grouped targets: `a b &: prereqs` — a trailing `&` token marks the group, whose
+            // single recipe run builds every listed target. Strip the `&` and record
+            // the group.
             let grouped = targets.split_whitespace().last() == Some("&");
-            let target_list: Vec<String> =
-                glob_words(targets.split_whitespace().filter(|t| *t != "&").map(str::to_string));
+            let target_list: Vec<String> = glob_words(
+                targets
+                    .split_whitespace()
+                    .filter(|t| *t != "&")
+                    .map(str::to_string),
+            );
             let group = if grouped { target_list.clone() } else { vec![] };
 
             self.current_rule = Some(Rule {
@@ -882,8 +893,8 @@ impl<L: Logger> Makefile<L> {
         result
     }
 
-    /// Principal interface for executing a parsed makefile, given a list of targets. Returns whether
-    /// any target was found out of date (meaningful under `-q`, which builds nothing).
+    /// Principal interface for executing a parsed makefile, given a list of targets. Returns
+    /// whether any target was found out of date (meaningful under `-q`, which builds nothing).
     pub fn execute(&self, mut targets: Vec<String>) -> Result<bool, MakeError> {
         // Set targets list to the default goal if none were provided. `.DEFAULT_GOAL` (which the
         // parser keeps in sync with the first eligible target, but the makefile may override or
@@ -919,7 +930,13 @@ impl<L: Logger> Makefile<L> {
                 names.push(n.to_string());
             }
         };
-        for n in self.vars.get("MAKEFILE_LIST").value.clone().split_whitespace() {
+        for n in self
+            .vars
+            .get("MAKEFILE_LIST")
+            .value
+            .clone()
+            .split_whitespace()
+        {
             push(n, &mut names);
         }
         for (n, _, _) in &missing {
@@ -944,7 +961,8 @@ impl<L: Logger> Makefile<L> {
         // A required missing include still absent with no rule to build it is fatal. gmake prints a
         // "No such file or directory" notice (locating the `include` directive) before the error.
         for (name, optional, ctx) in &missing {
-            if !optional && self.get_mtime(name).is_none() && !self.rule_map.can_remake(self, name) {
+            if !optional && self.get_mtime(name).is_none() && !self.rule_map.can_remake(self, name)
+            {
                 if let (Some(path), Some(line)) = (&ctx.path, ctx.line_index) {
                     eprintln!(
                         "{}:{}: {name}: No such file or directory",
@@ -956,10 +974,10 @@ impl<L: Logger> Makefile<L> {
                     &format!("No rule to make target '{name}'."),
                     self.context.clone(),
                 );
-                if let Some(line) =
-                    self.opts
-                        .compat
-                        .no_rule_error(&self.logger.prefix(), name, "")
+                if let Some(line) = self
+                    .opts
+                    .compat
+                    .no_rule_error(&self.logger.prefix(), name, "")
                 {
                     err = err.with_display(line);
                 }
@@ -1337,8 +1355,8 @@ impl<L: Logger> Makefile<L> {
             },
             None => {
                 // Missing: defer to the makefile-remaking phase — a rule may generate it, then a
-                // restart reads it. If it stays unbuildable, a non-optional include is fatal (checked
-                // after parsing, in `remake_makefiles`).
+                // restart reads it. If it stays unbuildable, a non-optional include is fatal
+                // (checked after parsing, in `remake_makefiles`).
                 self.missing_includes
                     .push((name.to_string(), optional, self.context.clone()));
                 return Ok(());
@@ -1659,7 +1677,8 @@ impl<L: Logger> Makefile<L> {
             let (prerequisites, order_only, stem) = match pattern_stem(prefix, suffix, target) {
                 Some(stem) => {
                     // A non-SE prerequisite is a single word with one `%` (replace it); an SE
-                    // prerequisite is a whole deferred line that may hold several `%`, each the stem.
+                    // prerequisite is a whole deferred line that may hold several `%`, each the
+                    // stem.
                     let sub = |p: &str| -> String {
                         if rule.second_expand {
                             p.replace('%', stem)
@@ -1736,7 +1755,8 @@ impl<L: Logger> Makefile<L> {
                 // `.DELETE_ON_ERROR:` is a global flag (its prerequisites are ignored).
                 ".DELETE_ON_ERROR" => self.special.delete_on_error = true,
                 // `.SECONDARY:` with no prerequisites preserves all intermediates; otherwise it
-                // preserves the listed ones. `.INTERMEDIATE:` forces the listed targets intermediate.
+                // preserves the listed ones. `.INTERMEDIATE:` forces the listed targets
+                // intermediate.
                 ".SECONDARY" => {
                     if rule.prerequisites.is_empty() {
                         self.special.secondary_all = true;
@@ -1824,11 +1844,11 @@ impl<L: Logger> Makefile<L> {
         self.apply_target_vars_filtered(scope, target, true);
     }
 
-    /// Apply target-specific variables for `target` onto `scope`, keeping only those whose `private`
-    /// flag equals `want_private`. Pattern-specific assignments are applied least-specific first
-    /// (longest matched stem), so the most specific pattern wins; equal-specificity ties keep
-    /// definition order (later wins). Exact-target assignments are applied last, overriding any
-    /// pattern.
+    /// Apply target-specific variables for `target` onto `scope`, keeping only those whose
+    /// `private` flag equals `want_private`. Pattern-specific assignments are applied
+    /// least-specific first (longest matched stem), so the most specific pattern wins;
+    /// equal-specificity ties keep definition order (later wins). Exact-target assignments are
+    /// applied last, overriding any pattern.
     fn apply_target_vars_filtered(&self, scope: &mut Vars, target: &str, want_private: bool) {
         let mut assigned = HashSet::new();
         let mut matches: Vec<(usize, &PatternVar)> = self
@@ -2023,8 +2043,9 @@ fn pattern_stem<'a>(prefix: &str, suffix: &str, target: &'a str) -> Option<&'a s
     target.strip_prefix(prefix)?.strip_suffix(suffix)
 }
 
-/// Whether a `.PRECIOUS` pattern entry (which must contain `%`) matches `target`. A bare `%` matches
-/// nothing, since gmake does not let the catch-all pattern protect any target from delete-on-error.
+/// Whether a `.PRECIOUS` pattern entry (which must contain `%`) matches `target`. A bare `%`
+/// matches nothing, since gmake does not let the catch-all pattern protect any target from
+/// delete-on-error.
 fn precious_pattern_matches(pattern: &str, target: &str) -> bool {
     let Some(pct) = pattern.find('%') else {
         return false;
@@ -2136,9 +2157,9 @@ fn parse_for(trimmed: &str) -> Option<(Vec<String>, &str)> {
 }
 
 /// Textually substitute a `.for` loop variable `var` with `value` in a body line: `${var}`,
-/// `$(var)`, and (for a single-character name) `$v` are replaced. `$$` is left as an escaped dollar,
-/// and `${var:modifier}` is left for the normal expander. Substitution is textual (not a variable)
-/// so recipe lines, which expand at run time, capture the current value.
+/// `$(var)`, and (for a single-character name) `$v` are replaced. `$$` is left as an escaped
+/// dollar, and `${var:modifier}` is left for the normal expander. Substitution is textual (not a
+/// variable) so recipe lines, which expand at run time, capture the current value.
 fn substitute_for_var(line: &str, var: &str, value: &str) -> String {
     let mut out = String::with_capacity(line.len());
     let mut chars = line.chars().peekable();
@@ -2192,8 +2213,8 @@ enum BsdMessage {
     Info,
 }
 
-/// If `trimmed` is a BSD `.error`/`.warning`/`.info` directive, return the kind and the (unexpanded)
-/// message. A directive with a colon (`.error:`) is a rule, not a directive.
+/// If `trimmed` is a BSD `.error`/`.warning`/`.info` directive, return the kind and the
+/// (unexpanded) message. A directive with a colon (`.error:`) is a rule, not a directive.
 fn parse_bsd_message(trimmed: &str) -> Option<(BsdMessage, &str)> {
     for (kw, kind) in [
         (".error", BsdMessage::Error),
@@ -2587,8 +2608,8 @@ fn parse_target_var(deps: &str) -> Option<TargetVar> {
 /// uses origin `Override` to beat a command-line variable; a plain assignment uses `File`, which
 /// overrides a global makefile variable but loses to the command line). `global` is the makefile's
 /// global scope (with command-line/environment variables), and `assigned` collects the names this
-/// target has already assigned. Both are used only for `?=`, which sets the variable unless it has a
-/// global/command-line/environment definition or an earlier same-target assignment — an inherited
+/// target has already assigned. Both are used only for `?=`, which sets the variable unless it has
+/// a global/command-line/environment definition or an earlier same-target assignment — an inherited
 /// value from an ancestor target does not count.
 fn apply_target_var_to(
     scope: &mut Vars,

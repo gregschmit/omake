@@ -1,0 +1,4 @@
+# Wrap over-long comments at 100 columns (matching the default code width). `wrap_comments` and
+# `comment_width` are nightly-only rustfmt features, which is why `rust-toolchain.toml` pins nightly.
+wrap_comments = true
+comment_width = 100

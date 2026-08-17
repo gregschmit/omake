@@ -40,27 +40,30 @@ pub struct Rule {
     /// rebuild.
     pub order_only: Vec<String>,
     pub recipe: Vec<String>,
-    /// 0-based source line index of each stored recipe entry (parallel to `recipe`), used to report
-    /// the failing recipe line on error. Kept in lockstep with `recipe`.
+    /// 0-based source line index of each stored recipe entry (parallel to `recipe`), used to
+    /// report the failing recipe line on error. Kept in lockstep with `recipe`.
     pub recipe_lines: Vec<usize>,
     /// Whether a recipe section was present, even if it holds no command lines (e.g. `target:;` or
-    /// a target followed by a blank recipe line). GNU make treats such a target as "having commands"
-    /// — it reports it up to date rather than "Nothing to be done" — so this is tracked separately
-    /// from `recipe` being non-empty.
+    /// a target followed by a blank recipe line). GNU make treats such a target as "having
+    /// commands" — it reports it up to date rather than "Nothing to be done" — so this is
+    /// tracked separately from `recipe` being non-empty.
     pub has_recipe: bool,
-    /// The `%` stem for `$*`, set for a static pattern rule (`targets: %.o: %.c`); empty otherwise.
+    /// The `%` stem for `$*`, set for a static pattern rule (`targets: %.o: %.c`); empty
+    /// otherwise.
     pub stem: String,
     /// The target pattern of an unexpanded static pattern rule. Present only transiently during
     /// parsing; each listed target is expanded into its own concrete rule (with `stem` filled in)
     /// before insertion, so every stored rule has `None` here.
     pub target_pattern: Option<String>,
-    /// Whether this rule's prerequisites need a second expansion at build time (`.SECONDEXPANSION:`).
-    /// When set, `prerequisites`/`order_only` hold the once-expanded, un-split prerequisite text.
+    /// Whether this rule's prerequisites need a second expansion at build time
+    /// (`.SECONDEXPANSION:`). When set, `prerequisites`/`order_only` hold the once-expanded,
+    /// un-split prerequisite text.
     pub second_expand: bool,
     pub context: Context,
     pub double_colon: bool,
-    /// For a grouped-target rule (`a b &: prereqs`), the co-targets built by the single shared recipe
-    /// run — so building one marks the whole group up to date. Empty for an ordinary rule.
+    /// For a grouped-target rule (`a b &: prereqs`), the co-targets built by the single shared
+    /// recipe run — so building one marks the whole group up to date. Empty for an ordinary
+    /// rule.
     pub group: Vec<String>,
 }
 
@@ -69,8 +72,8 @@ pub struct Rule {
 pub struct RecipeOutcome {
     /// Command lines echoed or run — feeds the "up to date" / "Nothing to be done" summary.
     pub commands_run: usize,
-    /// Under `-q`, whether the target was found out of date (a non-`+` recipe line was reached, or a
-    /// forced `+` line failed). Always false in normal mode.
+    /// Under `-q`, whether the target was found out of date (a non-`+` recipe line was reached, or
+    /// a forced `+` line failed). Always false in normal mode.
     pub needs_rebuild: bool,
 }
 
@@ -78,10 +81,11 @@ impl Rule {
     /// Execute this rule's recipe for a specific `target` (one rule may have several targets, and
     /// automatic variables like `$@` depend on which one is being built). `self.stem` is the `%`
     /// match for `$*`. `pattern_build` is true only for a target built by an implicit pattern rule
-    /// (it scopes `.PRECIOUS` pattern entries, which do not protect static-pattern/explicit targets).
-    /// Returns the number of command lines actually echoed or run (lines that were only command
-    /// modifiers such as `@` execute nothing and are not counted). The caller uses this to decide
-    /// whether any real work happened for the "up to date" / "Nothing to be done" summary.
+    /// (it scopes `.PRECIOUS` pattern entries, which do not protect static-pattern/explicit
+    /// targets). Returns the number of command lines actually echoed or run (lines that were
+    /// only command modifiers such as `@` execute nothing and are not counted). The caller uses
+    /// this to decide whether any real work happened for the "up to date" / "Nothing to be
+    /// done" summary.
     pub fn execute<L: Logger>(
         &self,
         makefile: &Makefile<L>,
@@ -91,8 +95,8 @@ impl Rule {
     ) -> Result<RecipeOutcome, MakeError> {
         // Build a per-target variable scope: the incoming scope (makefile variables plus any
         // target-specific ones) plus automatic variables. `private` target-specific variables are
-        // added here — they scope to this recipe only, so they are excluded from the inherited scope
-        // that reached the prerequisites.
+        // added here — they scope to this recipe only, so they are excluded from the inherited
+        // scope that reached the prerequisites.
         let mut vars = scope.clone();
         if makefile.has_private_target_vars(target) {
             makefile.apply_private_target_vars(&mut vars, target);
@@ -153,8 +157,8 @@ impl Rule {
             // modifier, which is recognized per line below.
             let expansion = expand_collect(body, &vars)
                 .map_err(|e| MakeError::new(&e, self.context.clone()))?;
-            // A `$(shell ...)` run while expanding this line records its exit code in `.SHELLSTATUS`
-            // for a later recipe line to read.
+            // A `$(shell ...)` run while expanding this line records its exit code in
+            // `.SHELLSTATUS` for a later recipe line to read.
             if let Some(code) = expansion.shell_status {
                 let _ = vars.set(".SHELLSTATUS", code.to_string().as_str(), false);
             }
@@ -209,9 +213,10 @@ impl Rule {
                     .status()
                     .map_err(|e| MakeError::new(&e.to_string(), self.context.clone()))?;
 
-                // A non-zero exit (or a signal) is a failure. When the error is ignored (`-` prefix,
-                // `.IGNORE`, or `-i`) gmake prints `<prog>: [file:N: target] <reason> (ignored)` to
-                // stderr and carries on; otherwise the build aborts.
+                // A non-zero exit (or a signal) is a failure. When the error is ignored (`-`
+                // prefix, `.IGNORE`, or `-i`) gmake prints `<prog>: [file:N:
+                // target] <reason> (ignored)` to stderr and carries on; otherwise
+                // the build aborts.
                 if !matches!(res.code(), Some(0)) {
                     let ignored = ignore_errors || ignore_target || makefile.opts.ignore_errors;
                     if ignored {
@@ -497,8 +502,9 @@ fn split_dir_file(path: &str) -> (String, String) {
 }
 
 /// Build a `.SECONDEXPANSION:` scope: a copy of `scope` with only the automatic variables that are
-/// defined during prerequisite expansion — `$@`, `$*`, and their `D`/`F` parts. `$<`/`$^`/`$?`/`$+`/
-/// `$|` are intentionally left empty (they are not known while the prerequisite list is computed).
+/// defined during prerequisite expansion — `$@`, `$*`, and their `D`/`F` parts.
+/// `$<`/`$^`/`$?`/`$+`/ `$|` are intentionally left empty (they are not known while the
+/// prerequisite list is computed).
 fn second_expansion_scope(scope: &Vars, target: &str, stem: &str) -> Vars {
     let mut vars = scope.clone();
     let _ = vars.set("@", target, false);
@@ -551,7 +557,8 @@ fn expand_deferred_prereqs(
 fn resolve_second_expansion(rule: &Rule, target: &str, scope: &Vars) -> Result<Rule, MakeError> {
     let se_scope = second_expansion_scope(scope, target, &rule.stem);
     let mut resolved = rule.clone();
-    let (normal, order) = expand_deferred_prereqs(&rule.prerequisites, &rule.order_only, &se_scope)?;
+    let (normal, order) =
+        expand_deferred_prereqs(&rule.prerequisites, &rule.order_only, &se_scope)?;
     resolved.prerequisites = normal;
     resolved.order_only = order;
     resolved.second_expand = false;
@@ -574,9 +581,9 @@ struct PatternRule {
     /// Under `.SECONDEXPANSION:`, the prerequisite patterns are stored once-expanded and deferred:
     /// at build time the stem replaces `%`, then a second expansion runs with `$@`/`$*` in scope.
     second_expand: bool,
-    /// A terminal (double-colon `%::`) rule. Only terminal match-anything (`%`) rules may build the
-    /// prerequisites of another implicit rule (GNU make excludes non-terminal ones to avoid endless
-    /// chains like `x.c.c.c…`).
+    /// A terminal (double-colon `%::`) rule. Only terminal match-anything (`%`) rules may build
+    /// the prerequisites of another implicit rule (GNU make excludes non-terminal ones to
+    /// avoid endless chains like `x.c.c.c…`).
     terminal: bool,
     context: Context,
 }
@@ -692,9 +699,10 @@ impl RuleMap {
                     };
 
                     // A later definition of the same pattern (target + prerequisites) replaces the
-                    // earlier one. A definition with no recipe cancels the pattern (BSD make style):
-                    // it is stored as a recipe-less rule that `match_pattern_rule`/`can_be_made`
-                    // skip, and it suppresses the matching built-in (via `register_builtins`).
+                    // earlier one. A definition with no recipe cancels the pattern (BSD make
+                    // style): it is stored as a recipe-less rule that
+                    // `match_pattern_rule`/`can_be_made` skip, and it
+                    // suppresses the matching built-in (via `register_builtins`).
                     match self.pattern_rules.iter_mut().find(|p| {
                         p.target_prefix == new.target_prefix
                             && p.target_suffix == new.target_suffix
@@ -746,13 +754,14 @@ impl RuleMap {
             let old_recipe = !self.rules[first].recipe.is_empty();
             let old_context = self.rules[first].context.clone();
             let existing = &mut self.rules[first];
-            // A merged rule needs a second expansion if any of its stanzas did (each stanza's stored
-            // prerequisites re-expand independently at build time).
+            // A merged rule needs a second expansion if any of its stanzas did (each stanza's
+            // stored prerequisites re-expand independently at build time).
             existing.second_expand |= rule.second_expand;
             if rule.has_recipe {
-                // This stanza carries the recipe: its prerequisites go in front, and it supplies the
-                // recipe (even an empty one, which clears the old) plus its stem/context (so a static
-                // pattern stanza overriding a plain one keeps its `$*`).
+                // This stanza carries the recipe: its prerequisites go in front, and it supplies
+                // the recipe (even an empty one, which clears the old) plus its
+                // stem/context (so a static pattern stanza overriding a plain one
+                // keeps its `$*`).
                 existing
                     .prerequisites
                     .splice(0..0, rule.prerequisites.iter().cloned());
@@ -795,8 +804,8 @@ impl RuleMap {
             goals: targets.iter().cloned().collect(),
             ..Default::default()
         };
-        // A build error (without `--keep-going`) is held until after the intermediate cleanup below,
-        // since GNU make deletes invented intermediates even when the build fails.
+        // A build error (without `--keep-going`) is held until after the intermediate cleanup
+        // below, since GNU make deletes invented intermediates even when the build fails.
         let mut build_error = None;
         for target in targets {
             // Top-level targets have no parent edge (they cannot be circular on first entry). The
@@ -808,8 +817,8 @@ impl RuleMap {
             }
 
             // If nothing ran for this goal, report it: "up to date" when the goal carries a recipe
-            // of its own, else "Nothing to be done" (matching GNU make). Question mode (`-q`) prints
-            // no summary — the exit code carries the answer.
+            // of its own, else "Nothing to be done" (matching GNU make). Question mode (`-q`)
+            // prints no summary — the exit code carries the answer.
             if !makefile.opts.question
                 && state.recipes_run == recipes_before
                 && !state.failed.contains(target)
@@ -964,8 +973,8 @@ impl RuleMap {
             scope
         };
 
-        // Whether the target already existed, so a `.INTERMEDIATE`-marked file its own explicit rule
-        // creates can be recognized as invented (and deleted afterward).
+        // Whether the target already existed, so a `.INTERMEDIATE`-marked file its own explicit
+        // rule creates can be recognized as invented (and deleted afterward).
         let existed_before = makefile.get_mtime(target).is_some();
 
         let rule_indices = match self.by_target.get(target) {
@@ -1119,15 +1128,16 @@ impl RuleMap {
                 state.needs_rebuild |= outcome.needs_rebuild;
             }
 
-            // A grouped-target rule (`a b &: …`) builds every co-target in this one run, so mark the
-            // whole group resolved — a co-target requested later is then already done.
+            // A grouped-target rule (`a b &: …`) builds every co-target in this one run, so mark
+            // the whole group resolved — a co-target requested later is then already
+            // done.
             for co in &rule.group {
                 state.done.insert(co.clone());
             }
         }
 
-        // A `.INTERMEDIATE`-marked file that its own explicit rule just created (absent before) is an
-        // invented intermediate to delete after the build.
+        // A `.INTERMEDIATE`-marked file that its own explicit rule just created (absent before) is
+        // an invented intermediate to delete after the build.
         if !existed_before
             && self.is_intermediate(makefile, target, state)
             && makefile.get_mtime(target).is_some()
@@ -1138,11 +1148,11 @@ impl RuleMap {
         Ok(())
     }
 
-    /// Whether `target` "has commands" for the up-to-date vs Nothing-to-be-done summary (used when a
-    /// goal needed no work). Like GNU make: a phony target is never up to date; otherwise the target
-    /// has commands if it has an explicit rule with a recipe section (even an empty one), a
-    /// recipe-less explicit rule that can borrow a matching pattern recipe, or (with no explicit
-    /// rule) an applicable implicit rule with a recipe, else a non-empty `.DEFAULT`.
+    /// Whether `target` "has commands" for the up-to-date vs Nothing-to-be-done summary (used when
+    /// a goal needed no work). Like GNU make: a phony target is never up to date; otherwise the
+    /// target has commands if it has an explicit rule with a recipe section (even an empty
+    /// one), a recipe-less explicit rule that can borrow a matching pattern recipe, or (with no
+    /// explicit rule) an applicable implicit rule with a recipe, else a non-empty `.DEFAULT`.
     fn has_recipe<L: Logger>(&self, makefile: &Makefile<L>, target: &str) -> bool {
         if makefile.is_phony(target) {
             return false;
@@ -1210,10 +1220,10 @@ impl RuleMap {
             if prule.recipe.is_empty() {
                 return false;
             }
-            // Skip a *non-terminal* match-anything rule (target `%`) when chaining: it matches every
-            // name and would grow prerequisites forever (`x.c.c.c…`). GNU make excludes those from
-            // building the prerequisites of another implicit rule, but a terminal (`%::`) one is
-            // allowed as a chain link.
+            // Skip a *non-terminal* match-anything rule (target `%`) when chaining: it matches
+            // every name and would grow prerequisites forever (`x.c.c.c…`). GNU make
+            // excludes those from building the prerequisites of another implicit rule,
+            // but a terminal (`%::`) one is allowed as a chain link.
             if prule.target_prefix.is_empty() && prule.target_suffix.is_empty() && !prule.terminal {
                 return false;
             }
@@ -1228,10 +1238,10 @@ impl RuleMap {
         })
     }
 
-    /// Whether `target` is an intermediate file: a non-goal, non-phony file made only by an implicit
-    /// rule (a chain link like `foo.c` in `foo.y` -> `foo.c` -> `foo.o`), or one forced intermediate
-    /// with `.INTERMEDIATE`. Intermediates are not rebuilt merely for being absent, and an invented
-    /// one is deleted after the build.
+    /// Whether `target` is an intermediate file: a non-goal, non-phony file made only by an
+    /// implicit rule (a chain link like `foo.c` in `foo.y` -> `foo.c` -> `foo.o`), or one
+    /// forced intermediate with `.INTERMEDIATE`. Intermediates are not rebuilt merely for being
+    /// absent, and an invented one is deleted after the build.
     fn is_intermediate<L: Logger>(
         &self,
         makefile: &Makefile<L>,
@@ -1253,8 +1263,8 @@ impl RuleMap {
 
     /// The mtime a (possibly missing) file effectively has for out-of-date checks. An existing file
     /// uses its real mtime; a missing file buildable by a pattern rule uses the newest mtime among
-    /// its (recursively resolved) prerequisites — so a missing intermediate does not force a rebuild
-    /// unless its own sources are newer than the target that needs it.
+    /// its (recursively resolved) prerequisites — so a missing intermediate does not force a
+    /// rebuild unless its own sources are newer than the target that needs it.
     fn effective_mtime<L: Logger>(
         &self,
         makefile: &Makefile<L>,
@@ -1297,9 +1307,9 @@ impl RuleMap {
     }
 
     /// The concrete `(normal, order_only)` prerequisites of a pattern rule for `stem`, used when
-    /// *choosing* a rule (no build scope yet). A `.SECONDEXPANSION:` rule is second-expanded against
-    /// the global variables plus `$@`/`$*`; an expansion error yields no prerequisites (so the rule
-    /// is simply not chosen).
+    /// *choosing* a rule (no build scope yet). A `.SECONDEXPANSION:` rule is second-expanded
+    /// against the global variables plus `$@`/`$*`; an expansion error yields no prerequisites
+    /// (so the rule is simply not chosen).
     fn matched_prereqs<L: Logger>(
         &self,
         makefile: &Makefile<L>,
@@ -1342,10 +1352,11 @@ impl RuleMap {
         order_only.extend(borrowed.order_only.iter().cloned());
         let target_mtime = makefile.get_mtime(target);
 
-        // Pass 1: decide whether the target is out of date, without building anything yet. A missing
-        // prerequisite that is an intermediate file is judged by its effective mtime (its own
-        // sources) rather than treated as infinitely new, so a missing intermediate does not force a
-        // rebuild when the final target is already up to date.
+        // Pass 1: decide whether the target is out of date, without building anything yet. A
+        // missing prerequisite that is an intermediate file is judged by its effective
+        // mtime (its own sources) rather than treated as infinitely new, so a missing
+        // intermediate does not force a rebuild when the final target is already up to
+        // date.
         let mut should_execute = makefile.opts.always_make;
         for prereq in &prereqs {
             let prereq_mtime = if makefile.get_mtime(prereq).is_some() {
@@ -1406,7 +1417,8 @@ impl RuleMap {
             state.needs_rebuild |= outcome.needs_rebuild;
 
             // A file just built by an implicit rule that was absent beforehand and is only a chain
-            // link (not a goal) is an invented intermediate; record it for deletion after the build.
+            // link (not a goal) is an invented intermediate; record it for deletion after the
+            // build.
             if target_mtime.is_none() && self.is_intermediate(makefile, target, state) {
                 state.invented.push(target.to_string());
             }

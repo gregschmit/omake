@@ -38,15 +38,16 @@ pub struct Opts {
     /// Touch targets (mark them up to date) instead of running their recipes (`-t`).
     pub touch: bool,
 
-    /// Directories searched for `include`d makefiles (`-I`), in order, after the current directory.
+    /// Directories searched for `include`d makefiles (`-I`), in order, after the current
+    /// directory.
     pub include_dirs: Vec<String>,
 
     /// Question mode (`-q`): run no recipes; exit 0 if all goals are up to date, 1 if any needs
     /// rebuilding, 2 on error.
     pub question: bool,
 
-    /// Requested parallel jobs (`-j`): `None` = serial, `Some(0)` = unlimited, `Some(n)` = n. omake
-    /// currently builds serially regardless; kept for the `MAKEFLAGS` round-trip.
+    /// Requested parallel jobs (`-j`): `None` = serial, `Some(0)` = unlimited, `Some(n)` = n.
+    /// omake currently builds serially regardless; kept for the `MAKEFLAGS` round-trip.
     pub jobs: Option<usize>,
 
     /// Output-sync mode (`-O`): the raw mode word (`none`, `target`, `line`, `recurse`). omake is

@@ -69,8 +69,8 @@ Progress (reproduce with `tests/conformance/run_gmake` / `run_bmake`, which alwa
 | GNU make | 4.4.1    | **717 / 1337**   |
 | BSD make | 20230711 | **78 / 396**     |
 
-These are `--compat={gnu,bsd}` scores because that is the only mode the runners use, and the only one
-worth tracking: the suites compare output byte-for-byte, so a plain `omake` (with its *own*
+These are `--compat={gnu,bsd}` scores because that is the only mode the runners use, and the only
+one worth tracking: the suites compare output byte-for-byte, so a plain `omake` (with its *own*
 diagnostic format) scores far lower — but almost entirely from format mismatch, not from mis-running
 the makefile. `--compat` re-dresses the output so the score measures real behavioral/feature gaps
 rather than that noise. The numbers should only go up; the remaining GNU gaps are mostly deeper

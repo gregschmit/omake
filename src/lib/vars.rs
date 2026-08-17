@@ -174,8 +174,8 @@ impl Vars {
 
     /// Like [`new`](Self::new), but omits make's built-in tool variables (`CC`, `CFLAGS`,
     /// `COMPILE.c`, ...) for `-R`/`--no-builtin-variables`. The operational specials
-    /// (`.RECIPEPREFIX`, `.SHELLFLAGS`, `SHELL`, and the suffix list) are always defined so make can
-    /// still run recipes; env/makefile/command-line definitions are unaffected.
+    /// (`.RECIPEPREFIX`, `.SHELLFLAGS`, `SHELL`, and the suffix list) are always defined so make
+    /// can still run recipes; env/makefile/command-line definitions are unaffected.
     pub fn new_without_builtins<const N: usize>(init: [(&str, &str); N]) -> Self {
         Self::new_inner(init, false)
     }
@@ -193,9 +193,10 @@ impl Vars {
             env_override: false,
         };
 
-        // Set default vars. The dotted specials (`.RECIPEPREFIX`, `.SHELLFLAGS`) are always defined;
-        // the tool vars (`CC`, `AR`, ...) are skipped under `-R`. The `default_vars` cache is always
-        // populated so blank-means-default keys (`.RECIPEPREFIX`) can reset.
+        // Set default vars. The dotted specials (`.RECIPEPREFIX`, `.SHELLFLAGS`) are always
+        // defined; the tool vars (`CC`, `AR`, ...) are skipped under `-R`. The
+        // `default_vars` cache is always populated so blank-means-default keys
+        // (`.RECIPEPREFIX`) can reset.
         for (k, v) in DEFAULT_VARS {
             if builtins || k.starts_with('.') {
                 vars.set_origin(k, v, false, Origin::Default).unwrap();
@@ -334,8 +335,8 @@ impl Vars {
         Ok(())
     }
 
-    /// Mark a variable exported into recipe child environments (a target-specific `export VAR`). The
-    /// variable is expected to already exist; if not, this is a no-op.
+    /// Mark a variable exported into recipe child environments (a target-specific `export VAR`).
+    /// The variable is expected to already exist; if not, this is a no-op.
     pub fn set_exported(&mut self, k: impl AsRef<str>) {
         if let Some(var) = self.map.get_mut(k.as_ref()) {
             var.exported = true;
@@ -347,8 +348,9 @@ impl Vars {
     /// Build the variable set from the OS environment. `builtin_vars` is false under `-R`, which
     /// omits make's built-in variables so they do not shadow (or appear as) real definitions.
     /// `env_override` is true under `-e`, which ranks environment variables above makefile
-    /// assignments: a later unconditional makefile assignment to an environment variable is rejected
-    /// and its origin becomes `EnvironmentOverride` (see [`set_origin`](Self::set_origin)).
+    /// assignments: a later unconditional makefile assignment to an environment variable is
+    /// rejected and its origin becomes `EnvironmentOverride` (see
+    /// [`set_origin`](Self::set_origin)).
     pub fn from_env(env: Env, builtin_vars: bool, env_override: bool) -> Self {
         let mut vars = if builtin_vars {
             Self::new([])

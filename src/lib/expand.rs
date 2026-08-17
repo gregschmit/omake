@@ -26,8 +26,8 @@ struct Frame {
     /// Which character opened this stack frame (parenthesis or brace)?
     pub opening_delimiter: char,
     /// Byte offset into the original input where this expression's content starts (just after the
-    /// opening delimiter). Used to recover the *raw*, unexpanded text — needed so a function splits
-    /// its arguments before they are expanded (e.g. `$(subst $(comma),X,a,b)`).
+    /// opening delimiter). Used to recover the *raw*, unexpanded text — needed so a function
+    /// splits its arguments before they are expanded (e.g. `$(subst $(comma),X,a,b)`).
     pub raw_start: usize,
     /// Nesting depth of matching literal `(`/`{` inside this expression, so a later literal
     /// close is not mistaken for the end of the expression (`$(subst (a,b),Z,text)`). In
@@ -48,10 +48,10 @@ struct Frame {
 /// characters into a buffer until we hit either:
 ///  1. A simple variable expansion (e.g., `$X`), where we just evaluate it against `vars` inline
 ///     since there could not possibly be any nesting.
-///  2. A long variable expansion (e.g., `$(` or `${`), where there could be nested
-///     expressions, where we push the current buffer onto a stack, and then continue parsing. When
-///     we hit a matching closing delimiter (tracked on the stack frame), we evaluate the buffer,
-///     pop the previous buffer off the stack, join it with the evaluated value, and keep going.
+///  2. A long variable expansion (e.g., `$(` or `${`), where there could be nested expressions,
+///     where we push the current buffer onto a stack, and then continue parsing. When we hit a
+///     matching closing delimiter (tracked on the stack frame), we evaluate the buffer, pop the
+///     previous buffer off the stack, join it with the evaluated value, and keep going.
 pub fn expand(s: &str, vars: &Vars) -> Result<String, String> {
     Ok(expand_collect(s, vars)?.result)
 }
@@ -417,8 +417,8 @@ fn func_shell(raw_args: &str, vars: &Vars, ctx: &mut Expander) -> Result<String,
         .output()
         .map_err(|e| e.to_string())?;
 
-    // Record the exit code for `.SHELLSTATUS` (the shell reports 128+signal for a signalled command,
-    // so `code()` is normally `Some`).
+    // Record the exit code for `.SHELLSTATUS` (the shell reports 128+signal for a signalled
+    // command, so `code()` is normally `Some`).
     ctx.shell_status = Some(output.status.code().unwrap_or(-1));
 
     let mut result = String::from_utf8_lossy(&output.stdout).into_owned();
@@ -550,9 +550,9 @@ fn func_call(
     expand_inner(&body, &scope, ctx)
 }
 
-/// `$(let VAR...,LIST,TEXT)`: split LIST into words and bind them to the names in VAR (the last name
-/// absorbs any remaining words; a name past the end of the list is empty), then expand TEXT. The
-/// binding is local (a cloned scope), like `$(foreach)`.
+/// `$(let VAR...,LIST,TEXT)`: split LIST into words and bind them to the names in VAR (the last
+/// name absorbs any remaining words; a name past the end of the list is empty), then expand TEXT.
+/// The binding is local (a cloned scope), like `$(foreach)`.
 fn func_let(raw_args: &str, open: char, vars: &Vars, ctx: &mut Expander) -> Result<String, String> {
     let parts = split_function_args(raw_args, 3, open);
     if parts.len() < 3 {
@@ -579,9 +579,15 @@ fn func_let(raw_args: &str, open: char, vars: &Vars, ctx: &mut Expander) -> Resu
     expand_inner(parts[2], &scope, ctx)
 }
 
-/// `$(intcmp LHS,RHS,LT,EQ,GT)`: compare LHS and RHS as integers and expand the matching part. `LT`,
-/// `EQ`, and `GT` are each optional (a missing one is empty); a missing `GT` falls back to `EQ`.
-fn func_intcmp(raw_args: &str, open: char, vars: &Vars, ctx: &mut Expander) -> Result<String, String> {
+/// `$(intcmp LHS,RHS,LT,EQ,GT)`: compare LHS and RHS as integers and expand the matching part.
+/// `LT`, `EQ`, and `GT` are each optional (a missing one is empty); a missing `GT` falls back to
+/// `EQ`.
+fn func_intcmp(
+    raw_args: &str,
+    open: char,
+    vars: &Vars,
+    ctx: &mut Expander,
+) -> Result<String, String> {
     let parts = split_function_args(raw_args, 5, open);
     if parts.len() < 2 {
         return Err(format!(
@@ -591,9 +597,12 @@ fn func_intcmp(raw_args: &str, open: char, vars: &Vars, ctx: &mut Expander) -> R
     }
     let mut parse = |part: &str, which: &str| -> Result<i64, String> {
         let text = expand_inner(part, vars, ctx)?;
-        text.trim()
-            .parse::<i64>()
-            .map_err(|_| format!("non-numeric {which} argument to 'intcmp' function: '{}'", text.trim()))
+        text.trim().parse::<i64>().map_err(|_| {
+            format!(
+                "non-numeric {which} argument to 'intcmp' function: '{}'",
+                text.trim()
+            )
+        })
     };
     let lhs = parse(parts[0], "first")?;
     let rhs = parse(parts[1], "second")?;
@@ -870,14 +879,18 @@ enum Modifier {
     /// `:L` — the value becomes the variable's name.
     Name,
     /// `:O` / `:Or` — sort the words lexicographically (ascending / descending).
-    Sort { reverse: bool },
+    Sort {
+        reverse: bool,
+    },
     /// `:u` — merge adjacent duplicate words (like `uniq`, not a full deduplication).
     Unique,
     /// `:[...]` — word selection: `#` (count), `*` (join to one word), `@` (split to words),
     /// `N`/`-N` (a single word, 1-indexed from the start/end), or `N..M` (an inclusive range).
     Words(WordSel),
     /// `:tW` (treat the value as a single word) / `:tw` (as many words) for following modifiers.
-    TreatWords { single: bool },
+    TreatWords {
+        single: bool,
+    },
 }
 
 /// A `:[...]` word-selection request.
@@ -891,8 +904,8 @@ enum WordSel {
 }
 
 /// Determine the variable name and the action (GNU substitution reference or BSD modifiers) from a
-/// `${...}` reference's content. A `=` in the part after the first `:` marks a GNU reference; a valid
-/// BSD modifier chain (with no `=`) is BSD; anything else leaves the `:` as part of the name.
+/// `${...}` reference's content. A `=` in the part after the first `:` marks a GNU reference; a
+/// valid BSD modifier chain (with no `=`) is BSD; anything else leaves the `:` as part of the name.
 fn parse_var_action(content: &str) -> (String, VarAction) {
     match content.split_once(':') {
         Some((name, m)) if m.contains('=') => {
@@ -999,7 +1012,8 @@ fn take_subst(s: &str) -> Option<(Modifier, &str)> {
     ))
 }
 
-/// Split `s` at the first `sep`, returning the part before and after (or `None` if `sep` is absent).
+/// Split `s` at the first `sep`, returning the part before and after (or `None` if `sep` is
+/// absent).
 fn split_once_char(s: &str, sep: char) -> Option<(&str, &str)> {
     let i = s.find(sep)?;
     Some((&s[..i], &s[i + sep.len_utf8()..]))
@@ -1059,11 +1073,13 @@ fn apply_word_sel(ws: &[&str], sel: WordSel) -> String {
     }
 }
 
-/// Apply a chain of BSD modifiers to `value` (`is_set` is whether the variable is defined, for `:U`).
+/// Apply a chain of BSD modifiers to `value` (`is_set` is whether the variable is defined, for
+/// `:U`).
 fn apply_bsd_modifiers(value: &str, mods: &[Modifier], is_set: bool, name: &str) -> String {
     let mut val = value.to_string();
     let mut set = is_set;
-    // `:tW`/`:[*]` make following modifiers treat the value as a single word (`:[@]`/`:tw` undo it).
+    // `:tW`/`:[*]` make following modifiers treat the value as a single word (`:[@]`/`:tw` undo
+    // it).
     let mut single_word = false;
     // Empty results drop out of the word list, matching bmake.
     let map_words = |val: &str, f: &dyn Fn(&str) -> String| {
@@ -1213,8 +1229,8 @@ fn path_tail(word: &str) -> &str {
     }
 }
 
-/// bmake's `:R` (root) and `:E` (extension): unlike gmake's `$(basename)`/`$(suffix)`, they split at
-/// the last `.` anywhere in the word, ignoring any `/` (`a.b/c` -> root `a`, ext `b/c`).
+/// bmake's `:R` (root) and `:E` (extension): unlike gmake's `$(basename)`/`$(suffix)`, they split
+/// at the last `.` anywhere in the word, ignoring any `/` (`a.b/c` -> root `a`, ext `b/c`).
 fn bsd_root(word: &str) -> &str {
     match word.rfind('.') {
         Some(i) => &word[..i],
@@ -1255,7 +1271,8 @@ fn parse_pattern(pat: &str) -> Pattern {
         match c {
             '\\' => backslashes += 1,
             '%' => {
-                // A run of N backslashes becomes N/2 literal backslashes; an odd one quotes the `%`.
+                // A run of N backslashes becomes N/2 literal backslashes; an odd one quotes the
+                // `%`.
                 for _ in 0..backslashes / 2 {
                     text.push('\\');
                 }
@@ -1286,9 +1303,9 @@ fn parse_pattern(pat: &str) -> Pattern {
     }
 }
 
-/// Substitute one word for a substitution reference. A wildcard `from` has its stem substituted into
-/// `to`'s `%`; a literal `from` is a suffix replaced by `to`. A word that does not match is returned
-/// unchanged.
+/// Substitute one word for a substitution reference. A wildcard `from` has its stem substituted
+/// into `to`'s `%`; a literal `from` is a suffix replaced by `to`. A word that does not match is
+/// returned unchanged.
 fn substitute_word(word: &str, from: &str, to: &str) -> String {
     match parse_pattern(from) {
         Pattern::Wildcard { prefix, suffix } => match stem_of(&prefix, &suffix, word) {
@@ -1314,8 +1331,8 @@ fn stem_of<'a>(prefix: &str, suffix: &str, word: &'a str) -> Option<&'a str> {
     }
 }
 
-/// Build a replacement: substitute `stem` into the replacement's wildcard `%` (escapes resolved), or
-/// return the replacement literally when it has no wildcard.
+/// Build a replacement: substitute `stem` into the replacement's wildcard `%` (escapes resolved),
+/// or return the replacement literally when it has no wildcard.
 fn subst_replacement(repl: &str, stem: &str) -> String {
     match parse_pattern(repl) {
         Pattern::Wildcard { prefix, suffix } => format!("{prefix}{stem}{suffix}"),

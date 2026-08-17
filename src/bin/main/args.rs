@@ -59,7 +59,8 @@ pub struct Args {
     #[arg(long)]
     pub trace: bool,
 
-    /// Perform a topological sort variant on goals/prereqs (accepted; omake builds in listed order).
+    /// Perform a topological sort variant on goals/prereqs (accepted; omake builds in listed
+    /// order).
     #[arg(long, value_name = "MODE", num_args = 0..=1, default_missing_value = "random")]
     pub shuffle: Option<String>,
 

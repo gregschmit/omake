@@ -187,7 +187,11 @@ fn apply_option(opts: &mut Opts, tok: &str) {
             opts.load_average = Some(l.to_string());
         }
     } else if let Some(o) = tok.strip_prefix("-O") {
-        opts.output_sync = Some(if o.is_empty() { "target".to_string() } else { o.to_string() });
+        opts.output_sync = Some(if o.is_empty() {
+            "target".to_string()
+        } else {
+            o.to_string()
+        });
     } else if let Some(d) = tok.strip_prefix("--debug=") {
         opts.debug = Some(d.to_string());
     } else if tok == "--trace" {

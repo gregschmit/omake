@@ -157,8 +157,8 @@ fn makeflags_print_directory(makeflags: &str) -> (bool, bool) {
     (on, off)
 }
 
-/// Extract the `-Idir` include-directory tokens a parent make passed in `MAKEFLAGS` (the part before
-/// the ` -- ` variable separator), in order.
+/// Extract the `-Idir` include-directory tokens a parent make passed in `MAKEFLAGS` (the part
+/// before the ` -- ` variable separator), in order.
 fn makeflags_include_dirs(makeflags: &str) -> Vec<String> {
     let head = makeflags.split(" -- ").next().unwrap_or(makeflags);
     head.split_whitespace()
@@ -166,8 +166,8 @@ fn makeflags_include_dirs(makeflags: &str) -> Vec<String> {
         .collect()
 }
 
-/// Recover the `-j` job count from a parent make's `MAKEFLAGS` (`-jN`, or `-j` alone for unlimited).
-/// A `--jobserver-auth=` token (gmake's job pipe) is ignored — omake has no jobserver.
+/// Recover the `-j` job count from a parent make's `MAKEFLAGS` (`-jN`, or `-j` alone for
+/// unlimited). A `--jobserver-auth=` token (gmake's job pipe) is ignored — omake has no jobserver.
 fn makeflags_jobs(makeflags: &str) -> Option<usize> {
     let head = makeflags.split(" -- ").next().unwrap_or(makeflags);
     head.split_whitespace()
@@ -237,7 +237,11 @@ fn makeflags_assignments(makeflags: &str) -> Vec<String> {
 /// Fold a makefile's assignment to `MAKEFLAGS` back into the options and re-encode the variable in
 /// canonical form. If the makefile never touched `MAKEFLAGS`, its value still equals the `startup`
 /// encoding, so this returns immediately.
-fn reconcile_makeflags<L: Logger>(makefile: &mut Makefile<L>, startup: &str, assignments: &[String]) {
+fn reconcile_makeflags<L: Logger>(
+    makefile: &mut Makefile<L>,
+    startup: &str,
+    assignments: &[String],
+) {
     let current = makefile.vars.get("MAKEFLAGS").value.clone();
     if current == startup {
         return;
@@ -299,17 +303,19 @@ fn main() {
     // path stays valid when a recipe recurses from another directory.
     let make_path = resolve_make_path();
 
-    // GNU make prints "Entering/Leaving directory" around a `-C` chdir, unless `--no-print-directory`
-    // (the messages are on by default when a directory is given, and `-w` forces them on). The
-    // `-w`/`--no-print-directory` choice is inherited from a parent make via `MAKEFLAGS`, so a
-    // top-level `--no-print-directory` reaches `$(MAKE)`-invoked children too.
+    // GNU make prints "Entering/Leaving directory" around a `-C` chdir, unless
+    // `--no-print-directory` (the messages are on by default when a directory is given, and
+    // `-w` forces them on). The `-w`/`--no-print-directory` choice is inherited from a parent
+    // make via `MAKEFLAGS`, so a top-level `--no-print-directory` reaches `$(MAKE)`-invoked
+    // children too.
     let parent_makeflags = env::var("MAKEFLAGS").unwrap_or_default();
     let (parent_w, parent_no_w) = makeflags_print_directory(&parent_makeflags);
     let force_print = args.print_directory || parent_w;
     let explicit_no_print = args.no_print_directory || parent_no_w;
     // `-s` (from the command line or inherited via `MAKEFLAGS`) also turns the directory messages
     // off, unless `-w`/`--print-directory` was given explicitly (which wins over `-s`). This is not
-    // encoded as `--no-print-directory` in `MAKEFLAGS`: a child re-derives it from the inherited `s`.
+    // encoded as `--no-print-directory` in `MAKEFLAGS`: a child re-derives it from the inherited
+    // `s`.
     let silent = args.silent || makeflags_has_short_flag(&parent_makeflags, 's');
     let force_no_print = explicit_no_print || (silent && !force_print);
     // bmake never prints the "Entering/Leaving directory" banner (even with `-C`), so suppress it
@@ -321,9 +327,8 @@ fn main() {
         None => env::var("OMAKE_COMPAT").ok().as_deref() == Some("bsd"),
     };
     // The messages are on for `-C`, `-w`, or a sub-make (`MAKELEVEL > 0`), unless turned off above.
-    let print_directory = !bsd_compat
-        && !force_no_print
-        && (force_print || !args.directory.is_empty() || level > 0);
+    let print_directory =
+        !bsd_compat && !force_no_print && (force_print || !args.directory.is_empty() || level > 0);
 
     // Change to another directory, if specified by the arguments.
     let original_dir = if args.directory.is_empty() {
@@ -355,7 +360,8 @@ fn main() {
     }
 
     // Determine the makefile(s) to read: each `-f` in order, else the first found makefile. With
-    // `--eval` supplying makefile text, a missing makefile is not an error (gmake behaves the same).
+    // `--eval` supplying makefile text, a missing makefile is not an error (gmake behaves the
+    // same).
     let makefile_fns: Vec<PathBuf> = if !args.file.is_empty() {
         args.file.iter().map(PathBuf::from).collect()
     } else {
@@ -419,7 +425,11 @@ fn main() {
     }
     // Export it so `$(MAKE)`-invoked children emulate the same make.
     if opts.compat != Compat::Native {
-        let v = if opts.compat == Compat::Gnu { "gnu" } else { "bsd" };
+        let v = if opts.compat == Compat::Gnu {
+            "gnu"
+        } else {
+            "bsd"
+        };
         // SAFETY: single-threaded startup, before any recipe runs.
         unsafe { env::set_var("OMAKE_COMPAT", v) };
     }
@@ -437,8 +447,9 @@ fn main() {
         .into_iter()
         .chain(argv_assignments)
         .collect();
-    // For *encoding* `MAKEFLAGS`, GNU make emits the assignments in reverse (a quirk of its internal
-    // prepend-to-list). This flips the order at each `$(MAKE)` level, which gmake reproduces.
+    // For *encoding* `MAKEFLAGS`, GNU make emits the assignments in reverse (a quirk of its
+    // internal prepend-to-list). This flips the order at each `$(MAKE)` level, which gmake
+    // reproduces.
     let makeflags_assignments_enc: Vec<String> = cmdline_tokens.iter().rev().cloned().collect();
 
     // Encode MAKEFLAGS in GNU make's canonical order from the effective options, with the
@@ -473,7 +484,12 @@ fn main() {
         if let Ok(cwd) = env::current_dir() {
             let _ = vars.set_origin("CURDIR", &cwd.to_string_lossy(), false, Origin::File);
         }
-        let _ = vars.set_origin("MAKELEVEL", level.to_string().as_str(), false, Origin::Environment);
+        let _ = vars.set_origin(
+            "MAKELEVEL",
+            level.to_string().as_str(),
+            false,
+            Origin::Environment,
+        );
         let _ = vars.set_origin("MAKECMDGOALS", &makecmdgoals, false, Origin::File);
         // `MAKEOVERRIDES` holds the command-line (and inherited) variable assignments, in the same
         // reversed order gmake emits them in `MAKEFLAGS`.
@@ -483,7 +499,8 @@ fn main() {
             false,
             Origin::Environment,
         );
-        // `MAKE_RESTARTS` counts how many times makefile remaking re-parsed (unset on the first pass).
+        // `MAKE_RESTARTS` counts how many times makefile remaking re-parsed (unset on the first
+        // pass).
         if restarts > 0 {
             let _ = vars.set_origin(
                 "MAKE_RESTARTS",
@@ -505,16 +522,22 @@ fn main() {
             }
         }
 
-        let mut makefile =
-            Makefile::new(makefile_fns.clone(), opts.clone(), vars, logger.clone(), &args.eval)?;
-        // GNU make treats `MAKEFLAGS` as a live switch set: a makefile that assigns to it turns those
-        // switches on and the variable is reconstructed canonically. A no-op in the common case.
+        let mut makefile = Makefile::new(
+            makefile_fns.clone(),
+            opts.clone(),
+            vars,
+            logger.clone(),
+            &args.eval,
+        )?;
+        // GNU make treats `MAKEFLAGS` as a live switch set: a makefile that assigns to it turns
+        // those switches on and the variable is reconstructed canonically. A no-op in the
+        // common case.
         reconcile_makeflags(&mut makefile, &makeflags, &makeflags_assignments_enc);
         Ok(makefile)
     };
 
-    // Parse, then remake the makefiles themselves; if any was rebuilt, re-parse (a "restart") so the
-    // new contents take effect. The cap guards against a makefile rule that never settles.
+    // Parse, then remake the makefiles themselves; if any was rebuilt, re-parse (a "restart") so
+    // the new contents take effect. The cap guards against a makefile rule that never settles.
     const RESTART_LIMIT: u32 = 100;
     let mut restarts = 0u32;
     let makefile = loop {
