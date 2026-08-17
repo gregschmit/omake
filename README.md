@@ -53,5 +53,21 @@ against that directory's makefile given the arguments provided and checks STDOUT
 expected STDOUT/STDERR provided to the macro, and also checks the directory against the expected
 files and content provided to the macro.
 
-At some point, I should probably also copy over the GNU make test suite and try to get this project
-to pass the entire test suite.
+### Conformance suites
+
+Beyond the hand-written system tests, `tests/conformance/` runs omake against the **real upstream
+test suites** of GNU make and NetBSD bmake (vendored on demand at a pinned commit; see
+`tests/conformance/README.md`). Both suites do exact golden-file comparison, so `--compat={gnu,bsd}`
+switches omake's diagnostic output to match that make, letting the suites measure real behavioral
+gaps rather than output-format noise.
+
+Progress (reproduce with `tests/conformance/run-gnu.sh` / `run-bmake.sh`):
+
+| Suite | Version | omake (native) | omake `--compat` |
+|-------|---------|----------------|------------------|
+| GNU make | 4.4.1 | 498 / 1337 | **533 / 1337** |
+| bmake | 20230711 | 2 / 396 | 2 / 396 |
+
+These numbers should only go up. The bulk of the remaining GNU gaps are unsupported command-line
+flags (omake rejects flags gmake accepts) and a few more diagnostic formats; bmake's suite pins
+bmake's exact behavior and output, most of which omake does not replicate.
