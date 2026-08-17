@@ -58,7 +58,7 @@ vendored tree.
 
 The tracked pass-rate table lives in the top-level `README.md`. In short (Linux, pinned versions):
 
-- **GNU make suite:** 498/1337 native → **695/1337** with `--compat=gnu`, and climbing as output
+- **GNU make suite:** 498/1337 native → **711/1337** with `--compat=gnu`, and climbing as output
   emulation and feature coverage improve. The remaining gaps are mostly deeper features
   (`.SECONDEXPANSION` for pattern rules, chained implicit-rule search, makefile remaking) plus a few
   more diagnostic formats.
