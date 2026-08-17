@@ -624,10 +624,11 @@ impl<L: Logger> Makefile<L> {
                 }
             };
 
-            // Under second expansion (plain explicit rules only for now), defer word-splitting and
-            // globbing to build time — the second pass may change word boundaries (`$$(LIST)`). The
-            // once-expanded prerequisite line is stored verbatim and re-expanded then.
-            let second_expand = self.second_expansion && target_pattern.is_none();
+            // Under second expansion, defer word-splitting and globbing to build time — the second
+            // pass may change word boundaries (`$$(LIST)`), and for a pattern or static-pattern rule
+            // the stem replaces `%` first. The once-expanded prerequisite line is stored verbatim
+            // and re-expanded then (see `resolve_second_expansion` / `build_from_pattern`).
+            let second_expand = self.second_expansion;
             let deferred = |s: &str| {
                 if s.trim().is_empty() {
                     vec![]
@@ -1500,17 +1501,22 @@ impl<L: Logger> Makefile<L> {
             // A non-matching target still gets the recipe, but with no prerequisites; its stem
             // ($*) is the whole target name, as in GNU make.
             let (prerequisites, order_only, stem) = match pattern_stem(prefix, suffix, target) {
-                Some(stem) => (
-                    rule.prerequisites
-                        .iter()
-                        .map(|p| p.replacen('%', stem, 1))
-                        .collect(),
-                    rule.order_only
-                        .iter()
-                        .map(|p| p.replacen('%', stem, 1))
-                        .collect(),
-                    stem.to_string(),
-                ),
+                Some(stem) => {
+                    // A non-SE prerequisite is a single word with one `%` (replace it); an SE
+                    // prerequisite is a whole deferred line that may hold several `%`, each the stem.
+                    let sub = |p: &str| -> String {
+                        if rule.second_expand {
+                            p.replace('%', stem)
+                        } else {
+                            p.replacen('%', stem, 1)
+                        }
+                    };
+                    (
+                        rule.prerequisites.iter().map(|p| sub(p)).collect(),
+                        rule.order_only.iter().map(|p| sub(p)).collect(),
+                        stem.to_string(),
+                    )
+                }
                 None => {
                     self.logger.warn(
                         &format!("target '{target}' doesn't match the target pattern"),

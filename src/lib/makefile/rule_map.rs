@@ -548,6 +548,9 @@ struct PatternRule {
     recipe: Vec<String>,
     /// Source line index of each recipe entry (parallel to `recipe`), for failing-recipe location.
     recipe_lines: Vec<usize>,
+    /// Under `.SECONDEXPANSION:`, the prerequisite patterns are stored once-expanded and deferred:
+    /// at build time the stem replaces `%`, then a second expansion runs with `$@`/`$*` in scope.
+    second_expand: bool,
     context: Context,
 }
 
@@ -635,6 +638,7 @@ impl RuleMap {
                     order_only_patterns: vec![],
                     recipe: vec![recipe.to_string()],
                     recipe_lines: vec![0],
+                    second_expand: false,
                     context: Context::new(),
                 });
             }
@@ -654,6 +658,7 @@ impl RuleMap {
                         order_only_patterns: rule.order_only.clone(),
                         recipe: rule.recipe.clone(),
                         recipe_lines: rule.recipe_lines.clone(),
+                        second_expand: rule.second_expand,
                         context: rule.context.clone(),
                     };
 
@@ -1106,8 +1111,7 @@ impl RuleMap {
                 continue;
             }
             if let Some(stem) = prule.match_stem(target) {
-                let prereqs = prule.prerequisites(stem);
-                let order_only = prule.order_only(stem);
+                let (prereqs, order_only) = self.matched_prereqs(makefile, prule, stem, target);
                 if prereqs
                     .iter()
                     .chain(&order_only)
@@ -1146,8 +1150,9 @@ impl RuleMap {
                 return false;
             }
             match prule.match_stem(name) {
-                Some(stem) => prule
-                    .prerequisites(stem)
+                Some(stem) => self
+                    .matched_prereqs(makefile, prule, stem, name)
+                    .0
                     .iter()
                     .all(|p| self.can_be_made(makefile, p, depth - 1)),
                 None => false,
@@ -1195,11 +1200,48 @@ impl RuleMap {
             return None;
         }
         let (idx, stem) = self.match_pattern_rule(makefile, target)?;
-        self.pattern_rules[idx]
-            .prerequisites(&stem)
+        self.matched_prereqs(makefile, &self.pattern_rules[idx], &stem, target)
+            .0
             .iter()
             .filter_map(|p| self.effective_mtime(makefile, p, depth - 1))
             .max()
+    }
+
+    /// Second-expand a `.SECONDEXPANSION:` pattern rule's deferred prerequisites: replace `%` with
+    /// the stem in each stored line, then run a second expansion with `$@`/`$*` in `scope`, then
+    /// word-split (see `expand_deferred_prereqs`). Returns `(normal, order_only)`.
+    fn second_expand_prereqs(
+        &self,
+        prule: &PatternRule,
+        stem: &str,
+        target: &str,
+        scope: &Vars,
+    ) -> Result<(Vec<String>, Vec<String>), MakeError> {
+        let se_scope = second_expansion_scope(scope, target, stem);
+        let expand = |patterns: &[String]| -> Result<Vec<String>, MakeError> {
+            let substituted: Vec<String> = patterns.iter().map(|p| p.replace('%', stem)).collect();
+            expand_deferred_prereqs(&substituted, &se_scope)
+        };
+        Ok((expand(&prule.prereq_patterns)?, expand(&prule.order_only_patterns)?))
+    }
+
+    /// The concrete `(normal, order_only)` prerequisites of a pattern rule for `stem`, used when
+    /// *choosing* a rule (no build scope yet). A `.SECONDEXPANSION:` rule is second-expanded against
+    /// the global variables plus `$@`/`$*`; an expansion error yields no prerequisites (so the rule
+    /// is simply not chosen).
+    fn matched_prereqs<L: Logger>(
+        &self,
+        makefile: &Makefile<L>,
+        prule: &PatternRule,
+        stem: &str,
+        target: &str,
+    ) -> (Vec<String>, Vec<String>) {
+        if prule.second_expand {
+            self.second_expand_prereqs(prule, stem, target, &makefile.vars)
+                .unwrap_or_default()
+        } else {
+            (prule.prerequisites(stem), prule.order_only(stem))
+        }
     }
 
     /// Build `target` using the pattern rule at `idx` with the given `stem`. `borrowed` holds
@@ -1218,9 +1260,14 @@ impl RuleMap {
         state: &mut ExecState,
     ) -> Result<(), MakeError> {
         let prule = &self.pattern_rules[idx];
-        let mut prereqs = prule.prerequisites(stem);
+        let (mut prereqs, mut order_only) = if prule.second_expand {
+            // `.SECONDEXPANSION:`: expand the deferred patterns with the real build scope (so a
+            // target-specific variable is visible), rather than `matched_prereqs`' global scope.
+            self.second_expand_prereqs(prule, stem, target, scope)?
+        } else {
+            (prule.prerequisites(stem), prule.order_only(stem))
+        };
         prereqs.extend(borrowed.normal.iter().cloned());
-        let mut order_only = prule.order_only(stem);
         order_only.extend(borrowed.order_only.iter().cloned());
         let target_mtime = makefile.get_mtime(target);
 
