@@ -345,6 +345,8 @@ fn is_control_function(name: &str) -> bool {
             | "or"
             | "and"
             | "foreach"
+            | "let"
+            | "intcmp"
             | "call"
             | "value"
             | "flavor"
@@ -373,6 +375,8 @@ fn call_control(
         "or" => func_or(raw_args, open, vars, ctx)?,
         "and" => func_and(raw_args, open, vars, ctx)?,
         "foreach" => func_foreach(raw_args, open, vars, ctx)?,
+        "let" => func_let(raw_args, open, vars, ctx)?,
+        "intcmp" => func_intcmp(raw_args, open, vars, ctx)?,
         "call" => func_call(raw_args, open, vars, ctx)?,
         "value" => func_value(raw_args, vars, ctx)?,
         "flavor" => func_flavor(raw_args, vars, ctx)?,
@@ -544,6 +548,65 @@ fn func_call(
         scope.set((index + 1).to_string(), value, false)?;
     }
     expand_inner(&body, &scope, ctx)
+}
+
+/// `$(let VAR...,LIST,TEXT)`: split LIST into words and bind them to the names in VAR (the last name
+/// absorbs any remaining words; a name past the end of the list is empty), then expand TEXT. The
+/// binding is local (a cloned scope), like `$(foreach)`.
+fn func_let(raw_args: &str, open: char, vars: &Vars, ctx: &mut Expander) -> Result<String, String> {
+    let parts = split_function_args(raw_args, 3, open);
+    if parts.len() < 3 {
+        return Err(format!(
+            "insufficient number of arguments ({}) to function 'let'.",
+            parts.len()
+        ));
+    }
+    let names_str = expand_inner(parts[0], vars, ctx)?;
+    let names: Vec<&str> = names_str.split_whitespace().collect();
+    let list = expand_inner(parts[1], vars, ctx)?;
+    let words: Vec<&str> = list.split_whitespace().collect();
+
+    let mut scope = vars.clone();
+    for (i, name) in names.iter().enumerate() {
+        let value = if i + 1 == names.len() {
+            // The last name absorbs all remaining words.
+            words.get(i..).map(|w| w.join(" ")).unwrap_or_default()
+        } else {
+            words.get(i).copied().unwrap_or("").to_string()
+        };
+        scope.set(*name, value.as_str(), false)?;
+    }
+    expand_inner(parts[2], &scope, ctx)
+}
+
+/// `$(intcmp LHS,RHS,LT,EQ,GT)`: compare LHS and RHS as integers and expand the matching part. `LT`,
+/// `EQ`, and `GT` are each optional (a missing one is empty); a missing `GT` falls back to `EQ`.
+fn func_intcmp(raw_args: &str, open: char, vars: &Vars, ctx: &mut Expander) -> Result<String, String> {
+    let parts = split_function_args(raw_args, 5, open);
+    if parts.len() < 2 {
+        return Err(format!(
+            "insufficient number of arguments ({}) to function 'intcmp'.",
+            parts.len()
+        ));
+    }
+    let mut parse = |part: &str, which: &str| -> Result<i64, String> {
+        let text = expand_inner(part, vars, ctx)?;
+        text.trim()
+            .parse::<i64>()
+            .map_err(|_| format!("non-numeric {which} argument to 'intcmp' function: '{}'", text.trim()))
+    };
+    let lhs = parse(parts[0], "first")?;
+    let rhs = parse(parts[1], "second")?;
+    // LT = parts[2], EQ = parts[3], GT = parts[4] (GT defaults to EQ when absent).
+    let branch = match lhs.cmp(&rhs) {
+        std::cmp::Ordering::Less => parts.get(2).copied(),
+        std::cmp::Ordering::Equal => parts.get(3).copied(),
+        std::cmp::Ordering::Greater => parts.get(4).or(parts.get(3)).copied(),
+    };
+    match branch {
+        Some(text) => expand_inner(text, vars, ctx),
+        None => Ok(String::new()),
+    }
 }
 
 /// Look up a variable name for `$(value)`/`$(flavor)`: leading whitespace of the argument is
