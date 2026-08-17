@@ -509,19 +509,38 @@ fn second_expansion_scope(scope: &Vars, target: &str, stem: &str) -> Vars {
     vars
 }
 
-/// Second-expand each deferred prerequisite line (`.SECONDEXPANSION:`), then word-split and glob,
-/// producing the concrete prerequisite list.
-fn expand_deferred_prereqs(raws: &[String], scope: &Vars) -> Result<Vec<String>, MakeError> {
-    let mut out = Vec::new();
-    for raw in raws {
-        let expanded = expand_collect(raw, scope)
+/// Second-expand deferred `.SECONDEXPANSION:` prerequisite lines, then word-split and glob. The
+/// normal lines are also split on an order-only `|` that the expansion may introduce (e.g. from
+/// `$$(LIST)` where `LIST=a|b`); everything after the first `|` becomes order-only. Returns
+/// `(normal, order_only)`.
+fn expand_deferred_prereqs(
+    normal_raws: &[String],
+    order_raws: &[String],
+    scope: &Vars,
+) -> Result<(Vec<String>, Vec<String>), MakeError> {
+    let glob = |s: &str| super::glob_words(s.split_whitespace().map(str::to_string));
+    let expand = |raw: &str| -> Result<String, MakeError> {
+        Ok(expand_collect(raw, scope)
             .map_err(|e| MakeError::new(&e, Context::new()))?
-            .result;
-        out.extend(super::glob_words(
-            expanded.split_whitespace().map(str::to_string),
-        ));
+            .result)
+    };
+    let mut normal = Vec::new();
+    let mut order = Vec::new();
+    for raw in normal_raws {
+        let expanded = expand(raw)?;
+        match expanded.split_once('|') {
+            // A `|` from the second expansion separates normal from order-only prerequisites.
+            Some((pre, post)) => {
+                normal.extend(glob(pre));
+                order.extend(glob(&post.replace('|', " ")));
+            }
+            None => normal.extend(glob(&expanded)),
+        }
     }
-    Ok(out)
+    for raw in order_raws {
+        order.extend(glob(&expand(raw)?));
+    }
+    Ok((normal, order))
 }
 
 /// Produce a concrete copy of a `.SECONDEXPANSION:` rule with its prerequisites resolved (see
@@ -529,8 +548,9 @@ fn expand_deferred_prereqs(raws: &[String], scope: &Vars) -> Result<Vec<String>,
 fn resolve_second_expansion(rule: &Rule, target: &str, scope: &Vars) -> Result<Rule, MakeError> {
     let se_scope = second_expansion_scope(scope, target, &rule.stem);
     let mut resolved = rule.clone();
-    resolved.prerequisites = expand_deferred_prereqs(&rule.prerequisites, &se_scope)?;
-    resolved.order_only = expand_deferred_prereqs(&rule.order_only, &se_scope)?;
+    let (normal, order) = expand_deferred_prereqs(&rule.prerequisites, &rule.order_only, &se_scope)?;
+    resolved.prerequisites = normal;
+    resolved.order_only = order;
     resolved.second_expand = false;
     Ok(resolved)
 }
@@ -1218,11 +1238,14 @@ impl RuleMap {
         scope: &Vars,
     ) -> Result<(Vec<String>, Vec<String>), MakeError> {
         let se_scope = second_expansion_scope(scope, target, stem);
-        let expand = |patterns: &[String]| -> Result<Vec<String>, MakeError> {
-            let substituted: Vec<String> = patterns.iter().map(|p| p.replace('%', stem)).collect();
-            expand_deferred_prereqs(&substituted, &se_scope)
+        let sub = |patterns: &[String]| -> Vec<String> {
+            patterns.iter().map(|p| p.replace('%', stem)).collect()
         };
-        Ok((expand(&prule.prereq_patterns)?, expand(&prule.order_only_patterns)?))
+        expand_deferred_prereqs(
+            &sub(&prule.prereq_patterns),
+            &sub(&prule.order_only_patterns),
+            &se_scope,
+        )
     }
 
     /// The concrete `(normal, order_only)` prerequisites of a pattern rule for `stem`, used when
