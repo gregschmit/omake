@@ -14,6 +14,10 @@ pub struct Opts {
     /// Continue building unrelated targets after a recipe fails (`-k`).
     pub keep_going: bool,
 
+    /// `-S`/`--no-keep-going` was the effective choice (turns `-k` off; emitted as `S` in
+    /// `MAKEFLAGS` so a sub-make inherits the override of an ancestor's `-k`).
+    pub no_keep_going: bool,
+
     /// Do not echo recipe commands before running them (`-s`, like a global `.SILENT:`).
     pub silent: bool,
 

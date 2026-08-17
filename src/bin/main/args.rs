@@ -46,8 +46,12 @@ pub struct Args {
     pub ignore_errors: bool,
 
     /// Continue as much as possible after an error.
-    #[arg(short, long)]
+    #[arg(short, long, overrides_with = "no_keep_going")]
     pub keep_going: bool,
+
+    /// Turn off -k (the default; cancels a `-k` inherited via MAKEFLAGS).
+    #[arg(short = 'S', long = "no-keep-going", overrides_with = "keep_going")]
+    pub no_keep_going: bool,
 
     /// Don't echo recipes as they are run.
     #[arg(short, long, visible_alias("quiet"))]
@@ -138,6 +142,7 @@ impl From<Args> for Opts {
             ignore_errors: args.ignore_errors,
             just_print: args.just_print,
             keep_going: args.keep_going,
+            no_keep_going: args.no_keep_going,
             silent: args.silent,
             // `-R` (no built-in variables) implies `-r` (no built-in rules).
             no_builtin_rules: args.no_builtin_rules || args.no_builtin_variables,

@@ -110,7 +110,14 @@ fn apply_makeflags(opts: &mut Opts, makeflags: &str) {
     }
     for c in short.chars() {
         match c {
-            'k' => opts.keep_going = true,
+            'k' => {
+                opts.keep_going = true;
+                opts.no_keep_going = false;
+            }
+            'S' => {
+                opts.keep_going = false;
+                opts.no_keep_going = true;
+            }
             'n' => opts.just_print = true,
             'i' => opts.ignore_errors = true,
             'B' => opts.always_make = true,
@@ -253,6 +260,9 @@ fn encode_makeflags(opts: &Opts) -> String {
     }
     if opts.keep_going {
         flags.push('k');
+    } else if opts.no_keep_going {
+        // `-S` occupies the `-k` slot in the cluster (they are the same flag family).
+        flags.push('S');
     }
     if opts.just_print {
         flags.push('n');
@@ -358,6 +368,16 @@ fn main() {
     // flags for sub-makes. `MAKELEVEL` tracks the recursion depth.
     let mut opts: Opts = args.clone().into();
     apply_makeflags(&mut opts, &parent_makeflags);
+    // A command-line `-k`/`-S` overrides an inherited one from `MAKEFLAGS` (clap already resolved
+    // the two against each other, so at most one is set here).
+    if args.keep_going {
+        opts.keep_going = true;
+        opts.no_keep_going = false;
+    }
+    if args.no_keep_going {
+        opts.keep_going = false;
+        opts.no_keep_going = true;
+    }
     // Inherit the parent make's `-I` include directories (honoring a `-I -` reset), appended after
     // any given on this command line.
     for dir in makeflags_include_dirs(&parent_makeflags) {

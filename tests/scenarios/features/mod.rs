@@ -25,6 +25,7 @@ mod t39_touch;
 mod t3_old_files;
 mod t40_question;
 mod t41_jobs;
+mod t42_no_keep_going;
 mod t4_just_print;
 mod t5_silent;
 mod t6_ignore_errors;
