@@ -574,6 +574,10 @@ struct PatternRule {
     /// Under `.SECONDEXPANSION:`, the prerequisite patterns are stored once-expanded and deferred:
     /// at build time the stem replaces `%`, then a second expansion runs with `$@`/`$*` in scope.
     second_expand: bool,
+    /// A terminal (double-colon `%::`) rule. Only terminal match-anything (`%`) rules may build the
+    /// prerequisites of another implicit rule (GNU make excludes non-terminal ones to avoid endless
+    /// chains like `x.c.c.c…`).
+    terminal: bool,
     context: Context,
 }
 
@@ -662,6 +666,7 @@ impl RuleMap {
                     recipe: vec![recipe.to_string()],
                     recipe_lines: vec![0],
                     second_expand: false,
+                    terminal: false,
                     context: Context::new(),
                 });
             }
@@ -682,6 +687,7 @@ impl RuleMap {
                         recipe: rule.recipe.clone(),
                         recipe_lines: rule.recipe_lines.clone(),
                         second_expand: rule.second_expand,
+                        terminal: rule.double_colon,
                         context: rule.context.clone(),
                     };
 
@@ -1198,10 +1204,11 @@ impl RuleMap {
             if prule.recipe.is_empty() {
                 return false;
             }
-            // Skip match-anything rules (target `%`) when chaining: they match every name and would
-            // grow prerequisites forever (`x.c.c.c…`). GNU make also does not use match-anything
-            // rules to build the prerequisites of another implicit rule.
-            if prule.target_prefix.is_empty() && prule.target_suffix.is_empty() {
+            // Skip a *non-terminal* match-anything rule (target `%`) when chaining: it matches every
+            // name and would grow prerequisites forever (`x.c.c.c…`). GNU make excludes those from
+            // building the prerequisites of another implicit rule, but a terminal (`%::`) one is
+            // allowed as a chain link.
+            if prule.target_prefix.is_empty() && prule.target_suffix.is_empty() && !prule.terminal {
                 return false;
             }
             match prule.match_stem(name) {
