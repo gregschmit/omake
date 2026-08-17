@@ -56,9 +56,12 @@ vendored tree.
 
 ## Baselines
 
-Captured on Linux against the pinned versions (informational — reproduce with the scripts above):
+Captured on Linux against the pinned versions (informational snapshot — reproduce with the scripts
+above; the numbers should only go up):
 
-- **bmake unit-tests:** ~2/396 (the suite is a near-exhaustive test of bmake-specific behavior —
-  `.MAKE.*` variables, `:C`/`:@` modifiers, archives, job debugging — most of which omake does not
-  replicate).
-- **GNU make suite:** see `run-gnu.sh` output (the majority fail on diagnostic-format differences).
+- **GNU make suite:** **498/1337** passed. omake implements most GNU features the suite exercises;
+  the failures are largely diagnostic-format/wording differences (`*** … Error C` vs omake's caret
+  form) and a few unsupported corners (`$(guile)`, `.SECONDEXPANSION` pattern rules, `-p`/`-d`).
+- **bmake unit-tests:** **2/396** passed. The suite near-exhaustively pins bmake's *exact* behavior
+  and output — `.MAKE.*` variables, `:C`/`:@` modifiers, archives, `.SYSPATH`, job debugging — most
+  of which omake does not replicate, and every test also diffs bmake's exact byte-for-byte output.
