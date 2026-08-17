@@ -90,8 +90,12 @@ pub struct Args {
     pub no_keep_going: bool,
 
     /// Don't echo recipes as they are run.
-    #[arg(short, long, visible_alias("quiet"))]
+    #[arg(short, long, visible_alias("quiet"), overrides_with = "no_silent")]
     pub silent: bool,
+
+    /// Echo recipes (cancels an -s inherited via MAKEFLAGS; the default).
+    #[arg(long = "no-silent", overrides_with = "silent")]
+    pub no_silent: bool,
 
     /// Disable the built-in implicit rules.
     #[arg(short = 'r', long = "no-builtin-rules")]

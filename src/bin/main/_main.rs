@@ -402,6 +402,10 @@ fn main() {
         opts.keep_going = false;
         opts.no_keep_going = true;
     }
+    // A command-line `--no-silent` cancels an `-s` inherited via `MAKEFLAGS`.
+    if args.no_silent {
+        opts.silent = false;
+    }
     // Inherit the parent make's `-I` include directories (honoring a `-I -` reset), appended after
     // any given on this command line.
     for dir in makeflags_include_dirs(&parent_makeflags) {
@@ -492,6 +496,10 @@ fn main() {
     );
     // `MAKE` is a built-in default; `MAKELEVEL` comes from the environment (`$(origin ...)`).
     let _ = vars.set_origin("MAKE", make_path.as_str(), false, Origin::Default);
+    // `CURDIR` is the current directory (after any `-C` chdir), like gmake.
+    if let Ok(cwd) = env::current_dir() {
+        let _ = vars.set_origin("CURDIR", &cwd.to_string_lossy(), false, Origin::File);
+    }
     let _ = vars.set_origin(
         "MAKELEVEL",
         level.to_string().as_str(),

@@ -2338,7 +2338,12 @@ fn parse_assignment(line: &str) -> Option<(&str, AssignOp, &str)> {
             // Only `$(` / `${` open a reference; a bare `(`/`{` is a literal part of the name.
             b'(' | b'{' if i > 0 && bytes[i - 1] == b'$' => depth = 1,
             b':' => {
-                // `::=` and `:=` are assignments; any other `:` starts a rule.
+                // `:::=`, `::=`, and `:=` are simple (immediately-expanded) assignments; any other
+                // `:` starts a rule. (GNU make 4.4's `:::=` additionally re-escapes `$` in the
+                // result; omake treats it like `::=`, which matches the common cases.)
+                if line[i..].starts_with(":::=") {
+                    return Some((&line[..i], AssignOp::Simple, &line[i + 4..]));
+                }
                 if line[i..].starts_with("::=") {
                     return Some((&line[..i], AssignOp::Simple, &line[i + 3..]));
                 }
