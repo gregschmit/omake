@@ -460,6 +460,14 @@ fn main() {
     );
     // `MAKECMDGOALS` holds the goals named on the command line (not variable assignments), in order.
     let _ = vars.set_origin("MAKECMDGOALS", &goals.join(" "), false, Origin::File);
+    // `MAKEOVERRIDES` holds the command-line (and inherited) variable assignments, in the same
+    // reversed order gmake emits them in `MAKEFLAGS`.
+    let _ = vars.set_origin(
+        "MAKEOVERRIDES",
+        &makeflags_assignments_enc.join(" "),
+        false,
+        Origin::Environment,
+    );
     // Command-line variables override makefile assignments (via origin precedence) and are
     // auto-exported to recipes. A `:=` (simple) value is expanded once, immediately.
     for token in &cmdline_tokens {

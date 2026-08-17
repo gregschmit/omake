@@ -13,6 +13,7 @@ use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{fs, fs::File};
 
+use crate::compat::Compat;
 use crate::error::MakeError;
 use crate::expand::{expand, expand_collect};
 use crate::logger::{Logger, context::Context};
@@ -632,9 +633,13 @@ impl<L: Logger> Makefile<L> {
                 self.second_expansion = true;
             }
 
+            // `.WAIT` is a prerequisite-ordering barrier for parallel builds; omake builds serially
+            // in listed order, so it is a no-op and dropped from the prerequisite list.
+            let non_wait = |w: &&str| *w != ".WAIT";
             let deps_list = |s: &str| {
                 if target_pattern.is_some() {
                     s.split_whitespace()
+                        .filter(non_wait)
                         .flat_map(|w| {
                             if w.contains('%') {
                                 vec![w.to_string()]
@@ -644,7 +649,7 @@ impl<L: Logger> Makefile<L> {
                         })
                         .collect()
                 } else {
-                    glob_words(s.split_whitespace().map(str::to_string))
+                    glob_words(s.split_whitespace().filter(non_wait).map(str::to_string))
                 }
             };
 
@@ -853,10 +858,13 @@ impl<L: Logger> Makefile<L> {
         if targets.is_empty() {
             let goal = self.vars.get(".DEFAULT_GOAL").value.trim().to_string();
             if goal.is_empty() {
-                return Err(MakeError::new(
-                    "No target specified and no default target found.",
-                    Context::new(),
-                ));
+                // gmake's wording is terser; keep omake's descriptive message natively.
+                let msg = if self.opts.compat == Compat::Gnu {
+                    "No targets"
+                } else {
+                    "No target specified and no default target found."
+                };
+                return Err(MakeError::new(msg, Context::new()));
             }
             targets.push(goal);
         }
