@@ -1,3 +1,6 @@
 # Vendored upstream test-suite sources, cloned on demand by ./vendor (never committed).
 /.gmake-src/
 /.bmake-src/
+
+# Local triage helper (ad-hoc failure-classification workflow), not part of the suite.
+/.triage-workflow.js
