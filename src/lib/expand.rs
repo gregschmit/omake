@@ -887,9 +887,10 @@ enum Modifier {
     Default(String),
     /// `:L` — the value becomes the variable's name.
     Name,
-    /// `:O` / `:Or` — sort the words lexicographically (ascending / descending).
+    /// `:O` / `:Or` — sort the words (ascending / descending). `:On`/`:Onr` sort numerically.
     Sort {
         reverse: bool,
+        numeric: bool,
     },
     /// `:u` — merge adjacent duplicate words (like `uniq`, not a full deduplication).
     Unique,
@@ -996,11 +997,9 @@ fn take_modifier(s: &str) -> Option<(Modifier, &str)> {
         b'U' => arg(Modifier::Default),
         b'L' => simple(1, Modifier::Name),
         b'u' => simple(1, Modifier::Unique),
-        // `:O` sorts ascending, `:Or` descending. `:Ox` (shuffle) is not supported.
-        b'O' => match s.as_bytes().get(1) {
-            Some(b'r') => simple(2, Modifier::Sort { reverse: true }),
-            _ => simple(1, Modifier::Sort { reverse: false }),
-        },
+        // `:O` sorts ascending, `:Or` descending, `:On`/`:Onr` numerically. `:Ox` (shuffle) is not
+        // supported (parse fails, so the chain falls back).
+        b'O' => take_sort(s),
         b's' if s.as_bytes().get(1) == Some(&b'h') => simple(2, Modifier::ShellValue),
         b'r' if s.starts_with("range") => take_range(s),
         b'S' => take_subst(s),
@@ -1011,6 +1010,72 @@ fn take_modifier(s: &str) -> Option<(Modifier, &str)> {
         // modifier text and expand modifier arguments lazily.
         _ => None,
     }
+}
+
+/// Parse a `:O` sort modifier (`s` starts at `O`): optional `r` (reverse) and `n` (numeric) flags,
+/// then a `:` or end. `:Ox` (shuffle) and other unknown flags fail to parse.
+fn take_sort(s: &str) -> Option<(Modifier, &str)> {
+    let (mut reverse, mut numeric) = (false, false);
+    let mut i = 1;
+    for &c in &s.as_bytes()[1..] {
+        match c {
+            b'r' => reverse = true,
+            b'n' => numeric = true,
+            _ => break,
+        }
+        i += 1;
+    }
+    let m = Modifier::Sort { reverse, numeric };
+    match s[i..].strip_prefix(':') {
+        Some(after) => Some((m, after)),
+        None if s.len() == i => Some((m, "")),
+        None => None,
+    }
+}
+
+/// bmake's `num_val` (var.c): parse a leading C integer (base auto-detected: `0x` hex, `0` octal,
+/// else decimal), then apply a `K`/`M`/`G` suffix as a shift by 10/20/30 bits. Non-numbers are 0.
+fn bsd_num_val(s: &str) -> i64 {
+    let s = s.trim_start();
+    let b = s.as_bytes();
+    let mut i = 0;
+    let neg = match b.first() {
+        Some(b'-') => {
+            i = 1;
+            true
+        }
+        Some(b'+') => {
+            i = 1;
+            false
+        }
+        _ => false,
+    };
+    let (radix, start) = if b.get(i) == Some(&b'0') && matches!(b.get(i + 1), Some(b'x' | b'X')) {
+        (16u32, i + 2)
+    } else if b.get(i) == Some(&b'0') {
+        (8, i)
+    } else {
+        (10, i)
+    };
+    let mut val: i64 = 0;
+    let mut j = start;
+    while let Some(d) = b.get(j).and_then(|&c| (c as char).to_digit(radix)) {
+        val = val.wrapping_mul(radix as i64).wrapping_add(d as i64);
+        j += 1;
+    }
+    if j == start {
+        return 0; // no digits parsed
+    }
+    if neg {
+        val = val.wrapping_neg();
+    }
+    let shift = match b.get(j) {
+        Some(b'K' | b'k') => 10,
+        Some(b'M' | b'm') => 20,
+        Some(b'G' | b'g') => 30,
+        _ => 0,
+    };
+    val.wrapping_shl(shift)
 }
 
 /// Parse a `:range` / `:range=N` modifier (`s` starts at `range`).
@@ -1147,9 +1212,15 @@ fn apply_bsd_modifiers(
     // `:tW`/`:[*]` make following modifiers treat the value as a single word (`:[@]`/`:tw` undo
     // it).
     let mut single_word = false;
-    // Empty results drop out of the word list, matching bmake.
+    // A word modifier maps over each word; empty results drop out (matching bmake). bmake also
+    // splits an empty value into a *single empty word*, so e.g. `${:U:H}` is `.` (dirname of "").
     let map_words = |val: &str, f: &dyn Fn(&str) -> String| {
-        val.split_whitespace()
+        let mut words: Vec<&str> = val.split_whitespace().collect();
+        if words.is_empty() {
+            words.push("");
+        }
+        words
+            .into_iter()
             .map(f)
             .filter(|w| !w.is_empty())
             .collect::<Vec<_>>()
@@ -1205,9 +1276,13 @@ fn apply_bsd_modifiers(
                 val = (1..=n).map(|i| i.to_string()).collect::<Vec<_>>().join(" ");
                 set = true;
             }
-            Modifier::Sort { reverse } => {
+            Modifier::Sort { reverse, numeric } => {
                 let mut words: Vec<&str> = val.split_whitespace().collect();
-                words.sort_unstable();
+                if *numeric {
+                    words.sort_by_key(|w| bsd_num_val(w));
+                } else {
+                    words.sort_unstable();
+                }
                 if *reverse {
                     words.reverse();
                 }
