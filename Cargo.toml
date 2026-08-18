@@ -1,6 +1,6 @@
 [package]
 name = "omake"
-version = "0.1.6"
+version = "0.2.0"
 edition = "2024"
 description = "An open implementation of make."
 authors = ["Gregory N. Schmit <schmitgreg@gmail.com>"]
