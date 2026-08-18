@@ -42,6 +42,41 @@ already other build systems, I don't actually want to make another one.
 Working list of things that I plan on leaving out of this implementation intentionally:
 1. Remaking makefiles from RCS/SCCS. I see no need to support this.
 
+## Development
+
+### Build and run
+
+```sh
+cargo build                 # builds the `omake` binary into target/debug/
+cargo run -- -f Makefile     # run against a makefile (args after `--`)
+```
+
+The toolchain is pinned to nightly via `rust-toolchain.toml` (only so rustfmt can wrap over-long
+comments) and installs automatically; the code itself still builds on stable.
+
+### Before committing
+
+```sh
+cargo fmt                   # nightly rustfmt, wraps comments at 100 columns
+cargo clippy --all-targets  # the baseline is zero warnings — keep it clean
+cargo test                  # fast unit + system tests, no external dependencies
+```
+
+### Repository layout
+
+- **`src/lib/`** — the library (parsing + execution). Start here:
+  - `makefile.rs` — the parser and the `Makefile` type (directives, includes, conditionals, `.for`).
+  - `makefile/rule_map.rs` — rules, the build graph, recipe execution, implicit/pattern rules.
+  - `expand.rs` — variable/function expansion (`$(...)`, GNU functions, BSD `:` modifiers).
+  - `vars.rs` — the variable store and origins; `makeflags.rs` — `MAKEFLAGS` (de)serialization;
+    `compat.rs` — the `--compat={gnu,bsd}` diagnostic-output emulation; `glob.rs`, `logger.rs`.
+- **`src/bin/main/`** — the CLI: `args.rs` (clap) and `_main.rs` (wiring, the restart loop).
+- **`tests/`** — `system_tests.rs` + `tests/scenarios/` (directory-per-scenario), and
+  `tests/conformance/` (the GNU/bmake suites; see its README). `TODO.md` (gitignored) tracks the
+  remaining work, split into GNU and BSD sections.
+
+Dependencies are kept minimal on purpose: only `clap` and `const_format`.
+
 ## Testing Methodology
 
 We have unit tests where they are feasible.
