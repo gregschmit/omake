@@ -273,6 +273,53 @@ impl<L: Logger> Makefile<L> {
         Ok(makefile)
     }
 
+    /// Finalize a pending rule: run its special-target/suffix handling, pick the default goal, and
+    /// insert it into the rule map. A no-op when no rule is pending. Called for every line that
+    /// ends a recipe, and once more at end-of-file.
+    fn finalize_pending_rule(&mut self) -> Result<(), MakeError> {
+        let Some(mut rule) = self.current_rule.take() else {
+            return Ok(());
+        };
+        // Collect any special dot-target directives from this rule (this may update the suffix list
+        // via `.SUFFIXES`, which the suffix-rule rewrite below then uses). A static pattern rule is
+        // never a special/suffix rule, so skip both for it.
+        if rule.target_pattern.is_none() {
+            self.collect_special_targets(&rule);
+            // Rewrite a suffix rule (e.g. `.c.o:`) into the equivalent pattern rule (`%.o: %.c`).
+            self.rewrite_suffix_rule(&mut rule);
+        }
+
+        // If there is no default target, see if we can assign one. A dot-target (`.PHONY`) or a `%`
+        // pattern rule is never the default goal, matching GNU make.
+        if self.default_target.is_none() {
+            for target in rule.targets.iter() {
+                if self.default_target.is_none()
+                    && !target.starts_with('.')
+                    && !target.contains('%')
+                    && !self.use_templates.contains_key(target)
+                    && !self.special.notmain.contains(target)
+                {
+                    self.default_target = Some(target.clone());
+                    // `.DEFAULT_GOAL` tracks the first eligible target, unless the makefile has
+                    // already set it explicitly (then that value sticks).
+                    if self.vars.get(".DEFAULT_GOAL").value.trim().is_empty() {
+                        let _ = self
+                            .vars
+                            .set_origin(".DEFAULT_GOAL", target, false, Origin::File);
+                    }
+                }
+            }
+        }
+
+        // A static pattern rule expands into one concrete rule per listed target; otherwise add the
+        // rule as-is.
+        match rule.target_pattern.take() {
+            Some(target_pattern) => self.insert_static_pattern(rule, &target_pattern)?,
+            None => self.rule_map.insert(rule, &*self.logger)?,
+        }
+        Ok(())
+    }
+
     /// Iterate over the makefile's lines, call `parse_line` to handle the actual parsing logic, and
     /// manage context.
     fn parse<R: BufRead>(&mut self, input: R) -> Result<(), MakeError> {
@@ -280,10 +327,8 @@ impl<L: Logger> Makefile<L> {
 
         self.parse_reader(input)?;
 
-        // Always push two blank lines at the end to terminate trailing rules, even if the last rule
-        // contained a trailing backslash.
-        self.parse_line("".to_string())?;
-        self.parse_line("".to_string())?;
+        // Finalize the trailing rule (blank lines no longer do this, since a recipe may span them).
+        self.finalize_pending_rule()?;
 
         if !self.cond_stack.is_empty() {
             return Err(MakeError::new("Missing `endif`.", self.context.clone()));
@@ -405,6 +450,19 @@ impl<L: Logger> Makefile<L> {
             let stripped = strip_inline_comment(&line);
             let trimmed = normalize_dot_directive(stripped.trim());
             let trimmed = trimmed.as_ref();
+            let is_conditional =
+                directive_keyword(trimmed).is_some() || bsd_cond_keyword(trimmed).is_some();
+            // A pending *special* dot-target rule (e.g. `.MAKEFLAGS: -dc`) affects parsing, so it
+            // must take effect before a following conditional is evaluated. A normal rule keeps
+            // building its recipe across the conditional, so it is left pending.
+            if is_conditional
+                && self
+                    .current_rule
+                    .as_ref()
+                    .is_some_and(|r| r.targets.iter().all(|t| t.starts_with('.')))
+            {
+                self.finalize_pending_rule()?;
+            }
             if directive_keyword(trimmed).is_some() {
                 return self.handle_conditional(trimmed);
             }
@@ -478,54 +536,17 @@ impl<L: Logger> Makefile<L> {
             return Ok(());
         }
 
-        // Anything other than recipe lines terminate a rule definition.
-        if let Some(mut rule) = self.current_rule.take() {
-            // Collect any special dot-target directives from this rule (this may update the suffix
-            // list via `.SUFFIXES`, which the suffix-rule rewrite below then uses). A static
-            // pattern rule is never a special/suffix rule, so skip both for it.
-            if rule.target_pattern.is_none() {
-                self.collect_special_targets(&rule);
-
-                // Rewrite a suffix rule (e.g. `.c.o:`) into the equivalent pattern rule (`%.o:
-                // %.c`).
-                self.rewrite_suffix_rule(&mut rule);
-            }
-
-            // If there is no default target, see if we can assign one. A dot-target (`.PHONY`) or a
-            // `%` pattern rule is never the default goal, matching GNU make.
-            if self.default_target.is_none() {
-                for target in rule.targets.iter() {
-                    if self.default_target.is_none()
-                        && !target.starts_with('.')
-                        && !target.contains('%')
-                        && !self.use_templates.contains_key(target)
-                        && !self.special.notmain.contains(target)
-                    {
-                        self.default_target = Some(target.clone());
-                        // `.DEFAULT_GOAL` tracks the first eligible target, unless the makefile has
-                        // already set it explicitly (then that value sticks).
-                        if self.vars.get(".DEFAULT_GOAL").value.trim().is_empty() {
-                            let _ =
-                                self.vars
-                                    .set_origin(".DEFAULT_GOAL", target, false, Origin::File);
-                        }
-                    }
-                }
-            }
-
-            // A static pattern rule expands into one concrete rule per listed target; otherwise add
-            // the rule as-is.
-            match rule.target_pattern.take() {
-                Some(target_pattern) => self.insert_static_pattern(rule, &target_pattern)?,
-                None => self.rule_map.insert(rule, &*self.logger)?,
-            }
-        }
-
-        // Ignore pure comments and blank lines.
+        // Blank and comment-only lines do NOT terminate a recipe: gmake ignores them within the
+        // command section, so a recipe can span blank lines and interleaved conditionals. Check
+        // this before finalizing the pending rule (the trailing rule is finalized explicitly at
+        // end-of-file instead).
         let trimmed_line = line.trim();
-        if trimmed_line.starts_with(COMMENT_INDICATOR) || trimmed_line.is_empty() {
+        if trimmed_line.is_empty() || trimmed_line.starts_with(COMMENT_INDICATOR) {
             return Ok(());
         }
+
+        // Anything else (a directive, assignment, or new rule) terminates a pending rule.
+        self.finalize_pending_rule()?;
         // bmake allows whitespace between a leading `.` and the directive keyword (`.  error`).
         let trimmed_line = normalize_dot_directive(trimmed_line);
         let trimmed_line = trimmed_line.as_ref();
@@ -1339,11 +1360,23 @@ impl<L: Logger> Makefile<L> {
         }
         if let Some(inner) = strip_cond_func(expr, "target") {
             let arg = expand(inner, &self.vars).map_err(err)?;
-            return Ok(self.rule_map.defines_target(arg.trim()));
+            let arg = arg.trim();
+            // A rule is "defined" as soon as its target line is parsed, so also check the pending
+            // rule that has not been finalized into the rule map yet.
+            let pending = self
+                .current_rule
+                .as_ref()
+                .is_some_and(|r| r.targets.iter().any(|t| t == arg));
+            return Ok(pending || self.rule_map.defines_target(arg));
         }
         if let Some(inner) = strip_cond_func(expr, "commands") {
             let arg = expand(inner, &self.vars).map_err(err)?;
-            return Ok(self.rule_map.target_has_commands(arg.trim()));
+            let arg = arg.trim();
+            let pending = self
+                .current_rule
+                .as_ref()
+                .is_some_and(|r| r.has_recipe && r.targets.iter().any(|t| t == arg));
+            return Ok(pending || self.rule_map.target_has_commands(arg));
         }
         if let Some(inner) = strip_cond_func(expr, "make") {
             let arg = expand(inner, &self.vars).map_err(err)?;

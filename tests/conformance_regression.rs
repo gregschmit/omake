@@ -15,7 +15,7 @@ use std::process::Command;
 /// GNU make suite pass floor (omake `--compat=gnu`, gmake 4.4.1). See `README.md`.
 const GMAKE_BASELINE: u32 = 717;
 /// NetBSD bmake unit-test pass floor (omake `--compat=bsd`, bmake 20230711).
-const BMAKE_BASELINE: u32 = 116;
+const BMAKE_BASELINE: u32 = 117;
 
 /// Run a conformance runner with the freshly built omake, returning its combined output.
 fn run(script: &str) -> String {
