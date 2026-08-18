@@ -704,7 +704,7 @@ impl<L: Logger> Makefile<L> {
                     vec![s.to_string()]
                 }
             };
-            let (prerequisites, order_only) = if second_expand {
+            let (mut prerequisites, order_only) = if second_expand {
                 (deferred(&normal_deps), deferred(&order_deps))
             } else {
                 (deps_list(&normal_deps), deps_list(&order_deps))
@@ -721,6 +721,13 @@ impl<L: Logger> Makefile<L> {
                     .map(str::to_string),
             );
             let group = if grouped { target_list.clone() } else { vec![] };
+
+            // bmake special dependency *sources* (`target: .PHONY src`) are attributes of the
+            // target(s), not prerequisites. In gmake, `.PHONY` on the right of `:` is a real
+            // dependency, so only apply this outside `--compat=gnu` (a genuine GNU↔BSD divergence).
+            if self.opts.compat != Compat::Gnu && !second_expand {
+                prerequisites.retain(|p| !self.apply_special_source(p, &target_list));
+            }
 
             self.current_rule = Some(Rule {
                 targets: target_list,
@@ -1719,6 +1726,22 @@ impl<L: Logger> Makefile<L> {
             self.rule_map.insert(concrete, &*self.logger)?;
         }
         Ok(())
+    }
+
+    /// If `name` is a bmake special dependency *source* (`target: .PHONY src`), apply it as an
+    /// attribute of `targets` and return `true` (so the caller drops it from the prerequisites).
+    /// Recognized-but-unmodeled sources (`.OPTIONAL`, `.USE`, ...) are dropped without effect.
+    fn apply_special_source(&mut self, name: &str, targets: &[String]) -> bool {
+        match name {
+            ".PHONY" => self.special.phony.extend(targets.iter().cloned()),
+            ".SILENT" => self.special.silent.extend(targets.iter().cloned()),
+            ".IGNORE" => self.special.ignore.extend(targets.iter().cloned()),
+            ".PRECIOUS" => self.special.precious.extend(targets.iter().cloned()),
+            ".OPTIONAL" | ".NOTMAIN" | ".MADE" | ".USE" | ".USEBEFORE" | ".META" | ".NOMETA"
+            | ".NOPATH" | ".RECURSIVE" | ".EXEC" | ".MAKE" => {}
+            _ => return false,
+        }
+        true
     }
 
     /// Record `.PHONY`, `.SILENT`, `.IGNORE`, and `.DEFAULT` directives from a parsed rule.
