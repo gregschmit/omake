@@ -441,12 +441,14 @@ fn main() {
         .iter()
         .cloned()
         .partition(|t| parse_cmdline_var(t).is_some());
+
     // For *setting* the variables, keep natural order (parent's first, then this command line's) so
     // a `:=` assignment sees earlier ones.
     let cmdline_tokens: Vec<String> = makeflags_assignments(&parent_makeflags)
         .into_iter()
         .chain(argv_assignments)
         .collect();
+
     // For *encoding* `MAKEFLAGS`, GNU make emits the assignments in reverse (a quirk of its
     // internal prepend-to-list). This flips the order at each `$(MAKE)` level, which gmake
     // reproduces.
@@ -483,6 +485,14 @@ fn main() {
         // `CURDIR` is the current directory (after any `-C` chdir), like gmake.
         if let Ok(cwd) = env::current_dir() {
             let _ = vars.set_origin("CURDIR", &cwd.to_string_lossy(), false, Origin::File);
+        }
+        // `.INCLUDE_DIRS` (gmake): the `-I` directories followed by the built-in default include
+        // directories on this platform.
+        {
+            let mut dirs = opts.include_dirs.clone();
+            dirs.push("/usr/local/include".to_string());
+            dirs.push("/usr/include".to_string());
+            let _ = vars.set_origin(".INCLUDE_DIRS", &dirs.join(" "), false, Origin::Default);
         }
         // bmake exposes its own process id as `.MAKE.PID` (BSD-only; gmake has no such variable).
         if compat != Compat::Gnu {

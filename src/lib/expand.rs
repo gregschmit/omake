@@ -228,6 +228,21 @@ fn expand_inner(s: &str, vars: &Vars, ctx: &mut Expander) -> Result<String, Stri
                 let content = current_buffer.trim();
                 let (name, action) = parse_var_action(content);
 
+                // `.VARIABLES` is a dynamic special variable (GNU make): the space-separated names
+                // of all currently-defined variables (excluding automatic variables). It is
+                // computed on demand rather than stored.
+                if name == ".VARIABLES" && matches!(action, VarAction::None) {
+                    let names: Vec<String> = vars
+                        .iter()
+                        .map(|(n, _)| n.clone())
+                        .filter(|n| !is_automatic_var(n))
+                        .collect();
+                    current_buffer = stack.pop().unwrap().previous_buffer;
+                    current_buffer.push_str(&names.join(" "));
+                    hit_variable = false;
+                    continue;
+                }
+
                 let var = vars.get(&name);
                 let recursive_result: String;
 
@@ -312,7 +327,7 @@ fn expand_inner(s: &str, vars: &Vars, ctx: &mut Expander) -> Result<String, Stri
 fn function_arity(name: &str) -> Option<usize> {
     Some(match name {
         "subst" | "patsubst" | "wordlist" => 3,
-        "filter" | "filter-out" | "word" | "addprefix" | "addsuffix" | "join" => 2,
+        "filter" | "filter-out" | "word" | "addprefix" | "addsuffix" | "join" | "findstring" => 2,
         "wildcard" | "strip" | "sort" | "words" | "firstword" | "lastword" | "dir" | "notdir"
         | "basename" | "suffix" | "realpath" | "abspath" | "file" => 1,
         _ => return None,
@@ -345,6 +360,7 @@ fn call_function(name: &str, args: &[String]) -> Result<String, String> {
         "addprefix" => func_addprefix(args),
         "addsuffix" => func_addsuffix(args),
         "join" => func_join(args),
+        "findstring" => func_findstring(args),
         _ => unreachable!("call_function is only invoked for a known function"),
     })
 }
@@ -1655,7 +1671,7 @@ fn func_words(text: &str) -> String {
 
 /// `$(word N,TEXT)`: the Nth word (1-based). Errors on a non-numeric or zero index, like GNU make.
 fn func_word(args: &[String]) -> Result<String, String> {
-    let n = word_index("word", arg(args, 0))?;
+    let n = word_index("word", arg(args, 0), true)?;
     Ok(arg(args, 1)
         .split_whitespace()
         .nth(n - 1)
@@ -1665,8 +1681,9 @@ fn func_word(args: &[String]) -> Result<String, String> {
 
 /// `$(wordlist S,E,TEXT)`: words S through E inclusive (1-based). `E` before `S` yields nothing.
 fn func_wordlist(args: &[String]) -> Result<String, String> {
-    let start = word_index("wordlist", arg(args, 0))?;
-    let end = word_index("wordlist", arg(args, 1))?;
+    let start = word_index("wordlist", arg(args, 0), true)?;
+    // The end index is validated numerically but may be 0 (or below start), yielding an empty list.
+    let end = word_index("wordlist", arg(args, 1), false)?;
     if end < start {
         return Ok(String::new());
     }
@@ -1678,18 +1695,28 @@ fn func_wordlist(args: &[String]) -> Result<String, String> {
         .join(" "))
 }
 
-/// Parse a 1-based word index for `word`/`wordlist`, erroring on a non-numeric or zero value.
-fn word_index(func: &str, value: &str) -> Result<usize, String> {
-    let value = value.trim();
-    let n: usize = value
-        .parse()
-        .map_err(|_| format!("invalid first argument to '{func}' function: '{value}'."))?;
-    if n == 0 {
+/// Parse a 1-based word index for `word`/`wordlist`, matching GNU make's exact error wording: an
+/// empty value, a non-numeric value, an out-of-range value, or a value `< 1` each have a distinct
+/// message. The reported value keeps trailing whitespace (only leading whitespace is stripped).
+fn word_index(func: &str, value: &str, require_positive: bool) -> Result<usize, String> {
+    let raw = value.trim_start();
+    if raw.is_empty() {
         return Err(format!(
-            "first argument to '{func}' function must be greater than 0."
+            "invalid first argument to '{func}' function: empty value."
         ));
     }
-    Ok(n)
+    match raw.trim_end().parse::<i64>() {
+        Ok(n) if require_positive && n < 1 => Err(format!(
+            "first argument to '{func}' function must be greater than 0."
+        )),
+        Ok(n) => Ok(n.max(0) as usize),
+        Err(e) if *e.kind() == std::num::IntErrorKind::PosOverflow => Err(format!(
+            "invalid first argument to '{func}' function: '{raw}' out of range."
+        )),
+        Err(_) => Err(format!(
+            "invalid first argument to '{func}' function: '{raw}'."
+        )),
+    }
 }
 
 /// `$(firstword TEXT)` / `$(lastword TEXT)`.
@@ -1760,6 +1787,17 @@ fn func_join(args: &[String]) -> String {
         .map(|i| format!("{}{}", w1.get(i).unwrap_or(&""), w2.get(i).unwrap_or(&"")))
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+/// `$(findstring find,in)`: `find` if it occurs verbatim in `in`, else the empty string. The
+/// arguments are used literally — no whitespace stripping.
+fn func_findstring(args: &[String]) -> String {
+    let find = arg(args, 0);
+    if arg(args, 1).contains(find) {
+        find.to_string()
+    } else {
+        String::new()
+    }
 }
 
 /// Apply `f` to each whitespace-separated word of `text`, joining the results with a single space.

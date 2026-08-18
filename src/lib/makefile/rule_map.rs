@@ -1453,6 +1453,10 @@ impl RuleMap {
         if state.goals.contains(target) || makefile.is_phony(target) {
             return false;
         }
+        // `.NOTINTERMEDIATE` overrides even an explicit `.INTERMEDIATE` mark (gmake 4.4).
+        if makefile.is_notintermediate(target) {
+            return false;
+        }
         if makefile.is_intermediate_marked(target) {
             return true;
         }

@@ -48,6 +48,10 @@ pub struct SpecialTargets {
     secondary_all: bool,
     /// Files forced to be intermediate (`.INTERMEDIATE: x`), deleted after the build if invented.
     intermediate: HashSet<String>,
+    /// Files kept from ever being intermediate (`.NOTINTERMEDIATE: x`, gmake 4.4): exact names and
+    /// `%`-patterns; `notintermediate_all` is a bare `.NOTINTERMEDIATE:` (nothing is intermediate).
+    notintermediate: HashSet<String>,
+    notintermediate_all: bool,
     /// Targets excluded from being the default goal (bmake `.NOTMAIN`).
     notmain: HashSet<String>,
 }
@@ -361,8 +365,15 @@ impl<L: Logger> Makefile<L> {
             // line, so a read error (e.g. invalid UTF-8) doesn't report the previous line's text.
             self.context.line_index = Some(i);
             self.context.content = None;
-            let physical =
+            let mut physical =
                 result.map_err(|e| MakeError::new(&e.to_string(), self.context.clone()))?;
+            // gmake strips a leading UTF-8 BOM at the very top of a makefile so the first target
+            // parses cleanly.
+            if i == 0
+                && let Some(stripped) = physical.strip_prefix('\u{FEFF}')
+            {
+                physical = stripped.to_string();
+            }
             let continues = ends_with_odd_backslash(&physical);
 
             // Extend the pending logical line, or start a new one.
@@ -391,7 +402,12 @@ impl<L: Logger> Makefile<L> {
                 }
                 None => {
                     let recipe_prefix = self.vars.get(".RECIPEPREFIX").value.to_string();
-                    let is_recipe = physical.starts_with(&recipe_prefix);
+                    // A tab-prefixed line, or a `target: … ; recipe` line whose inline recipe is
+                    // being continued: both join recipe-style (keep the backslash+newline for the
+                    // shell, strip the continuation's recipe prefix) rather than collapsing to a
+                    // space.
+                    let is_recipe =
+                        physical.starts_with(&recipe_prefix) || is_inline_recipe_line(&physical);
                     let accum = if is_recipe || !continues {
                         physical.clone()
                     } else {
@@ -2111,6 +2127,17 @@ impl<L: Logger> Makefile<L> {
                     .special
                     .intermediate
                     .extend(rule.prerequisites.iter().cloned()),
+                // `.NOTINTERMEDIATE:` (gmake 4.4) keeps files from being treated as intermediate.
+                // Bare form disables intermediates entirely; otherwise the listed names/patterns.
+                ".NOTINTERMEDIATE" => {
+                    if rule.prerequisites.is_empty() {
+                        self.special.notintermediate_all = true;
+                    } else {
+                        self.special
+                            .notintermediate
+                            .extend(rule.prerequisites.iter().cloned());
+                    }
+                }
                 // `.SUFFIXES:` with no prerequisites clears the suffix list; otherwise it appends.
                 ".SUFFIXES" => {
                     if rule.prerequisites.is_empty() {
@@ -2305,6 +2332,18 @@ impl<L: Logger> Makefile<L> {
     /// Whether `target` is explicitly declared intermediate (`.INTERMEDIATE: target`).
     fn is_intermediate_marked(&self, target: &str) -> bool {
         self.special.intermediate.contains(target)
+    }
+
+    /// Whether `target` is kept from being an intermediate (`.NOTINTERMEDIATE`, gmake 4.4): the
+    /// bare-all form, an exact name, or a `%`-pattern match.
+    fn is_notintermediate(&self, target: &str) -> bool {
+        self.special.notintermediate_all
+            || self.special.notintermediate.contains(target)
+            || self
+                .special
+                .notintermediate
+                .iter()
+                .any(|p| pattern_matches(p, target))
     }
 
     /// Get the `mtime` of a file. Note that the return value also signals whether or not the file
@@ -2877,6 +2916,48 @@ fn parse_quoted(s: &str) -> Option<(String, &str)> {
 /// even count means the final backslash is itself escaped, so the line does not continue).
 fn ends_with_odd_backslash(line: &str) -> bool {
     line.bytes().rev().take_while(|&b| b == b'\\').count() % 2 == 1
+}
+
+/// Whether a make `%`-pattern matches `target` (the `%` stands for any non-empty stem). A pattern
+/// with no `%` matches only the exact string.
+fn pattern_matches(pattern: &str, target: &str) -> bool {
+    match pattern.split_once('%') {
+        Some((prefix, suffix)) => {
+            target.len() >= prefix.len() + suffix.len()
+                && target.starts_with(prefix)
+                && target.ends_with(suffix)
+        }
+        None => pattern == target,
+    }
+}
+
+/// Whether `line` is a rule with an inline recipe (`target: … ; recipe`): an unescaped, top-level
+/// `;` preceded by a rule colon (not a `:=`/`::=` assignment operator). Such a line's continuations
+/// belong to the recipe, so they join recipe-style (keep the backslash+newline for the shell).
+fn is_inline_recipe_line(line: &str) -> bool {
+    let b = line.as_bytes();
+    let mut depth = 0i32;
+    let mut seen_rule_colon = false;
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'\\' => i += 1, // skip the char escaped by this backslash
+            b'(' | b'{' => depth += 1,
+            b')' | b'}' => depth -= 1,
+            b':' if depth == 0 => {
+                // `:=` and `::=` are assignment operators, not a rule colon.
+                let assign = b.get(i + 1) == Some(&b'=')
+                    || (b.get(i + 1) == Some(&b':') && b.get(i + 2) == Some(&b'='));
+                if !assign {
+                    seen_rule_colon = true;
+                }
+            }
+            b';' if depth == 0 && seen_rule_colon => return true,
+            _ => {}
+        }
+        i += 1;
+    }
+    false
 }
 
 /// Remove the single trailing backslash that marks a line continuation.

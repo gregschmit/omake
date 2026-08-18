@@ -114,9 +114,9 @@ cargo test  # unit + system tests
 ### Conformance Suites
 
 Beyond the hand-written scenarios, `tests/conformance/` runs omake against the **real upstream test
-suites** of GNU make and NetBSD bmake (vendored on demand at a pinned commit). Both do exact
-golden-file comparison, so the runners use `--compat={gnu,bsd}` to match that make's diagnostic
-output and measure real behavioral gaps rather than format noise. Current pass rates:
+suites** of GNU make and BSD make (vendored on demand at a pinned commit). Both do exact golden-file
+comparison, so the runners use `--compat={gnu,bsd}` to match that make's diagnostic output and
+measure real behavioral gaps rather than format noise. Current pass rates:
 
 | Suite    | Version  | omake `--compat` |
 |----------|----------|------------------|
