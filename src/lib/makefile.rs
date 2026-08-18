@@ -156,6 +156,10 @@ pub struct Makefile<L: Logger> {
     /// missing with no rule is fatal. A deferred missing include lets a rule generate the
     /// file, then a restart reads it (GNU make's makefile-remaking).
     missing_includes: Vec<(String, bool, Context)>,
+    /// bmake `.USE`/`.USEBEFORE` macro templates: target name -> is-`.USEBEFORE` (prepend). After
+    /// parsing, a target that lists a template as a source has the template's recipe and
+    /// prerequisites merged in (see `RuleMap::expand_use_templates`).
+    use_templates: HashMap<String, bool>,
 }
 
 impl<L: Logger> Makefile<L> {
@@ -195,6 +199,7 @@ impl<L: Logger> Makefile<L> {
             for_capture: None,
             include_depth: 0,
             missing_includes: Vec::new(),
+            use_templates: HashMap::new(),
         };
 
         // `-r`/`-R` clears the default suffix list before reading the makefile, so no default
@@ -236,6 +241,14 @@ impl<L: Logger> Makefile<L> {
                 )
             })?;
             makefile.parse(BufReader::new(file))?;
+        }
+
+        // Merge `.USE`/`.USEBEFORE` templates into the targets that use them (before built-ins, so
+        // a template that pulls in a prerequisite is resolved against user rules).
+        if !makefile.use_templates.is_empty() {
+            makefile
+                .rule_map
+                .expand_use_templates(&makefile.use_templates);
         }
 
         // Built-in implicit rules are appended after the user's rules so they take lower priority.
@@ -464,6 +477,7 @@ impl<L: Logger> Makefile<L> {
                     if self.default_target.is_none()
                         && !target.starts_with('.')
                         && !target.contains('%')
+                        && !self.use_templates.contains_key(target)
                     {
                         self.default_target = Some(target.clone());
                         // `.DEFAULT_GOAL` tracks the first eligible target, unless the makefile has
@@ -1737,8 +1751,16 @@ impl<L: Logger> Makefile<L> {
             ".SILENT" => self.special.silent.extend(targets.iter().cloned()),
             ".IGNORE" => self.special.ignore.extend(targets.iter().cloned()),
             ".PRECIOUS" => self.special.precious.extend(targets.iter().cloned()),
-            ".OPTIONAL" | ".NOTMAIN" | ".MADE" | ".USE" | ".USEBEFORE" | ".META" | ".NOMETA"
-            | ".NOPATH" | ".RECURSIVE" | ".EXEC" | ".MAKE" => {}
+            // `.USE` (append) / `.USEBEFORE` (prepend) make the target a reusable recipe/prereq
+            // template, expanded into any target that lists it as a source (after parsing).
+            ".USE" | ".USEBEFORE" => {
+                let before = name == ".USEBEFORE";
+                for t in targets {
+                    self.use_templates.insert(t.clone(), before);
+                }
+            }
+            ".OPTIONAL" | ".NOTMAIN" | ".MADE" | ".META" | ".NOMETA" | ".NOPATH" | ".RECURSIVE"
+            | ".EXEC" | ".MAKE" => {}
             _ => return false,
         }
         true

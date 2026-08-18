@@ -699,6 +699,75 @@ impl RuleMap {
         }
     }
 
+    /// Merge bmake `.USE`/`.USEBEFORE` templates into every non-template rule: a prerequisite
+    /// naming a template is removed, and the template's recipe and prerequisites are appended
+    /// (`.USE`) or prepended (`.USEBEFORE`), recursively (a template's prerequisites may be
+    /// templates too). The template's recipe is expanded later with the *using* target's
+    /// automatic variables.
+    pub fn expand_use_templates(&mut self, templates: &HashMap<String, bool>) {
+        // Snapshot each template's recipe (+ line indices) and prerequisites by name.
+        let mut tmpl: HashMap<String, (Vec<String>, Vec<usize>, Vec<String>)> = HashMap::new();
+        for name in templates.keys() {
+            if let Some(idxs) = self.by_target.get(name) {
+                let r = &self.rules[idxs[0]];
+                tmpl.insert(
+                    name.clone(),
+                    (
+                        r.recipe.clone(),
+                        r.recipe_lines.clone(),
+                        r.prerequisites.clone(),
+                    ),
+                );
+            }
+        }
+
+        for i in 0..self.rules.len() {
+            // Skip the templates themselves.
+            if self.rules[i]
+                .targets
+                .iter()
+                .any(|t| templates.contains_key(t))
+            {
+                continue;
+            }
+            let mut kept = Vec::new();
+            let (mut before, mut before_lines) = (Vec::new(), Vec::new());
+            let (mut after, mut after_lines) = (Vec::new(), Vec::new());
+            let mut queue: std::collections::VecDeque<String> =
+                self.rules[i].prerequisites.iter().cloned().collect();
+            let mut seen = HashSet::new();
+            while let Some(src) = queue.pop_front() {
+                match tmpl.get(&src) {
+                    Some((recipe, lines, prereqs)) if seen.insert(src.clone()) => {
+                        if templates[&src] {
+                            // `.USEBEFORE` prepends: each template goes in front of the previous.
+                            before.splice(0..0, recipe.iter().cloned());
+                            before_lines.splice(0..0, lines.iter().copied());
+                        } else {
+                            after.extend(recipe.clone());
+                            after_lines.extend(lines.iter().copied());
+                        }
+                        queue.extend(prereqs.iter().cloned());
+                    }
+                    Some(_) => {} // already expanded — avoid loops
+                    None => kept.push(src),
+                }
+            }
+
+            let rule = &mut self.rules[i];
+            rule.prerequisites = kept;
+            before.append(&mut rule.recipe);
+            before.extend(after);
+            before_lines.append(&mut rule.recipe_lines);
+            before_lines.extend(after_lines);
+            rule.recipe = before;
+            rule.recipe_lines = before_lines;
+            if !rule.recipe.is_empty() {
+                rule.has_recipe = true;
+            }
+        }
+    }
+
     /// Insert a rule, update the `by_target` hashmap, and validate the rule.
     pub fn insert<L: Logger>(&mut self, rule: Rule, logger: &L) -> Result<(), MakeError> {
         // A rule with a `%` target is a pattern rule, stored separately from exact-match rules.
