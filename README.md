@@ -67,7 +67,7 @@ Progress (reproduce with `tests/conformance/run_gmake` / `run_bmake`, which alwa
 | Suite    | Version  | omake `--compat` |
 |----------|----------|------------------|
 | GNU make | 4.4.1    | **717 / 1337**   |
-| BSD make | 20230711 | **88 / 396**     |
+| BSD make | 20230711 | **91 / 396**     |
 
 These are `--compat={gnu,bsd}` scores because that is the only mode the runners use, and the only
 one worth tracking: the suites compare output byte-for-byte, so a plain `omake` (with its *own*
