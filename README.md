@@ -39,17 +39,17 @@ Working list of things that I plan on leaving out of this implementation intenti
 
 ## Development
 
-### Build and run
+To build and run:
 
 ```sh
-cargo build                 # builds the `omake` binary into target/debug/
+cargo build
 cargo run -- -f Makefile     # run against a makefile (args after `--`)
 ```
 
 The toolchain is pinned to nightly via `rust-toolchain.toml` (only so rustfmt can wrap over-long
 comments) and installs automatically; the code itself still builds on stable.
 
-### Build-time configuration
+### Build-time Configuration
 
 Like the BSD makes, omake will grow a few OS-specific paths — chiefly the *system makefile
 directory* where `sys.mk` and the built-in rules live (bmake's `_PATH_DEFSYSPATH`, `/usr/share/mk`
@@ -76,7 +76,7 @@ Planned constants and their NetBSD defaults: system makefile dir `/usr/share/mk`
 name `sys.mk`, object-dir prefix `/usr/obj`, default shell dir `/bin`, temp dir `/tmp`. These are
 tracked in `TODO.md`; none are wired up yet (omake does not read `sys.mk` today).
 
-### Before committing
+### Before Committing
 
 ```sh
 cargo fmt                   # nightly rustfmt, wraps comments at 100 columns
@@ -84,7 +84,7 @@ cargo clippy --all-targets  # the baseline is zero warnings — keep it clean
 cargo test                  # fast unit + system tests, no external dependencies
 ```
 
-### Repository layout
+### Repository Layout
 
 - **`src/lib/`** — the library (parsing + execution). Start here:
   - `makefile.rs` — the parser and the `Makefile` type (directives, includes, conditionals, `.for`).
@@ -97,7 +97,7 @@ cargo test                  # fast unit + system tests, no external dependencies
   `tests/conformance/` (the GNU/bmake suites; see its README). `TODO.md` (gitignored) tracks the
   remaining work, split into GNU and BSD sections.
 
-Dependencies are kept minimal on purpose: only `clap` and `const_format`.
+Dependencies are kept minimal on purpose.
 
 ### Testing
 
@@ -108,10 +108,10 @@ against that makefile with the given arguments and checks stdout/stderr — and 
 directory contents — against the expected values. These are fast and need no external tools:
 
 ```sh
-cargo test                  # unit + system tests
+cargo test  # unit + system tests
 ```
 
-### Conformance suites
+### Conformance Suites
 
 Beyond the hand-written scenarios, `tests/conformance/` runs omake against the **real upstream test
 suites** of GNU make and NetBSD bmake (vendored on demand at a pinned commit). Both do exact
