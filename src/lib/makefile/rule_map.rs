@@ -11,6 +11,10 @@ use crate::vars::Vars;
 /// Maximum length of a chained implicit-rule search (e.g. `%.o: %.c` then `%.c: %.y`).
 const PATTERN_CHAIN_LIMIT: usize = 16;
 
+/// A `.USE`/`.USEBEFORE` template's `(recipe, recipe_line_indices, prerequisites)`, snapshotted for
+/// merging into the targets that use it.
+type UseTemplate = (Vec<String>, Vec<usize>, Vec<String>);
+
 /// Built-in implicit pattern rules (GNU make defaults), registered after the makefile is parsed so
 /// that user rules take precedence. Recipes reference the standard `COMPILE.*`/`LINK.*` variables.
 const BUILTIN_RULES: &[(&str, &[&str], &str)] = &[
@@ -706,7 +710,7 @@ impl RuleMap {
     /// automatic variables.
     pub fn expand_use_templates(&mut self, templates: &HashMap<String, bool>) {
         // Snapshot each template's recipe (+ line indices) and prerequisites by name.
-        let mut tmpl: HashMap<String, (Vec<String>, Vec<usize>, Vec<String>)> = HashMap::new();
+        let mut tmpl: HashMap<String, UseTemplate> = HashMap::new();
         for name in templates.keys() {
             if let Some(idxs) = self.by_target.get(name) {
                 let r = &self.rules[idxs[0]];
@@ -765,6 +769,20 @@ impl RuleMap {
             if !rule.recipe.is_empty() {
                 rule.has_recipe = true;
             }
+        }
+
+        // A template built directly as a target is a no-op ("up to date"): its recipe applies only
+        // to the targets that use it, so clear it here (keeping `has_recipe` so it reports up to
+        // date rather than "nothing to be done").
+        let template_idxs: Vec<usize> = templates
+            .keys()
+            .filter_map(|name| self.by_target.get(name))
+            .flatten()
+            .copied()
+            .collect();
+        for idx in template_idxs {
+            self.rules[idx].recipe.clear();
+            self.rules[idx].recipe_lines.clear();
         }
     }
 
@@ -911,17 +929,22 @@ impl RuleMap {
                 && state.recipes_run == recipes_before
                 && !state.failed.contains(target)
             {
-                let message = if self.has_recipe(makefile, target) {
-                    format!("'{target}' is up to date.")
-                } else if makefile.opts.compat == crate::compat::Compat::Bsd {
+                let bsd = makefile.opts.compat == crate::compat::Compat::Bsd;
+                if self.has_recipe(makefile, target) {
+                    if bsd {
+                        // bmake: backtick-quoted, no program prefix.
+                        println!("`{target}' is up to date.");
+                    } else {
+                        makefile
+                            .logger
+                            .notice(&format!("'{target}' is up to date."));
+                    }
+                } else if !bsd {
                     // bmake is silent for a target with no commands; "Nothing to be done" is a
                     // GNU-ism it never emits.
-                    String::new()
-                } else {
-                    format!("Nothing to be done for '{target}'.")
-                };
-                if !message.is_empty() {
-                    makefile.logger.notice(&message);
+                    makefile
+                        .logger
+                        .notice(&format!("Nothing to be done for '{target}'."));
                 }
             }
         }
