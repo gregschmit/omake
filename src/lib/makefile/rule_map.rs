@@ -184,6 +184,82 @@ impl Rule {
         let mut touch_saw_non_plus = false;
 
         debug_assert_eq!(self.recipe.len(), self.recipe_lines.len());
+
+        // `.ONESHELL:` runs all recipe lines in a single shell so state (a `cd`, a shell variable)
+        // persists across them. Only the first line's `@`/`-` prefix applies to the whole recipe;
+        // every line has its prefix and leading whitespace stripped.
+        if makefile.is_oneshell() && !touch_mode && !makefile.opts.question {
+            let mut lines: Vec<String> = Vec::new();
+            let (mut recipe_silent, mut recipe_ignore) = (false, false);
+            for (idx, raw) in self.recipe.iter().enumerate() {
+                let (ls, li, _lf, body) = strip_command_modifiers(raw);
+                if idx == 0 {
+                    recipe_silent = ls;
+                    recipe_ignore = li;
+                }
+                let expansion = expand_collect(body, &vars)
+                    .map_err(|e| MakeError::new(&e, self.context.clone()))?;
+                if let Some(code) = expansion.shell_status {
+                    let _ = vars.set(".SHELLSTATUS", code.to_string().as_str(), false);
+                }
+                for line in split_recipe_lines(&expansion.result) {
+                    let (_s, _i, _f, cmd) = strip_command_modifiers(&line);
+                    if !cmd.is_empty() {
+                        lines.push(cmd.to_string());
+                    }
+                }
+            }
+            if !lines.is_empty() {
+                commands_run += 1;
+                if (!recipe_silent && !silent_target) || makefile.opts.just_print {
+                    for l in &lines {
+                        println!("{l}");
+                    }
+                }
+                if !makefile.opts.just_print {
+                    let mut cmd = Command::new(&shell);
+                    cmd.args(&shell_flags)
+                        .arg(lines.join("\n"))
+                        .envs(env_adds.iter().map(|(k, v)| (k, v)));
+                    for name in &env_removes {
+                        cmd.env_remove(name);
+                    }
+                    let res = cmd
+                        .status()
+                        .map_err(|e| MakeError::new(&e.to_string(), self.context.clone()))?;
+                    if !matches!(res.code(), Some(0))
+                        && !(recipe_ignore || ignore_target || makefile.opts.ignore_errors)
+                    {
+                        let recipe_line = *self.recipe_lines.first().unwrap_or(&0);
+                        self.remove_target_on_error(makefile, target, pattern_build, mtime_before);
+                        let mut ctx = self.context.clone();
+                        ctx.line_index = Some(recipe_line);
+                        let mut err = MakeError::new("Recipe failed.", ctx);
+                        let file = self
+                            .context
+                            .path
+                            .as_ref()
+                            .map(|p| p.display().to_string())
+                            .unwrap_or_default();
+                        if let Some(line) = makefile.opts.compat.recipe_error(
+                            &makefile.logger.prefix(),
+                            &file,
+                            recipe_line + 1,
+                            target,
+                            &exit_reason(&res),
+                        ) {
+                            err = err.with_display(line);
+                        }
+                        return Err(err);
+                    }
+                }
+            }
+            return Ok(RecipeOutcome {
+                commands_run,
+                needs_rebuild,
+            });
+        }
+
         for (raw, &recipe_line) in self.recipe.iter().zip(self.recipe_lines.iter()) {
             // Command modifiers (`@` silence, `-` ignore errors, `+` run even under `--just-print`)
             // that appear literally at the start of the recipe line — before expansion — apply to

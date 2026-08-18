@@ -42,6 +42,8 @@ pub struct SpecialTargets {
     precious: HashSet<String>,
     /// Whether a target modified by a failing recipe is deleted (`.DELETE_ON_ERROR:`).
     delete_on_error: bool,
+    /// `.ONESHELL:` — run all of a target's recipe lines in a single shell invocation.
+    oneshell: bool,
     /// Intermediate files to preserve (`.SECONDARY`), or all of them when `secondary_all`.
     secondary: HashSet<String>,
     /// Whether every intermediate file is preserved (`.SECONDARY` with no prerequisites).
@@ -2111,6 +2113,8 @@ impl<L: Logger> Makefile<L> {
                     .extend(rule.prerequisites.iter().cloned()),
                 // `.DELETE_ON_ERROR:` is a global flag (its prerequisites are ignored).
                 ".DELETE_ON_ERROR" => self.special.delete_on_error = true,
+                // `.ONESHELL:` runs all recipe lines of a target in one shell invocation.
+                ".ONESHELL" => self.special.oneshell = true,
                 // `.SECONDARY:` with no prerequisites preserves all intermediates; otherwise it
                 // preserves the listed ones. `.INTERMEDIATE:` forces the listed targets
                 // intermediate.
@@ -2318,6 +2322,11 @@ impl<L: Logger> Makefile<L> {
     /// Whether `.DELETE_ON_ERROR:` is in effect.
     fn delete_on_error(&self) -> bool {
         self.special.delete_on_error
+    }
+
+    /// Whether `.ONESHELL:` is in effect (all recipe lines run in one shell).
+    pub fn is_oneshell(&self) -> bool {
+        self.special.oneshell
     }
 
     /// Whether an invented intermediate file `target` should be preserved rather than deleted after
