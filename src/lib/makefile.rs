@@ -839,8 +839,20 @@ impl<L: Logger> Makefile<L> {
             return Ok(());
         }
 
-        // Otherwise, throw error if line is not recognizable.
-        Err(MakeError::new("Invalid line type.", self.context.clone()))
+        // Otherwise the line is unrecognizable. gmake calls this "missing separator" (it found no
+        // `:` rule separator or `=` assignment); a space-indented line — with the default TAB
+        // recipe prefix — most likely meant a tab-indented recipe.
+        let msg = if self.opts.compat == Compat::Gnu {
+            let spaces = raw_line.len() - raw_line.trim_start_matches(' ').len();
+            if spaces > 0 && self.vars.get(".RECIPEPREFIX").value == "\t" {
+                format!("missing separator (did you mean TAB instead of {spaces} spaces?).")
+            } else {
+                "missing separator.".to_string()
+            }
+        } else {
+            "Invalid line type.".to_string()
+        };
+        Err(MakeError::new(&msg, self.context.clone()))
     }
 
     /// Apply a variable assignment with the semantics of its operator, stripping the leading
