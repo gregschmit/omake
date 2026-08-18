@@ -49,6 +49,33 @@ cargo run -- -f Makefile     # run against a makefile (args after `--`)
 The toolchain is pinned to nightly via `rust-toolchain.toml` (only so rustfmt can wrap over-long
 comments) and installs automatically; the code itself still builds on stable.
 
+### Build-time configuration
+
+Like the BSD makes, omake will grow a few OS-specific paths — chiefly the *system makefile
+directory* where `sys.mk` and the built-in rules live (bmake's `_PATH_DEFSYSPATH`, `/usr/share/mk`
+on NetBSD and FreeBSD). Rather than hard-code one OS, these are centralized as build-time constants,
+each overridable through an `OMAKE_*` environment variable read at compile time with `option_env!`
+and defaulting to NetBSD's value:
+
+```rust
+// One module holds these; NetBSD defaults, overridable at build time.
+pub const DEFAULT_SYSPATH: &str = match option_env!("OMAKE_DEFAULT_SYSPATH") {
+    Some(path) => path,
+    None => "/usr/share/mk",
+};
+```
+
+A packager targeting a different layout sets the override in the build environment (or pins it in
+`.cargo/config.toml`):
+
+```sh
+OMAKE_DEFAULT_SYSPATH=/opt/pkg/share/mk cargo build --release
+```
+
+Planned constants and their NetBSD defaults: system makefile dir `/usr/share/mk`, system makefile
+name `sys.mk`, object-dir prefix `/usr/obj`, default shell dir `/bin`, temp dir `/tmp`. These are
+tracked in `TODO.md`; none are wired up yet (omake does not read `sys.mk` today).
+
 ### Before committing
 
 ```sh
@@ -72,38 +99,37 @@ cargo test                  # fast unit + system tests, no external dependencies
 
 Dependencies are kept minimal on purpose: only `clap` and `const_format`.
 
-## Testing Methodology
+### Testing
 
-We have unit tests where they are feasible.
+Unit tests live alongside the code where they are feasible. The bulk of coverage is the **system
+test suite** under `tests/scenarios/`: each scenario is a directory with a makefile, a `mod.rs`, and
+any fixture files. `mod.rs` invokes the `system_test_cases!` macro, which runs the built `omake`
+against that makefile with the given arguments and checks stdout/stderr — and the resulting
+directory contents — against the expected values. These are fast and need no external tools:
 
-There is also a system test suite in the `tests` directory. In this context, "system" tests are
-directories which contain a makefile, a `mod.rs` file, and any other files needed by the makefile.
-The `mod.rs` invokes a `system_test_cases!` macro, which executes this project's resulting binary
-against that directory's makefile given the arguments provided and checks STDOUT/STDERR against the
-expected STDOUT/STDERR provided to the macro, and also checks the directory against the expected
-files and content provided to the macro.
+```sh
+cargo test                  # unit + system tests
+```
 
-### Conformance Suites
+### Conformance suites
 
-Beyond the hand-written system tests, `tests/conformance/` runs omake against the **real upstream
-test suites** of GNU make and NetBSD bmake (vendored on demand at a pinned commit; see
-`tests/conformance/README.md`). Both suites do exact golden-file comparison, so `--compat={gnu,bsd}`
-switches omake's diagnostic output to match that make, letting the suites measure real behavioral
-gaps rather than output-format noise.
-
-Progress (reproduce with `tests/conformance/run_gmake` / `run_bmake`, which always run in
-`--compat` mode):
+Beyond the hand-written scenarios, `tests/conformance/` runs omake against the **real upstream test
+suites** of GNU make and NetBSD bmake (vendored on demand at a pinned commit). Both do exact
+golden-file comparison, so the runners use `--compat={gnu,bsd}` to match that make's diagnostic
+output and measure real behavioral gaps rather than format noise. Current pass rates:
 
 | Suite    | Version  | omake `--compat` |
 |----------|----------|------------------|
 | GNU make | 4.4.1    | **717 / 1337**   |
-| BSD make | 20230711 | **91 / 396**     |
+| BSD make | 20230711 | **94 / 396**     |
 
-These are `--compat={gnu,bsd}` scores because that is the only mode the runners use, and the only
-one worth tracking: the suites compare output byte-for-byte, so a plain `omake` (with its *own*
-diagnostic format) scores far lower — but almost entirely from format mismatch, not from mis-running
-the makefile. `--compat` re-dresses the output so the score measures real behavioral/feature gaps
-rather than that noise. The numbers should only go up; the remaining GNU gaps are mostly deeper
-features (`.SECONDEXPANSION` for pattern rules, chained implicit-rule search, some diagnostic
-formats), and bmake's suite pins a lot of bmake internals (`.MAKE.*`, `-d` debug traces, `:C`/`:@`
-modifiers) that omake does not replicate.
+The scores are pinned as a regression gate: two `#[ignore]`d tests shell out to the runners, so the
+normal `cargo test` loop stays fast and dependency-free. To also run the gate, un-ignore them:
+
+```sh
+cargo test -- --include-ignored   # also runs the conformance regression gate (~6 min)
+```
+
+See [`tests/conformance/README.md`](tests/conformance/README.md) for the runner scripts, their
+prerequisites (perl, bmake, first-time network), how to read the results, and why a plain-`omake`
+score would be lower but meaningless (output-format noise, not mis-run makefiles).

@@ -47,10 +47,11 @@ constants in `tests/conformance_regression.rs` as the numbers improve).
 ## How to read the results (important)
 
 Both suites do **exact golden-file comparison** (`*.exp` for bmake; per-test expected output for
-GNU). They were written to test *those* makes, so they assume that make's exact byte-for-byte output.
-omake deliberately has its **own** diagnostic format (`omake: ERROR [file:N] | … ` with a caret,
-status lines via a distinct stdout path) rather than gmake's `*** [file:N: target] Error C` or
-bmake's `make: …`. So **most "failures" are output-format/wording differences, not semantic bugs** —
+GNU). They were written to test *those* makes, so they assume that make's exact byte-for-byte
+output. omake deliberately has its **own** diagnostic format (`omake: ERROR [file:N] | … ` with a
+caret, status lines via a distinct stdout path) rather than gmake's `*** [file:N: target] Error C`
+or bmake's `make: …`. So **most "failures" are output-format/wording differences, not semantic
+bugs** —
 omake's makefile *semantics* are covered byte-for-byte by `tests/scenarios/`.
 
 What these suites are genuinely useful for:
@@ -77,7 +78,7 @@ not mis-run makefiles).
 - **GNU make suite:** **717/1337** with `--compat=gnu`, climbing as feature coverage improves. The
   remaining gaps are mostly deeper features (`.SECONDEXPANSION` for pattern rules, chained
   implicit-rule search, makefile remaking) plus a few more diagnostic formats.
-- **bmake unit-tests:** **91/396**. The suite near-exhaustively pins bmake's *exact* behavior and
+- **bmake unit-tests:** **94/396**. The suite near-exhaustively pins bmake's *exact* behavior and
   output — `.MAKE.*` variables, `-d` debug traces, `:C`/`:@` modifiers, archives, `.SYSPATH`, job
   debugging — much of which omake does not (and need not) replicate, so a large share is
   structurally out of reach.
