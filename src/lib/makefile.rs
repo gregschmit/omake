@@ -415,6 +415,10 @@ impl<L: Logger> Makefile<L> {
 
         // Handle recipe lines.
         let recipe_prefix = &recipe_prefix;
+        // bmake (unlike gmake) ignores a recipe line that is only a comment — it is not echoed,
+        // not run, and does not give the target commands. gmake passes `#…` on to the shell. This
+        // is a genuine GNU↔BSD divergence, so it keys on `--compat`.
+        let drop_comment_recipes = self.opts.compat != Compat::Gnu;
         if line.starts_with(recipe_prefix) {
             // If line starts with the recipe prefix, then push it to the current rule.
             match &mut self.current_rule {
@@ -430,6 +434,9 @@ impl<L: Logger> Makefile<L> {
                         .strip_prefix(recipe_prefix)
                         .expect("line known to start with a recipe prefix");
 
+                    if drop_comment_recipes && cmd.trim_start().starts_with('#') {
+                        return Ok(());
+                    }
                     r.has_recipe = true;
                     if !cmd.trim().is_empty() {
                         r.recipe.push(cmd.to_string());
