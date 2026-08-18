@@ -1198,7 +1198,12 @@ impl<L: Logger> Makefile<L> {
         match kw {
             "ifeq" | "ifneq" => {
                 let (a, b) = parse_ifeq_args(rest).ok_or_else(|| {
-                    MakeError::new("Malformed `ifeq`/`ifneq` arguments.", self.context.clone())
+                    let msg = if self.opts.compat == Compat::Gnu {
+                        "invalid syntax in conditional."
+                    } else {
+                        "Malformed `ifeq`/`ifneq` arguments."
+                    };
+                    MakeError::new(msg, self.context.clone())
                 })?;
                 let equal =
                     expand(&a, &self.vars).map_err(err)? == expand(&b, &self.vars).map_err(err)?;
