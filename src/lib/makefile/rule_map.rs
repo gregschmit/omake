@@ -786,6 +786,18 @@ impl RuleMap {
         }
     }
 
+    /// Whether an explicit rule names this exact target (bmake's `.if target(name)`).
+    pub fn defines_target(&self, name: &str) -> bool {
+        self.by_target.contains_key(name)
+    }
+
+    /// Whether a defined target has any recipe commands (bmake's `.if commands(name)`).
+    pub fn target_has_commands(&self, name: &str) -> bool {
+        self.by_target
+            .get(name)
+            .is_some_and(|idx| idx.iter().any(|i| self.rules[*i].has_recipe))
+    }
+
     /// Insert a rule, update the `by_target` hashmap, and validate the rule.
     pub fn insert<L: Logger>(&mut self, rule: Rule, logger: &L) -> Result<(), MakeError> {
         // A rule with a `%` target is a pattern rule, stored separately from exact-match rules.

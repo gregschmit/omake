@@ -136,6 +136,8 @@ pub struct Makefile<L: Logger> {
     /// A bare `export` / `.EXPORT_ALL_VARIABLES:` exports every file/environment variable with a
     /// valid identifier name (minus any `unexport`ed).
     export_all: bool,
+    /// Extra goals added by a `.MAKEFLAGS:` line (queried by bmake's `.if make(name)`).
+    make_goals: Vec<String>,
     /// `vpath PATTERN DIRS` directives: directories to search for files matching each pattern.
     vpaths: Vec<(String, Vec<String>)>,
     /// Known suffixes (from `.SUFFIXES`), used to recognize suffix rules like `.c.o:`.
@@ -188,6 +190,7 @@ impl<L: Logger> Makefile<L> {
             exported: HashSet::new(),
             exported_literal: HashSet::new(),
             unexported: HashSet::new(),
+            make_goals: Vec::new(),
             export_all: false,
             vpaths: Vec::new(),
             suffixes: crate::vars::DEFAULT_SUFFIXES
@@ -1167,11 +1170,11 @@ impl<L: Logger> Makefile<L> {
                 self.cond_push(cond);
             }
             ".ifdef" => {
-                let cond = self.cond_active() && self.bsd_defined(rest)?;
+                let cond = self.cond_active() && self.eval_bsd_cond(rest, BareMode::Defined)?;
                 self.cond_push(cond);
             }
             ".ifndef" => {
-                let cond = self.cond_active() && !self.bsd_defined(rest)?;
+                let cond = self.cond_active() && self.eval_bsd_cond(rest, BareMode::NotDefined)?;
                 self.cond_push(cond);
             }
             ".elif" => {
@@ -1179,11 +1182,11 @@ impl<L: Logger> Makefile<L> {
                 self.cond_else(Some(follow))?;
             }
             ".elifdef" => {
-                let follow = self.bsd_defined(rest)?;
+                let follow = self.eval_bsd_cond(rest, BareMode::Defined)?;
                 self.cond_else(Some(follow))?;
             }
             ".elifndef" => {
-                let follow = !self.bsd_defined(rest)?;
+                let follow = self.eval_bsd_cond(rest, BareMode::NotDefined)?;
                 self.cond_else(Some(follow))?;
             }
             ".else" => self.cond_else(None)?,
@@ -1200,63 +1203,81 @@ impl<L: Logger> Makefile<L> {
         Ok(self.vars.is_set(name.trim()))
     }
 
-    /// Evaluate a BSD `.if` expression. A recursive-descent evaluator with `||` (lowest), then
-    /// `&&`, then a primary (`!`, parentheses, `defined()`/`empty()`, comparisons, bare value).
+    /// Evaluate a BSD `.if` expression (bare words are plain truthy values).
     fn eval_bsd_expr(&self, expr: &str) -> Result<bool, MakeError> {
-        self.eval_bsd_or(expr.trim())
+        self.eval_bsd_cond(expr, BareMode::Truthy)
+    }
+
+    /// Evaluate a BSD conditional expression. A recursive-descent evaluator with `||` (lowest),
+    /// then `&&`, then a primary. `mode` decides how a bare word is read: a plain truthy value
+    /// (`.if`), `defined(word)` (`.ifdef`), or `!defined(word)` (`.ifndef`).
+    fn eval_bsd_cond(&self, expr: &str, mode: BareMode) -> Result<bool, MakeError> {
+        self.eval_bsd_or(expr.trim(), mode)
     }
 
     /// `||` level (lowest precedence), short-circuiting.
-    fn eval_bsd_or(&self, expr: &str) -> Result<bool, MakeError> {
+    fn eval_bsd_or(&self, expr: &str, mode: BareMode) -> Result<bool, MakeError> {
         if let Some(parts) = split_logical(expr, "||") {
             for part in parts {
-                if self.eval_bsd_and(part.trim())? {
+                if self.eval_bsd_and(part.trim(), mode)? {
                     return Ok(true);
                 }
             }
             return Ok(false);
         }
-        self.eval_bsd_and(expr)
+        self.eval_bsd_and(expr, mode)
     }
 
     /// `&&` level, short-circuiting.
-    fn eval_bsd_and(&self, expr: &str) -> Result<bool, MakeError> {
+    fn eval_bsd_and(&self, expr: &str, mode: BareMode) -> Result<bool, MakeError> {
         if let Some(parts) = split_logical(expr, "&&") {
             for part in parts {
-                if !self.eval_bsd_primary(part.trim())? {
+                if !self.eval_bsd_primary(part.trim(), mode)? {
                     return Ok(false);
                 }
             }
             return Ok(true);
         }
-        self.eval_bsd_primary(expr)
+        self.eval_bsd_primary(expr, mode)
     }
 
-    /// A primary term: `!expr`, `(expr)`, `defined(x)`/`empty(x)`, a comparison, or a bare value
-    /// (true when it expands to a non-empty, non-zero string).
-    fn eval_bsd_primary(&self, expr: &str) -> Result<bool, MakeError> {
+    /// A primary term: `!expr`, `(expr)`, a function call (`defined`/`empty`/`exists`/`target`/
+    /// `commands`/`make`), a comparison, or a bare value (see [`BareMode`]).
+    fn eval_bsd_primary(&self, expr: &str, mode: BareMode) -> Result<bool, MakeError> {
         let expr = expr.trim();
         let err = |e: String| MakeError::new(&e, self.context.clone());
 
         if let Some(inner) = strip_full_parens(expr) {
-            return self.eval_bsd_or(inner.trim());
+            return self.eval_bsd_or(inner.trim(), mode);
         }
         if let Some(rest) = expr.strip_prefix('!') {
-            return Ok(!self.eval_bsd_primary(rest)?);
+            return Ok(!self.eval_bsd_primary(rest, mode)?);
         }
-        if let Some(inner) = expr
-            .strip_prefix("defined(")
-            .and_then(|s| s.strip_suffix(')'))
-        {
+        // Condition functions. The argument is variable-expanded but otherwise literal (quotes and
+        // backslashes are part of the name, matching bmake).
+        if let Some(inner) = strip_cond_func(expr, "defined") {
             return self.bsd_defined(inner);
         }
-        if let Some(inner) = expr
-            .strip_prefix("empty(")
-            .and_then(|s| s.strip_suffix(')'))
-        {
+        if let Some(inner) = strip_cond_func(expr, "empty") {
             // `empty(VAR)` is true when the variable expands to nothing.
             let value = expand(&format!("${{{}}}", inner.trim()), &self.vars).map_err(err)?;
             return Ok(value.is_empty());
+        }
+        if let Some(inner) = strip_cond_func(expr, "exists") {
+            let arg = expand(inner, &self.vars).map_err(err)?;
+            return Ok(std::path::Path::new(arg.trim()).exists());
+        }
+        if let Some(inner) = strip_cond_func(expr, "target") {
+            let arg = expand(inner, &self.vars).map_err(err)?;
+            return Ok(self.rule_map.defines_target(arg.trim()));
+        }
+        if let Some(inner) = strip_cond_func(expr, "commands") {
+            let arg = expand(inner, &self.vars).map_err(err)?;
+            return Ok(self.rule_map.target_has_commands(arg.trim()));
+        }
+        if let Some(inner) = strip_cond_func(expr, "make") {
+            let arg = expand(inner, &self.vars).map_err(err)?;
+            return Ok(self.is_make_goal(arg.trim()));
         }
 
         // Comparison operators. Two-character forms are tried before one-character ones so `<=` is
@@ -1267,10 +1288,37 @@ impl<L: Logger> Makefile<L> {
             }
         }
 
-        // A bare expression is true when it expands to a non-empty, non-zero value.
+        // A double-quoted string is a plain value (true iff non-empty) in every mode.
+        let quoted = expr.len() >= 2 && expr.starts_with('"') && expr.ends_with('"');
+        if quoted {
+            let (value, _) = self.bsd_operand(expr)?;
+            return Ok(!value.is_empty());
+        }
+        // In `.ifdef`/`.ifndef` an unquoted, non-numeric word is `defined(word)` /
+        // `!defined(word)`.
+        if mode != BareMode::Truthy && bsd_number(expr).is_none() {
+            let defined = self.bsd_defined(expr)?;
+            return Ok(if mode == BareMode::Defined {
+                defined
+            } else {
+                !defined
+            });
+        }
+        // Otherwise (a `.if` bare word, or a number) it is true when non-empty and non-zero.
         let value = expand(expr, &self.vars).map_err(err)?;
         let value = value.trim();
         Ok(!value.is_empty() && value != "0")
+    }
+
+    /// Whether `name` is one of the goals make was asked to build (bmake's `.if make(name)`):
+    /// a command-line goal, or one added by a `.MAKEFLAGS:` line.
+    fn is_make_goal(&self, name: &str) -> bool {
+        self.vars
+            .get("MAKECMDGOALS")
+            .value
+            .split_whitespace()
+            .any(|g| g == name)
+            || self.make_goals.iter().any(|g| g == name)
     }
 
     /// Evaluate a BSD comparison. `==`/`!=` compare numerically when both operands are unquoted
@@ -1930,6 +1978,12 @@ impl<L: Logger> Makefile<L> {
                 ".MAKEFLAGS" | ".MFLAGS" if self.opts.compat != Compat::Gnu => {
                     let flags = rule.prerequisites.join(" ");
                     crate::makeflags::merge_decoded(&mut self.opts, &flags);
+                    // Non-flag words are additional goals to build (seen by `.if make(name)`).
+                    for word in &rule.prerequisites {
+                        if !word.starts_with('-') {
+                            self.make_goals.push(word.clone());
+                        }
+                    }
                 }
                 _ => {}
             }
@@ -2233,6 +2287,36 @@ fn parse_export(trimmed: &str) -> Option<(bool, &str)> {
         }
     }
     None
+}
+
+/// How a bare word in a BSD conditional is read.
+#[derive(PartialEq, Eq, Clone, Copy)]
+enum BareMode {
+    /// `.if` — true when the word expands to a non-empty, non-zero string.
+    Truthy,
+    /// `.ifdef` — the word means `defined(word)`.
+    Defined,
+    /// `.ifndef` — the word means `!defined(word)`.
+    NotDefined,
+}
+
+/// If `expr` is exactly the condition-function call `name(...)`, return the inner argument. The
+/// matching `)` must close the whole call, so `f(a) == g(b)` is not mistaken for one call.
+fn strip_cond_func<'a>(expr: &'a str, name: &str) -> Option<&'a str> {
+    let inner = expr
+        .strip_prefix(name)?
+        .strip_prefix('(')?
+        .strip_suffix(')')?;
+    let mut depth = 0i32;
+    for c in inner.chars() {
+        match c {
+            '(' => depth += 1,
+            ')' if depth == 0 => return None, // a top-level `)` closes the call early
+            ')' => depth -= 1,
+            _ => {}
+        }
+    }
+    (depth == 0).then_some(inner)
 }
 
 /// The BSD dotted export directives, which mutate make's own environment.
