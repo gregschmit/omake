@@ -1323,6 +1323,8 @@ impl<L: Logger> Makefile<L> {
         let _ = self
             .vars
             .set_origin("MAKEFILE_LIST", &updated, false, Origin::File);
+        // bmake's `${MAKEFILE}` is the makefile currently being read.
+        let _ = self.vars.set_origin("MAKEFILE", name, false, Origin::File);
     }
 
     /// Parse a single named file into the current parser state. A missing file is an error unless

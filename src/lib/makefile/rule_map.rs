@@ -407,6 +407,25 @@ impl Rule {
         let (star_dir, star_file) = split_dir_file(stem);
         let _ = vars.set("*D", star_dir.as_str(), false);
         let _ = vars.set("*F", star_file.as_str(), false);
+
+        // bmake's names for the automatic variables. `.TARGET` = `$@` and `.ALLSRC` = `$^` always;
+        // `.IMPSRC` is the source implied by an inference rule (empty for an explicit rule);
+        // `.PREFIX` is the pattern stem when inferred, else the target's root (suffix
+        // stripped). A makefile using these works in any mode; gmake makefiles never
+        // reference the dotted names.
+        let inferred = !stem.is_empty();
+        let _ = vars.set(".TARGET", target, false);
+        let _ = vars.set(".IMPSRC", if inferred { first } else { "" }, false);
+        let _ = vars.set(".ALLSRC", deduped.as_str(), false);
+        let prefix = if inferred {
+            stem.to_string()
+        } else {
+            target
+                .rsplit_once('.')
+                .map_or(target, |(root, _)| root)
+                .to_string()
+        };
+        let _ = vars.set(".PREFIX", prefix.as_str(), false);
     }
 }
 
