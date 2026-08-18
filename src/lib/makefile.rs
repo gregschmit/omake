@@ -300,6 +300,7 @@ impl<L: Logger> Makefile<L> {
     /// `parse_line`. Shared by the top-level parse and by `include` handling (which reuses the
     /// current parser state).
     fn parse_reader<R: BufRead>(&mut self, input: R) -> Result<(), MakeError> {
+        self.update_parse_location();
         // Join physical lines ending in an unescaped backslash into logical lines. A non-recipe
         // continuation collapses the backslash/newline (and surrounding whitespace) into a single
         // space; a recipe continuation keeps the backslash and newline (so the shell sees the
@@ -1488,11 +1489,42 @@ impl<L: Logger> Makefile<L> {
                 self.context.clone(),
             );
             self.context = saved;
+            self.update_parse_location();
             return Err(err);
         }
 
         self.context = saved;
+        self.update_parse_location();
         result
+    }
+
+    /// Set bmake's `.PARSEDIR` (absolute directory) and `.PARSEFILE` (basename) from the makefile
+    /// currently being parsed. BSD-only; gmake has no such variables.
+    fn update_parse_location(&mut self) {
+        if self.opts.compat == Compat::Gnu {
+            return;
+        }
+        let Some(path) = self.context.path.clone() else {
+            return;
+        };
+        let file = path
+            .file_name()
+            .map(|f| f.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let abs = std::env::current_dir()
+            .map(|cwd| cwd.join(&path))
+            .unwrap_or(path);
+        let dir = abs
+            .parent()
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_default();
+        let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
+        let _ = self
+            .vars
+            .set_origin(".PARSEDIR", &dir.to_string_lossy(), false, Origin::File);
+        let _ = self
+            .vars
+            .set_origin(".PARSEFILE", &file, false, Origin::File);
     }
 
     /// Append a line to the in-progress `define` body, or finish it on the matching `endef`. Inner
