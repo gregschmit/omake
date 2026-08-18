@@ -264,12 +264,24 @@ fn expand_inner(s: &str, vars: &Vars, ctx: &mut Expander) -> Result<String, Stri
                 hit_variable = false;
             }
             _ => {
-                // If we hit the variable indicator, then inline expansion since nesting is
-                // impossible.
+                // A single-character variable reference (`$x`, `$@`, …). Like the `$(x)` form, a
+                // recursive variable's value is itself expanded (cycle-guarded), so `x = $(sort …)`
+                // referenced as `$x` resolves the function instead of leaking `$(…)` to the shell.
                 if hit_variable {
-                    let eval = &vars.get(c.to_string()).value;
-                    current_buffer.push_str(eval);
                     hit_variable = false;
+                    let name = c.to_string();
+                    let var = vars.get(&name);
+                    if var.recursive {
+                        if ctx.expanding.contains(&name) {
+                            return Err(format!("Recursive variable '{name}' references itself."));
+                        }
+                        ctx.expanding.push(name.clone());
+                        let expanded = expand_inner(&var.value, vars, ctx)?;
+                        ctx.expanding.pop();
+                        current_buffer.push_str(&expanded);
+                    } else {
+                        current_buffer.push_str(&var.value);
+                    }
                     continue;
                 }
 
