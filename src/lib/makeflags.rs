@@ -204,11 +204,37 @@ fn apply_option(opts: &mut Opts, tok: &str) {
     } else if tok == "--print-directory" {
         opts.print_dir_on = true;
         opts.print_dir_off = false;
+    } else if let Some(spec) = tok.strip_prefix("-d")
+        && !spec.is_empty()
+        && !spec.starts_with('-')
+    {
+        // bmake's `-d<letters>` debug spec (`-dl`, `-dcv`, `-dg1`, …). Distinct from gmake's bare
+        // `-d`; only the categories omake acts on take effect.
+        apply_bmake_debug(opts, spec);
     } else if let Some(cluster) = tok.strip_prefix('-')
         && !cluster.starts_with('-')
     {
         // A single-dash token of short flags, e.g. `-B` or `-ik` (as `MAKEFLAGS += -B` appends).
         apply_cluster(opts, cluster);
+    }
+}
+
+/// Parse bmake's `-d<letters>` debug spec. Only the categories omake reproduces take effect; the
+/// rest are accepted and ignored. `-dF<file>` sets the debug output file, so its trailing letters
+/// are a filename, not categories.
+fn apply_bmake_debug(opts: &mut Opts, spec: &str) {
+    for c in spec.chars() {
+        match c {
+            'F' => break,
+            'l' => opts.debug_loud = true,
+            'c' => opts.debug_cond = true,
+            // `-d0` turns debugging back off.
+            '0' => {
+                opts.debug_loud = false;
+                opts.debug_cond = false;
+            }
+            _ => {}
+        }
     }
 }
 

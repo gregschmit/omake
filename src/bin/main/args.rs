@@ -229,6 +229,8 @@ impl From<Args> for Opts {
             },
             debug: args.debug.clone(),
             debug_all: args.debug_short,
+            debug_loud: false,
+            debug_cond: false,
             trace: args.trace,
             warn_undefined_variables: args.warn_undefined_variables,
             // Resolved from the print-directory decision in `main`, not the raw flags.

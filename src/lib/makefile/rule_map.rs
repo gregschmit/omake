@@ -195,8 +195,12 @@ impl Rule {
                 // A real command line: it will be echoed and/or run, so it counts as work done.
                 commands_run += 1;
 
-                // Echo the command to stdout, unless silenced. `--just-print` always echoes.
-                if (!silent && !silent_target) || makefile.opts.just_print {
+                // Echo the command to stdout, unless silenced. `--just-print` always echoes, and
+                // bmake's `-dl` ("loud") echoes even a silenced command.
+                if (!silent && !silent_target)
+                    || makefile.opts.just_print
+                    || makefile.opts.debug_loud
+                {
                     println!("{command}");
                 }
 

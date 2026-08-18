@@ -65,6 +65,14 @@ pub struct Opts {
     /// Bare `-d` (debug everything). Emitted as `d` in the `MAKEFLAGS` short-flag cluster.
     pub debug_all: bool,
 
+    /// bmake's `-dl` ("loud") debug flag: echo every recipe command even when it is silenced by
+    /// `@`, `.SILENT`, or `-s`.
+    pub debug_loud: bool,
+
+    /// bmake's `-dc` ("cond") debug flag: trace conditional evaluation (`CondParser_Eval:` and
+    /// `Comparing` lines).
+    pub debug_cond: bool,
+
     /// `--trace` (accepted; `MAKEFLAGS` round-trip only).
     pub trace: bool,
 

@@ -1178,27 +1178,27 @@ impl<L: Logger> Makefile<L> {
     fn handle_bsd_conditional(&mut self, kw: &str, rest: &str) -> Result<(), MakeError> {
         match kw {
             ".if" => {
-                let cond = self.cond_active() && self.eval_bsd_expr(rest)?;
+                let cond = self.eval_bsd_if(rest, BareMode::Truthy)?;
                 self.cond_push(cond);
             }
             ".ifdef" => {
-                let cond = self.cond_active() && self.eval_bsd_cond(rest, BareMode::Defined)?;
+                let cond = self.eval_bsd_if(rest, BareMode::Defined)?;
                 self.cond_push(cond);
             }
             ".ifndef" => {
-                let cond = self.cond_active() && self.eval_bsd_cond(rest, BareMode::NotDefined)?;
+                let cond = self.eval_bsd_if(rest, BareMode::NotDefined)?;
                 self.cond_push(cond);
             }
             ".elif" => {
-                let follow = self.eval_bsd_expr(rest)?;
+                let follow = self.eval_bsd_elif(rest, BareMode::Truthy)?;
                 self.cond_else(Some(follow))?;
             }
             ".elifdef" => {
-                let follow = self.eval_bsd_cond(rest, BareMode::Defined)?;
+                let follow = self.eval_bsd_elif(rest, BareMode::Defined)?;
                 self.cond_else(Some(follow))?;
             }
             ".elifndef" => {
-                let follow = self.eval_bsd_cond(rest, BareMode::NotDefined)?;
+                let follow = self.eval_bsd_elif(rest, BareMode::NotDefined)?;
                 self.cond_else(Some(follow))?;
             }
             ".else" => self.cond_else(None)?,
@@ -1208,16 +1208,42 @@ impl<L: Logger> Makefile<L> {
         Ok(())
     }
 
+    /// Evaluate an `.if`/`.ifdef`/`.ifndef` condition, tracing it under `-dc` when it is actually
+    /// evaluated (the enclosing branch is active).
+    fn eval_bsd_if(&self, rest: &str, mode: BareMode) -> Result<bool, MakeError> {
+        if !self.cond_active() {
+            return Ok(false);
+        }
+        self.trace_cond_eval(rest);
+        self.eval_bsd_cond(rest, mode)
+    }
+
+    /// Evaluate an `.elif`/`.elifdef`/`.elifndef` follow-on condition. Like bmake, it is only
+    /// evaluated (and traced under `-dc`) when no earlier branch of this `.if` was taken.
+    fn eval_bsd_elif(&self, rest: &str, mode: BareMode) -> Result<bool, MakeError> {
+        let live = self
+            .cond_stack
+            .last()
+            .is_some_and(|s| s.parent_active && !s.taken);
+        if !live {
+            return Ok(false);
+        }
+        self.trace_cond_eval(rest);
+        self.eval_bsd_cond(rest, mode)
+    }
+
+    /// bmake `-dc`: print `CondParser_Eval: <raw condition>` before a condition is evaluated.
+    fn trace_cond_eval(&self, cond: &str) {
+        if self.opts.debug_cond {
+            println!("CondParser_Eval: {}", cond.trim());
+        }
+    }
+
     /// Whether the (expanded) variable named by `rest` is defined (BSD `defined()`/`.ifdef`).
     fn bsd_defined(&self, rest: &str) -> Result<bool, MakeError> {
         let name =
             expand(rest, &self.vars).map_err(|e| MakeError::new(&e, self.context.clone()))?;
         Ok(self.vars.is_set(name.trim()))
-    }
-
-    /// Evaluate a BSD `.if` expression (bare words are plain truthy values).
-    fn eval_bsd_expr(&self, expr: &str) -> Result<bool, MakeError> {
-        self.eval_bsd_cond(expr, BareMode::Truthy)
     }
 
     /// Evaluate a BSD conditional expression. A recursive-descent evaluator with `||` (lowest),
@@ -1340,6 +1366,14 @@ impl<L: Logger> Makefile<L> {
         let (rval, rquoted) = self.bsd_operand(rhs)?;
         let lnum = (!lquoted).then(|| bsd_number(&lval)).flatten();
         let rnum = (!rquoted).then(|| bsd_number(&rval)).flatten();
+
+        // bmake `-dc`: a numeric comparison prints the operands as `%f`, a string one quotes them.
+        if self.opts.debug_cond {
+            match (lnum, rnum) {
+                (Some(a), Some(b)) => println!("Comparing {a:.6} {op} {b:.6}"),
+                _ => println!("Comparing \"{lval}\" {op} \"{rval}\""),
+            }
+        }
 
         if op == "==" || op == "!=" {
             let equal = match (lnum, rnum) {
