@@ -951,6 +951,10 @@ impl<L: Logger> Makefile<L> {
     /// Principal interface for executing a parsed makefile, given a list of targets. Returns
     /// whether any target was found out of date (meaningful under `-q`, which builds nothing).
     pub fn execute(&self, mut targets: Vec<String>) -> Result<bool, MakeError> {
+        // bmake `-dg1`: dump the dependency graph before building.
+        if self.opts.debug_graph >= 1 {
+            self.print_input_graph();
+        }
         // Set targets list to the default goal if none were provided. `.DEFAULT_GOAL` (which the
         // parser keeps in sync with the first eligible target, but the makefile may override or
         // clear) is the source of truth.
@@ -969,6 +973,34 @@ impl<L: Logger> Makefile<L> {
         }
 
         self.rule_map.execute(self, &targets)
+    }
+
+    /// bmake `-dg1`: print the pass-1 `#*** Input graph:` node block (one line per explicit
+    /// target). The type flags are emitted in bmake's fixed `GNodeType_ToString` order.
+    fn print_input_graph(&self) {
+        println!("#*** Input graph:");
+        for node in self.rule_map.input_graph_nodes() {
+            let mut ops = vec![if node.double_colon {
+                "OP_DOUBLEDEP"
+            } else {
+                "OP_DEPENDS"
+            }];
+            if self.is_phony(&node.name) {
+                ops.push("OP_PHONY");
+            }
+            if node.submake {
+                ops.push("OP_SUBMAKE");
+            }
+            if node.has_commands {
+                ops.push("OP_HAS_COMMANDS");
+            }
+            println!(
+                "# {}, unmade, type {}, flags none",
+                node.name,
+                ops.join("|")
+            );
+        }
+        println!();
     }
 
     /// GNU make's makefile remaking: after parsing, rebuild any makefile (one that was read, or a

@@ -35,6 +35,47 @@ struct BorrowedPrereqs {
     order_only: Vec<String>,
 }
 
+/// One target in bmake's `-dg1` "Input graph" dump, with the OP flags omake can derive.
+pub struct GraphNode {
+    pub name: String,
+    pub has_commands: bool,
+    pub submake: bool,
+    pub double_colon: bool,
+}
+
+/// Port of bmake's `MaybeSubMake` (parse.c): whether a recipe command looks like a recursive make,
+/// so the node gets `OP_SUBMAKE`. True when the *unexpanded* text contains the bare word `make`
+/// (not flanked by alphanumerics) or one of `${MAKE}`, `${.MAKE}`, `$(MAKE)`, `$(.MAKE)`.
+fn maybe_submake(cmd: &str) -> bool {
+    let b = cmd.as_bytes();
+    let alnum = |c: u8| c.is_ascii_alphanumeric();
+    for i in 0..b.len() {
+        if b[i..].starts_with(b"make")
+            && (i == 0 || !alnum(b[i - 1]))
+            && b.get(i + 4).is_none_or(|&c| !alnum(c))
+        {
+            return true;
+        }
+        if b[i] != b'$' {
+            continue;
+        }
+        let mut p = i + 1;
+        let endc = match b.get(p) {
+            Some(b'{') => b'}',
+            Some(b'(') => b')',
+            _ => continue,
+        };
+        p += 1;
+        if b.get(p) == Some(&b'.') {
+            p += 1; // accept ${.MAKE} as well as ${MAKE}
+        }
+        if b[p..].starts_with(b"MAKE") && b.get(p + 4) == Some(&endc) {
+            return true;
+        }
+    }
+    false
+}
+
 /// A parsed rule from a makefile.
 #[derive(Debug, Clone)]
 pub struct Rule {
@@ -117,12 +158,16 @@ impl Rule {
             .and_then(|m| m.modified().ok());
 
         let shell = vars.get("SHELL").value.clone();
-        let shell_flags = vars
+        let mut shell_flags = vars
             .get(".SHELLFLAGS")
             .value
             .split_whitespace()
             .map(|s| s.to_string())
             .collect::<Vec<_>>();
+        // bmake `-dx`: run each recipe shell with `-x`, so it traces every command as `+ cmd`.
+        if makefile.opts.shell_x_trace {
+            shell_flags.insert(0, "-x".to_string());
+        }
 
         // `.SILENT`/`.IGNORE` apply to every recipe line of the target.
         let silent_target = makefile.is_silent(target);
@@ -788,6 +833,36 @@ impl RuleMap {
             self.rules[idx].recipe.clear();
             self.rules[idx].recipe_lines.clear();
         }
+    }
+
+    /// The explicit targets in first-mention order for bmake's `-dg1` graph dump, each with the OP
+    /// flags omake can derive: whether it has commands, is a sub-make, and uses `::`. Pattern rules
+    /// and `.`-prefixed special targets are excluded.
+    pub fn input_graph_nodes(&self) -> Vec<GraphNode> {
+        let mut nodes: Vec<GraphNode> = Vec::new();
+        let mut index: HashMap<&str, usize> = HashMap::new();
+        for rule in &self.rules {
+            let submake = rule.recipe.iter().any(|cmd| maybe_submake(cmd));
+            for target in &rule.targets {
+                if target.starts_with('.') || target.contains('%') {
+                    continue;
+                }
+                if let Some(&i) = index.get(target.as_str()) {
+                    // Merge a later stanza's flags into the existing node.
+                    nodes[i].has_commands |= rule.has_recipe;
+                    nodes[i].submake |= submake;
+                } else {
+                    index.insert(target, nodes.len());
+                    nodes.push(GraphNode {
+                        name: target.clone(),
+                        has_commands: rule.has_recipe,
+                        submake,
+                        double_colon: rule.double_colon,
+                    });
+                }
+            }
+        }
+        nodes
     }
 
     /// Whether an explicit rule names this exact target (bmake's `.if target(name)`).

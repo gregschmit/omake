@@ -73,6 +73,13 @@ pub struct Opts {
     /// `Comparing` lines).
     pub debug_cond: bool,
 
+    /// bmake's `-dg<N>` ("graph") debug flag: dump the dependency graph (0 = off). omake emits the
+    /// pass-1 `#*** Input graph:` node block.
+    pub debug_graph: u8,
+
+    /// bmake's `-dx` debug flag: run recipe shells with `-x` so each command is traced (`+ cmd`).
+    pub shell_x_trace: bool,
+
     /// `--trace` (accepted; `MAKEFLAGS` round-trip only).
     pub trace: bool,
 

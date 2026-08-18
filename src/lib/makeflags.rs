@@ -223,15 +223,29 @@ fn apply_option(opts: &mut Opts, tok: &str) {
 /// rest are accepted and ignored. `-dF<file>` sets the debug output file, so its trailing letters
 /// are a filename, not categories.
 fn apply_bmake_debug(opts: &mut Opts, spec: &str) {
-    for c in spec.chars() {
+    let mut chars = spec.chars().peekable();
+    while let Some(c) = chars.next() {
         match c {
             'F' => break,
             'l' => opts.debug_loud = true,
             'c' => opts.debug_cond = true,
+            'x' => opts.shell_x_trace = true,
+            // `-dg<N>`: the graph pass level follows (default 1).
+            'g' => {
+                opts.debug_graph = match chars.peek().and_then(|d| d.to_digit(10)) {
+                    Some(n) => {
+                        chars.next();
+                        n as u8
+                    }
+                    None => 1,
+                };
+            }
             // `-d0` turns debugging back off.
             '0' => {
                 opts.debug_loud = false;
                 opts.debug_cond = false;
+                opts.debug_graph = 0;
+                opts.shell_x_trace = false;
             }
             _ => {}
         }

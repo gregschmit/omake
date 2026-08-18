@@ -904,6 +904,9 @@ enum Modifier {
     ShellCmd(String),
     /// `:sh` — run the current value as a shell command and replace it with the output.
     ShellValue,
+    /// `:range` / `:range=N` — replace the value with `1 2 … N`, where N is the given count or
+    /// (with no `=N`) the number of words in the value.
+    Range(Option<usize>),
 }
 
 /// A `:[...]` word-selection request.
@@ -920,18 +923,25 @@ enum WordSel {
 /// `${...}` reference's content. A `=` in the part after the first `:` marks a GNU reference; a
 /// valid BSD modifier chain (with no `=`) is BSD; anything else leaves the `:` as part of the name.
 fn parse_var_action(content: &str) -> (String, VarAction) {
-    match content.split_once(':') {
-        Some((name, m)) if m.contains('=') => {
-            let (from, to) = m.split_once('=').unwrap();
-            (
-                name.trim().to_string(),
-                VarAction::Gnu(from.to_string(), to.to_string()),
-            )
+    let Some((name, m)) = content.split_once(':') else {
+        return (content.to_string(), VarAction::None);
+    };
+    let name = name.trim().to_string();
+    if m.contains('=') {
+        // A `=` usually marks a GNU `:from=to` substitution, but a BSD modifier chain can legally
+        // contain `=` (`:range=N`, possibly after other modifiers like `:U:range=N`). Prefer BSD
+        // only when the chain parses AND actually uses such a modifier, so ordinary gmake
+        // substitutions (`$(X:.c=.o)`, `$(X:M=N)`) are unaffected.
+        if let Some(mods) = parse_bsd_modifiers(m)
+            && mods.iter().any(|md| matches!(md, Modifier::Range(_)))
+        {
+            return (name, VarAction::Bsd(mods));
         }
-        Some((name, m)) => match parse_bsd_modifiers(m) {
-            Some(mods) => (name.trim().to_string(), VarAction::Bsd(mods)),
-            None => (content.to_string(), VarAction::None),
-        },
+        let (from, to) = m.split_once('=').unwrap();
+        return (name, VarAction::Gnu(from.to_string(), to.to_string()));
+    }
+    match parse_bsd_modifiers(m) {
+        Some(mods) => (name, VarAction::Bsd(mods)),
         None => (content.to_string(), VarAction::None),
     }
 }
@@ -992,6 +1002,7 @@ fn take_modifier(s: &str) -> Option<(Modifier, &str)> {
             _ => simple(1, Modifier::Sort { reverse: false }),
         },
         b's' if s.as_bytes().get(1) == Some(&b'h') => simple(2, Modifier::ShellValue),
+        b'r' if s.starts_with("range") => take_range(s),
         b'S' => take_subst(s),
         b'!' => take_shell_cmd(s),
         // NOTE: `:@var@body@` (loop) is not handled here: the body references the loop variable
@@ -999,6 +1010,23 @@ fn take_modifier(s: &str) -> Option<(Modifier, &str)> {
         // reference is gone by build time. Supporting it needs the var-ref path to keep the raw
         // modifier text and expand modifier arguments lazily.
         _ => None,
+    }
+}
+
+/// Parse a `:range` / `:range=N` modifier (`s` starts at `range`).
+fn take_range(s: &str) -> Option<(Modifier, &str)> {
+    let after = &s[5..];
+    let (count, rest) = match after.strip_prefix('=') {
+        Some(num) => {
+            let end = num.find(|c: char| !c.is_ascii_digit()).unwrap_or(num.len());
+            (Some(num[..end].parse().ok()?), &num[end..])
+        }
+        None => (None, after),
+    };
+    match rest.strip_prefix(':') {
+        Some(r) => Some((Modifier::Range(count), r)),
+        None if rest.is_empty() => Some((Modifier::Range(count), "")),
+        None => None,
     }
 }
 
@@ -1170,6 +1198,11 @@ fn apply_bsd_modifiers(
             // `:L` yields the variable's name (which then flows through the rest of the chain).
             Modifier::Name => {
                 val = name.to_string();
+                set = true;
+            }
+            Modifier::Range(count) => {
+                let n = count.unwrap_or_else(|| val.split_whitespace().count());
+                val = (1..=n).map(|i| i.to_string()).collect::<Vec<_>>().join(" ");
                 set = true;
             }
             Modifier::Sort { reverse } => {
