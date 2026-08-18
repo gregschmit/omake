@@ -484,6 +484,15 @@ fn main() {
         if let Ok(cwd) = env::current_dir() {
             let _ = vars.set_origin("CURDIR", &cwd.to_string_lossy(), false, Origin::File);
         }
+        // bmake exposes its own process id as `.MAKE.PID` (BSD-only; gmake has no such variable).
+        if compat != Compat::Gnu {
+            let _ = vars.set_origin(
+                ".MAKE.PID",
+                std::process::id().to_string().as_str(),
+                false,
+                Origin::Default,
+            );
+        }
         let _ = vars.set_origin(
             "MAKELEVEL",
             level.to_string().as_str(),

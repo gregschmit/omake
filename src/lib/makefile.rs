@@ -128,6 +128,9 @@ pub struct Makefile<L: Logger> {
 
     /// Names of variables marked for `export` into recipe child environments.
     exported: HashSet<String>,
+    /// Names exported by bmake's `.export-literal` — their raw (unexpanded) value is exported, so
+    /// they must skip the re-expansion `exported_env` applies to ordinary exports.
+    exported_literal: HashSet<String>,
     /// Names marked `unexport` — removed from recipe child environments (even if inherited).
     unexported: HashSet<String>,
     /// A bare `export` / `.EXPORT_ALL_VARIABLES:` exports every file/environment variable with a
@@ -183,6 +186,7 @@ impl<L: Logger> Makefile<L> {
             default_target: None,
             special: SpecialTargets::default(),
             exported: HashSet::new(),
+            exported_literal: HashSet::new(),
             unexported: HashSet::new(),
             export_all: false,
             vpaths: Vec::new(),
@@ -550,14 +554,26 @@ impl<L: Logger> Makefile<L> {
             return Ok(());
         }
 
+        // Handle BSD dotted `.export` / `.export-env` / `.export-literal` / `.unexport` /
+        // `.unexport-env`. Unlike gmake's `export` (deferred to recipe children), bmake calls
+        // `setenv` in make's own process, so parse-time `${:!…!}` / `!=` commands see the value.
+        if let Some((kind, rest)) = parse_bsd_export(trimmed_line) {
+            return self.handle_bsd_export(kind, rest);
+        }
+
         // Handle `export` / `unexport` directives.
         if let Some((export, rest)) = parse_export(trimmed_line) {
             return self.handle_export(export, rest);
         }
 
-        // Handle `[override] undefine NAME`.
+        // Handle `[override] undefine NAME` and BSD `.undef NAME`.
         if let Some((override_, name)) = parse_undefine(trimmed_line) {
             return self.handle_undefine(override_, name);
+        }
+        if let Some(name) = trimmed_line.strip_prefix(".undef")
+            && name.starts_with([' ', '\t'])
+        {
+            return self.handle_undefine(false, name.trim());
         }
 
         // An optional leading `override` (with `Override` precedence) applies to a `define` or an
@@ -1294,13 +1310,19 @@ impl<L: Logger> Makefile<L> {
     /// Expand a BSD comparison operand, returning its value (quotes stripped) and whether it was
     /// quoted (a quoted operand is always compared as a string).
     fn bsd_operand(&self, operand: &str) -> Result<(String, bool), MakeError> {
-        let expanded = expand(operand.trim(), &self.vars)
-            .map_err(|e| MakeError::new(&e, self.context.clone()))?;
-        let trimmed = expanded.trim();
-        if let Some(inner) = trimmed.strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
-            return Ok((inner.to_string(), true));
+        let raw = operand.trim();
+        // A double-quoted literal is a string operand: strip the quotes, process backslash escapes
+        // on the raw text (`\$` is a literal dollar, `\"`/`\\` the quote/backslash), then expand
+        // any remaining `${…}` variable expressions. Quoting is a property of the source
+        // text, so a variable that *expands* to a quoted value is not treated as quoted.
+        if let Some(inner) = raw.strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
+            let value = expand(&unescape_bsd_string(inner), &self.vars)
+                .map_err(|e| MakeError::new(&e, self.context.clone()))?;
+            return Ok((value, true));
         }
-        Ok((trimmed.to_string(), false))
+        let value =
+            expand(raw, &self.vars).map_err(|e| MakeError::new(&e, self.context.clone()))?;
+        Ok((value.trim().to_string(), false))
     }
 
     /// Handle a GNU `include`/`-include`/`sinclude` directive: expand the (whitespace-separated)
@@ -1516,6 +1538,69 @@ impl<L: Logger> Makefile<L> {
         Ok(())
     }
 
+    /// Handle a BSD dotted export directive. bmake mutates make's own environment immediately (via
+    /// `setenv`/`unsetenv`), so parse-time shell escapes (`${:!env!}`, `!=`) observe the change.
+    fn handle_bsd_export(&mut self, kind: BsdExportKind, rest: &str) -> Result<(), MakeError> {
+        // `.unexport-env` drops every currently-exported variable from make's environment.
+        if kind == BsdExportKind::UnexportEnv {
+            for name in std::mem::take(&mut self.exported) {
+                // SAFETY: the parser is single-threaded (see `handle_undefine`).
+                unsafe { std::env::remove_var(&name) };
+            }
+            self.export_all = false;
+            return Ok(());
+        }
+
+        let names = self.expand_str(rest)?;
+
+        if kind == BsdExportKind::Unexport {
+            for name in names.split_whitespace() {
+                self.set_exported(name, false);
+                unsafe { std::env::remove_var(name) };
+            }
+            return Ok(());
+        }
+
+        // A bare `.export` / `.export-env` (no names at all) exports everything; a name list that
+        // expands to nothing (e.g. `.export ${:U }`) is a no-op, not export-all.
+        if rest.trim().is_empty() {
+            self.export_all = true;
+            for (name, value) in self.exportable_values() {
+                unsafe { std::env::set_var(&name, &value) };
+            }
+            return Ok(());
+        }
+
+        for name in names.split_whitespace() {
+            if !is_exportable_name(name) || !self.vars.is_set(name) {
+                continue; // bmake ignores undefined and target-local/internal names.
+            }
+            let value = if kind == BsdExportKind::ExportLiteral {
+                self.exported_literal.insert(name.to_string());
+                self.vars.get(name).value.clone()
+            } else {
+                self.exported_literal.remove(name);
+                self.expand_str(&format!("${{{name}}}"))?
+            };
+            self.set_exported(name, true);
+            unsafe { std::env::set_var(name, value) };
+        }
+        Ok(())
+    }
+
+    /// Every exportable, currently-set variable paired with its expanded value (for a bare
+    /// `.export`, which exports the lot).
+    fn exportable_values(&self) -> Vec<(String, String)> {
+        self.vars
+            .iter()
+            .filter(|(name, _)| is_exportable_name(name))
+            .map(|(name, _)| {
+                let value = expand(&format!("${{{name}}}"), &self.vars).unwrap_or_default();
+                (name.clone(), value)
+            })
+            .collect()
+    }
+
     /// Handle `[override] undefine NAME`: remove the variable. The whole (expanded) argument is a
     /// single name. Without `override`, a command-line/`override`-origin variable is left alone
     /// (matching assignment precedence). Removing a variable also drops it from recipe children.
@@ -1550,8 +1635,13 @@ impl<L: Logger> Makefile<L> {
         }
 
         self.vars.remove(name);
-        // Drop it from recipe children too (it was exported, an env var, or neither).
-        self.exported.remove(name);
+        // Drop it from recipe children too (it was exported, an env var, or neither). bmake also
+        // removes a `.undef`'d variable from make's own environment, so a later `${:!env!}` cannot
+        // see it.
+        if self.exported.remove(name) {
+            // SAFETY: the parser is single-threaded, so mutating the process environment is sound.
+            unsafe { std::env::remove_var(name) };
+        }
         self.unexported.insert(name.to_string());
         Ok(())
     }
@@ -1594,6 +1684,11 @@ impl<L: Logger> Makefile<L> {
             .into_iter()
             .filter(|name| !self.unexported.contains(*name))
             .filter_map(|name| {
+                // `.export-literal` exports the raw value; every other export re-expands at
+                // recipe-spawn time (so a value that changed after `.export` picks up the change).
+                if self.exported_literal.contains(name) {
+                    return Some((name.to_string(), vars.get(name).value.clone()));
+                }
                 expand(&vars.get(name).value, vars)
                     .ok()
                     .map(|value| (name.to_string(), value))
@@ -2140,6 +2235,67 @@ fn parse_export(trimmed: &str) -> Option<(bool, &str)> {
     None
 }
 
+/// The BSD dotted export directives, which mutate make's own environment.
+#[derive(PartialEq, Eq, Clone, Copy)]
+enum BsdExportKind {
+    /// `.export` / `.export-env` — export the named variables' current values.
+    Export,
+    /// `.export-literal` — export without expanding the value.
+    ExportLiteral,
+    /// `.unexport` — drop the named variables from the environment.
+    Unexport,
+    /// `.unexport-env` — drop every exported variable from the environment.
+    UnexportEnv,
+}
+
+/// If `trimmed` is a BSD `.export*` / `.unexport*` directive, return its kind and the (unexpanded)
+/// argument. The longer keywords are matched first so `.export-env` is not read as `.export`.
+fn parse_bsd_export(trimmed: &str) -> Option<(BsdExportKind, &str)> {
+    use BsdExportKind::*;
+    for (kw, kind) in [
+        (".export-literal", ExportLiteral),
+        (".export-env", Export),
+        (".unexport-env", UnexportEnv),
+        (".export", Export),
+        (".unexport", Unexport),
+    ] {
+        if let Some(rest) = trimmed.strip_prefix(kw)
+            && (rest.is_empty() || rest.starts_with([' ', '\t']))
+        {
+            return Some((kind, rest.trim()));
+        }
+    }
+    None
+}
+
+/// Process backslash escapes in a bmake `.if` double-quoted string. `\$` becomes `$$` so a later
+/// `expand` leaves a literal `$` (an unescaped `$` still starts a variable expression); `\"`, `\\`,
+/// and other `\c` sequences yield the escaped character.
+fn unescape_bsd_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('$') => out.push_str("$$"),
+            Some(other) => out.push(other),
+            None => out.push('\\'),
+        }
+    }
+    out
+}
+
+/// Whether a variable name may be exported to the environment. bmake refuses the single-character
+/// automatic/local variables (`@ < ? * % ! .ALLSRC` …) and its internal dotted variables.
+fn is_exportable_name(name: &str) -> bool {
+    !name.is_empty()
+        && !name.starts_with('.')
+        && !matches!(name, "@" | "<" | "?" | "*" | "%" | "!" | "^" | "+")
+}
+
 /// If `trimmed` is an `undefine NAME` directive (optionally `override undefine NAME`), return
 /// whether it was `override` and the (unexpanded) name argument — the whole rest of the line, not
 /// split. `undefine` must be followed by whitespace and a non-empty argument.
@@ -2303,11 +2459,14 @@ fn split_logical<'a>(expr: &'a str, op: &str) -> Option<Vec<&'a str>> {
         match bytes[i] {
             b'"' => in_quote = !in_quote,
             _ if in_quote => {}
-            b'(' => depth += 1,
-            b')' => depth -= 1,
+            // Track both grouping parens and `${…}`/`$(…)` expansions so a `||`/`&&` *inside* a
+            // variable expression (e.g. the shell text of `${:!cmd || true!}`) is not a split
+            // point.
+            b'(' | b'{' => depth += 1,
+            b')' | b'}' => depth -= 1,
             _ if depth == 0
                 && i > 0
-                && matches!(bytes[i - 1], b' ' | b'\t' | b')')
+                && matches!(bytes[i - 1], b' ' | b'\t' | b')' | b'}')
                 && expr[i..].starts_with(op) =>
             {
                 segments.push(&expr[start..i]);
