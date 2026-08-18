@@ -124,6 +124,9 @@ pub struct Makefile<L: Logger> {
 
     rule_map: RuleMap,
     default_target: Option<String>,
+    /// The target from the first `.MAIN:` directive (bmake), which overrides the first-target
+    /// default goal. Later `.MAIN:` lines are ignored.
+    main_target: Option<String>,
     special: SpecialTargets,
 
     /// Names of variables marked for `export` into recipe child environments.
@@ -186,6 +189,7 @@ impl<L: Logger> Makefile<L> {
             logger: Box::new(logger),
             rule_map: RuleMap::new(),
             default_target: None,
+            main_target: None,
             special: SpecialTargets::default(),
             exported: HashSet::new(),
             exported_literal: HashSet::new(),
@@ -1945,8 +1949,9 @@ impl<L: Logger> Makefile<L> {
                 }
             }
             ".NOTMAIN" => self.special.notmain.extend(targets.iter().cloned()),
-            ".OPTIONAL" | ".MADE" | ".META" | ".NOMETA" | ".NOPATH" | ".RECURSIVE" | ".EXEC"
-            | ".MAKE" => {}
+            // `.MAIN` is only special as a *target*; as a source it is ignored (dropped).
+            ".MAIN" | ".OPTIONAL" | ".MADE" | ".META" | ".NOMETA" | ".NOPATH" | ".RECURSIVE"
+            | ".EXEC" | ".MAKE" => {}
             _ => return false,
         }
         true
@@ -2014,6 +2019,19 @@ impl<L: Logger> Makefile<L> {
                 // bmake's `.MAKEFLAGS:`/`.MFLAGS:` add command-line flags. Decode the
                 // (dash-prefixed) prerequisites into the options. gmake has no such
                 // target, so only outside `--compat=gnu`.
+                // `.MAIN: target` designates the default goal (bmake). The first one wins; a later
+                // `.MAIN:` is ignored. It overrides the usual "first target is the default".
+                ".MAIN" if self.opts.compat != Compat::Gnu => {
+                    if self.main_target.is_none()
+                        && let Some(first) = rule.prerequisites.first()
+                    {
+                        self.main_target = Some(first.clone());
+                        self.default_target = Some(first.clone());
+                        let _ = self
+                            .vars
+                            .set_origin(".DEFAULT_GOAL", first, false, Origin::File);
+                    }
+                }
                 ".MAKEFLAGS" | ".MFLAGS" if self.opts.compat != Compat::Gnu => {
                     let flags = rule.prerequisites.join(" ");
                     crate::makeflags::merge_decoded(&mut self.opts, &flags);
