@@ -908,6 +908,12 @@ enum Modifier {
     /// `:range` / `:range=N` — replace the value with `1 2 … N`, where N is the given count or
     /// (with no `=N`) the number of words in the value.
     Range(Option<usize>),
+    /// `:lhs=rhs` — bmake's SysV substitution (the fallback modifier), equivalent to a GNU
+    /// substitution reference: a `%`-pattern or a literal suffix replacement per word.
+    SysvSubst {
+        from: String,
+        to: String,
+    },
 }
 
 /// A `:[...]` word-selection request.
@@ -930,11 +936,15 @@ fn parse_var_action(content: &str) -> (String, VarAction) {
     let name = name.trim().to_string();
     if m.contains('=') {
         // A `=` usually marks a GNU `:from=to` substitution, but a BSD modifier chain can legally
-        // contain `=` (`:range=N`, possibly after other modifiers like `:U:range=N`). Prefer BSD
-        // only when the chain parses AND actually uses such a modifier, so ordinary gmake
-        // substitutions (`$(X:.c=.o)`, `$(X:M=N)`) are unaffected.
+        // contain `=` — a `:range=N`, or a `:lhs=rhs` SysV substitution that follows other
+        // modifiers (`:U:range=N`, `:L:.c=.o`). Prefer BSD when the chain parses and uses such a
+        // modifier anywhere but its first position, so a plain `$(X:.c=.o)` / `$(X:M=N)` stays GNU.
         if let Some(mods) = parse_bsd_modifiers(m)
-            && mods.iter().any(|md| matches!(md, Modifier::Range(_)))
+            && (mods.iter().any(|md| matches!(md, Modifier::Range(_)))
+                || mods
+                    .iter()
+                    .skip(1)
+                    .any(|md| matches!(md, Modifier::SysvSubst { .. })))
         {
             return (name, VarAction::Bsd(mods));
         }
@@ -962,6 +972,27 @@ fn parse_bsd_modifiers(mut rest: &str) -> Option<Vec<Modifier>> {
 /// Parse one BSD modifier from the start of `s`; return it and the remainder after the separating
 /// `:` (empty at the end).
 fn take_modifier(s: &str) -> Option<(Modifier, &str)> {
+    // Try the named modifiers first; bmake's SysV `:lhs=rhs` is the fallback when none match.
+    take_known_modifier(s).or_else(|| take_sysv_modifier(s))
+}
+
+/// Parse bmake's SysV substitution modifier (`:lhs=rhs`, the fallback), which runs to the next `:`.
+fn take_sysv_modifier(s: &str) -> Option<(Modifier, &str)> {
+    let (seg, rest) = match s.find(':') {
+        Some(i) => (&s[..i], &s[i + 1..]),
+        None => (s, ""),
+    };
+    let (from, to) = seg.split_once('=')?;
+    Some((
+        Modifier::SysvSubst {
+            from: from.to_string(),
+            to: to.to_string(),
+        },
+        rest,
+    ))
+}
+
+fn take_known_modifier(s: &str) -> Option<(Modifier, &str)> {
     // A fixed-token modifier must be followed by `:` or end of string.
     let simple = |len: usize, m: Modifier| -> Option<(Modifier, &str)> {
         match s[len..].strip_prefix(':') {
@@ -1276,6 +1307,7 @@ fn apply_bsd_modifiers(
                 val = (1..=n).map(|i| i.to_string()).collect::<Vec<_>>().join(" ");
                 set = true;
             }
+            Modifier::SysvSubst { from, to } => val = substitute_ref(&val, from, to),
             Modifier::Sort { reverse, numeric } => {
                 let mut words: Vec<&str> = val.split_whitespace().collect();
                 if *numeric {

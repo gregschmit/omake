@@ -1374,10 +1374,14 @@ impl<L: Logger> Makefile<L> {
                 !defined
             });
         }
-        // Otherwise (a `.if` bare word, or a number) it is true when non-empty and non-zero.
+        // Otherwise (a `.if` bare word, or a number). A numeric value is true when non-zero (so
+        // `0`, `0.0`, `0e0` are all false); a non-numeric value is true when non-empty.
         let value = expand(expr, &self.vars).map_err(err)?;
         let value = value.trim();
-        Ok(!value.is_empty() && value != "0")
+        Ok(match bsd_number(value) {
+            Some(n) => n != 0.0,
+            None => !value.is_empty(),
+        })
     }
 
     /// Whether `name` is one of the goals make was asked to build (bmake's `.if make(name)`):

@@ -121,7 +121,7 @@ output and measure real behavioral gaps rather than format noise. Current pass r
 | Suite    | Version  | omake `--compat` |
 |----------|----------|------------------|
 | GNU make | 4.4.1    | **717 / 1337**   |
-| BSD make | 20230711 | **115 / 396**     |
+| BSD make | 20230711 | **116 / 396**    |
 
 The scores are pinned as a regression gate: two `#[ignore]`d tests shell out to the runners, so the
 normal `cargo test` loop stays fast and dependency-free. To also run the gate, un-ignore them:
