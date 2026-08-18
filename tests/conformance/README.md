@@ -24,8 +24,7 @@ tests/conformance/run_gmake      # GNU make test suite
 
 Both honor a `OMAKE=/path/to/omake` override. `run_gmake` also takes optional category arguments
 (e.g. `run_gmake features/comments functions/wildcard`); `run_bmake` runs the whole suite.
-`vendor [gmake|bmake|all]` vendors without running. All three are portable POSIX `sh` (they run on
-Linux, macOS, and the BSDs, not just under bash).
+`vendor [gmake|bmake|all]` vendors without running.
 
 ### Regression gate
 

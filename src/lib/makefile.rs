@@ -48,6 +48,8 @@ pub struct SpecialTargets {
     secondary_all: bool,
     /// Files forced to be intermediate (`.INTERMEDIATE: x`), deleted after the build if invented.
     intermediate: HashSet<String>,
+    /// Targets excluded from being the default goal (bmake `.NOTMAIN`).
+    notmain: HashSet<String>,
 }
 
 /// State for a `define ... endef` multi-line variable being captured.
@@ -478,6 +480,7 @@ impl<L: Logger> Makefile<L> {
                         && !target.starts_with('.')
                         && !target.contains('%')
                         && !self.use_templates.contains_key(target)
+                        && !self.special.notmain.contains(target)
                     {
                         self.default_target = Some(target.clone());
                         // `.DEFAULT_GOAL` tracks the first eligible target, unless the makefile has
@@ -1759,8 +1762,9 @@ impl<L: Logger> Makefile<L> {
                     self.use_templates.insert(t.clone(), before);
                 }
             }
-            ".OPTIONAL" | ".NOTMAIN" | ".MADE" | ".META" | ".NOMETA" | ".NOPATH" | ".RECURSIVE"
-            | ".EXEC" | ".MAKE" => {}
+            ".NOTMAIN" => self.special.notmain.extend(targets.iter().cloned()),
+            ".OPTIONAL" | ".MADE" | ".META" | ".NOMETA" | ".NOPATH" | ".RECURSIVE" | ".EXEC"
+            | ".MAKE" => {}
             _ => return false,
         }
         true
@@ -1824,6 +1828,13 @@ impl<L: Logger> Makefile<L> {
                     } else {
                         self.suffixes.extend(rule.prerequisites.iter().cloned());
                     }
+                }
+                // bmake's `.MAKEFLAGS:`/`.MFLAGS:` add command-line flags. Decode the
+                // (dash-prefixed) prerequisites into the options. gmake has no such
+                // target, so only outside `--compat=gnu`.
+                ".MAKEFLAGS" | ".MFLAGS" if self.opts.compat != Compat::Gnu => {
+                    let flags = rule.prerequisites.join(" ");
+                    crate::makeflags::merge_decoded(&mut self.opts, &flags);
                 }
                 _ => {}
             }

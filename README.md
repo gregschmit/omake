@@ -6,11 +6,6 @@ To avoid clashing with your system's `make`, this project is built as `omake` by
 this project is ever used as the default implementation of `make` in a system, then it should be
 named `make` (to follow the same convention as `bmake` and `gmake`).
 
-I decided to try to re-write `make` in Rust both as a way to learn Rust and also because I found the
-existing `make` implementations' source code very convoluted.
-
-https://xkcd.com/2314/
-
 ## Installation
 
 You can install with Cargo: `cargo install omake`. In the future, I may consider packaging this
@@ -27,9 +22,9 @@ impossible to achieve. Regardless, in order of importance, here are the project 
 4. Be really fast.
 5. If we decide to implement new extensions, they should be opt-in to retain backwards
    compatibility. We should avoid this unless there are serious performance improvements.
-6. Possibly the hardest: don't turn into a backwards-incompatible competing standard
-   (https://xkcd.com/927/). As uninspired as it may seem, I just want an implementation of `make`
-   that works on Linux and FreeBSD (and macOS); that's it.
+6. Possibly the hardest: don't turn into a backwards-incompatible competing standard. As uninspired
+   as it may seem, I just want an implementation of `make` that works on Linux and FreeBSD (and
+   macOS); that's it.
 
 1.0 release will probably happen when this project can build the Linux kernel.
 
